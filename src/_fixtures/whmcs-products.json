@@ -3,212 +3,244 @@
   "products": {
     "product": [
       {
-        "pid": "11",
+        "pid": "15",
         "gid": "1",
-        "name": "cPanel Starter",
-        "description": "Perfect for a single blog.",
-        "diskspace": "5",
-        "freedomain": true,
-        "pricing": {
-          "USD": {
-            "monthly": "2.95"
-          }
-        }
-      },
-      {
-        "pid": "12",
-        "gid": "1",
-        "name": "cPanel Plus",
-        "description": "Up to 3 sites.",
-        "diskspace": "15",
-        "freedomain": true,
-        "pricing": {
-          "USD": {
-            "monthly": "5.95"
-          }
-        }
-      },
-      {
-        "pid": "13",
-        "gid": "1",
-        "name": "cPanel Pro",
-        "description": "10 sites, 2× CPU.",
-        "diskspace": "50",
+        "name": "cPanel Entry",
+        "description": "1 site, 1 GB, starter tier.",
+        "diskspace": "1",
         "freedomain": false,
         "pricing": {
           "USD": {
-            "monthly": "9.95"
+            "monthly": 0.99,
+            "quarterly": 2.97,
+            "yearly": 11.88
           }
-        }
+        },
+        "link": "https://your-domain.com/order/1/15"
       },
       {
-        "pid": "14",
+        "pid": "16",
         "gid": "1",
-        "name": "cPanel Ultimate",
-        "description": "Unlimited sites.",
-        "diskspace": "100",
+        "name": "cPanel Mid-Plus",
+        "description": "2-3 sites, 8 GB, mid tier.",
+        "diskspace": "8",
+        "freedomain": true,
+        "pricing": {
+          "USD": {
+            "monthly": 4.50,
+            "quarterly": 13.50,
+            "yearly": 54.00
+          }
+        },
+        "link": "https://your-domain.com/order/1/16"
+      },
+      {
+        "pid": "17",
+        "gid": "1",
+        "name": "cPanel Upper-Pro",
+        "description": "4-10 sites, 35 GB, upper tier.",
+        "diskspace": "35",
         "freedomain": false,
         "pricing": {
           "USD": {
-            "monthly": "14.95"
+            "monthly": 11.00,
+            "quarterly": 33.00,
+            "yearly": 132.00
           }
-        }
+        },
+        "link": "https://your-domain.com/order/1/17"
       },
       {
-        "pid": "20",
+        "pid": "23",
         "gid": "20",
-        "name": "WP Lite",
-        "description": "1 WordPress install, pre-installed cache.",
-        "diskspace": "10",
-        "freedomain": true,
-        "pricing": {
-          "USD": {
-            "monthly": "3.95"
-          }
-        }
-      },
-      {
-        "pid": "21",
-        "gid": "20",
-        "name": "WP Standard",
-        "description": "3 WordPress sites + staging.",
-        "diskspace": "25",
-        "freedomain": true,
-        "pricing": {
-          "USD": {
-            "monthly": "7.95"
-          }
-        }
-      },
-      {
-        "pid": "22",
-        "gid": "20",
-        "name": "WP Advanced",
-        "description": "10 installs, nightly backups.",
-        "diskspace": "75",
+        "name": "WP Entry",
+        "description": "1 WP site, 500 MB.",
+        "diskspace": "0.5",
         "freedomain": false,
         "pricing": {
           "USD": {
-            "monthly": "12.95"
+            "monthly": 1.99,
+            "quarterly": 5.97,
+            "yearly": 23.88
           }
-        }
+        },
+        "link": "https://your-domain.com/order/20/23"
       },
       {
-        "pid": "30",
-        "gid": "21",
-        "name": "Woo Starter",
-        "description": "1 store, 30 products, 1 GB RAM.",
-        "diskspace": "15",
+        "pid": "24",
+        "gid": "20",
+        "name": "WP Mid",
+        "description": "2-3 WP sites, 12 GB.",
+        "diskspace": "12",
         "freedomain": true,
         "pricing": {
           "USD": {
-            "monthly": "6.95"
+            "monthly": 5.50,
+            "quarterly": 16.50,
+            "yearly": 66.00
           }
-        }
+        },
+        "link": "https://your-domain.com/order/20/24"
       },
       {
-        "pid": "31",
-        "gid": "21",
-        "name": "Woo Plus",
-        "description": "3 stores, 500 products, 2 GB RAM.",
+        "pid": "25",
+        "gid": "20",
+        "name": "WP Upper",
+        "description": "4-10 WP sites, 40 GB.",
         "diskspace": "40",
-        "freedomain": true,
+        "freedomain": false,
         "pricing": {
           "USD": {
-            "monthly": "13.95"
+            "monthly": 10.00,
+            "quarterly": 30.00,
+            "yearly": 120.00
           }
-        }
+        },
+        "link": "https://your-domain.com/order/20/25"
       },
       {
-        "pid": "32",
+        "pid": "33",
         "gid": "21",
-        "name": "Woo Pro",
-        "description": "Unlimited products, 4 GB RAM, Elasticsearch.",
-        "diskspace": "100",
+        "name": "Woo Entry",
+        "description": "1 store, 20 products, 500 MB.",
+        "diskspace": "0.5",
         "freedomain": false,
         "pricing": {
           "USD": {
-            "monthly": "24.95"
+            "monthly": 2.99,
+            "quarterly": 8.97,
+            "yearly": 35.88
           }
-        }
+        },
+        "link": "https://your-domain.com/order/21/33"
       },
       {
-        "pid": "40",
-        "gid": "25",
-        "name": "Business Mail-First",
-        "description": "1 site, dedicated IP, MailChannels.",
-        "diskspace": "20",
+        "pid": "34",
+        "gid": "21",
+        "name": "Woo Mid",
+        "description": "2-3 stores, 200 products, 2 GB.",
+        "diskspace": "2",
         "freedomain": true,
         "pricing": {
           "USD": {
-            "monthly": "8.95"
+            "monthly": 6.50,
+            "quarterly": 19.50,
+            "yearly": 78.00
           }
-        }
+        },
+        "link": "https://your-domain.com/order/21/34"
       },
       {
-        "pid": "41",
-        "gid": "25",
-        "name": "Business Scale",
-        "description": "5 sites, 4 GB RAM, MailChannels + SpamExperts.",
-        "diskspace": "60",
-        "freedomain": true,
-        "pricing": {
-          "USD": {
-            "monthly": "19.95"
-          }
-        }
-      },
-      {
-        "pid": "42",
-        "gid": "25",
-        "name": "Business Premium",
-        "description": "15 sites, 8 GB RAM, private DNS.",
-        "diskspace": "150",
+        "pid": "35",
+        "gid": "21",
+        "name": "Woo Upper",
+        "description": "4-10 stores, 2 000 products, 8 GB.",
+        "diskspace": "8",
         "freedomain": false,
         "pricing": {
           "USD": {
-            "monthly": "34.95"
+            "monthly": 12.00,
+            "quarterly": 36.00,
+            "yearly": 144.00
           }
-        }
+        },
+        "link": "https://your-domain.com/order/21/35"
       },
       {
-        "pid": "50",
-        "gid": "28",
-        "name": "Windows Basic",
-        "description": "1 site, ASP.NET 4.8, 512 MB MSSQL.",
+        "pid": "43",
+        "gid": "25",
+        "name": "Biz Entry",
+        "description": "1 site, mail IP, 1 GB.",
+        "diskspace": "1",
+        "freedomain": false,
+        "pricing": {
+          "USD": {
+            "monthly": 3.49,
+            "quarterly": 10.47,
+            "yearly": 41.88
+          }
+        },
+        "link": "https://your-domain.com/order/25/43"
+      },
+      {
+        "pid": "44",
+        "gid": "25",
+        "name": "Biz Mid",
+        "description": "2-3 sites, 2 GB RAM, MailChannels.",
         "diskspace": "10",
         "freedomain": true,
         "pricing": {
           "USD": {
-            "monthly": "4.95"
+            "monthly": 7.00,
+            "quarterly": 21.00,
+            "yearly": 84.00
           }
-        }
+        },
+        "link": "https://your-domain.com/order/25/44"
       },
       {
-        "pid": "51",
-        "gid": "28",
-        "name": "Windows Standard",
-        "description": "3 sites, ASP.NET 6, 2 GB MSSQL.",
-        "diskspace": "30",
-        "freedomain": true,
-        "pricing": {
-          "USD": {
-            "monthly": "9.95"
-          }
-        }
-      },
-      {
-        "pid": "52",
-        "gid": "28",
-        "name": "Windows Enterprise",
-        "description": "Unlimited sites, .NET 8, 5 GB MSSQL, 4 GB RAM.",
-        "diskspace": "100",
+        "pid": "45",
+        "gid": "25",
+        "name": "Biz Upper",
+        "description": "4-10 sites, 6 GB RAM, SpamExperts.",
+        "diskspace": "45",
         "freedomain": false,
         "pricing": {
           "USD": {
-            "monthly": "22.95"
+            "monthly": 13.50,
+            "quarterly": 40.50,
+            "yearly": 162.00
           }
-        }
+        },
+        "link": "https://your-domain.com/order/25/45"
+      },
+      {
+        "pid": "53",
+        "gid": "28",
+        "name": "Win Entry",
+        "description": "1 site, ASP.NET 5, 256 MB MSSQL.",
+        "diskspace": "2",
+        "freedomain": false,
+        "pricing": {
+          "USD": {
+            "monthly": 2.49,
+            "quarterly": 7.47,
+            "yearly": 29.88
+          }
+        },
+        "link": "https://your-domain.com/order/28/53"
+      },
+      {
+        "pid": "54",
+        "gid": "28",
+        "name": "Win Mid",
+        "description": "2-3 sites, ASP.NET 6, 1 GB MSSQL.",
+        "diskspace": "12",
+        "freedomain": true,
+        "pricing": {
+          "USD": {
+            "monthly": 6.00,
+            "quarterly": 18.00,
+            "yearly": 72.00
+          }
+        },
+        "link": "https://your-domain.com/order/28/54"
+      },
+      {
+        "pid": "55",
+        "gid": "28",
+        "name": "Win Upper",
+        "description": "4-10 sites, .NET 7, 3 GB MSSQL.",
+        "diskspace": "35",
+        "freedomain": false,
+        "pricing": {
+          "USD": {
+            "monthly": 11.50,
+            "quarterly": 34.50,
+            "yearly": 138.00
+          }
+        },
+        "link": "https://your-domain.com/order/28/55"
       }
     ]
   }
