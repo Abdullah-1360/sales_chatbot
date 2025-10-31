@@ -1,0 +1,24 @@
+{
+  "name": "sales_chatbot",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "axios": "^1.13.1",
+    "compression": "^1.8.1",
+    "dotenv": "^17.2.3",
+    "express": "^5.1.0",
+    "helmet": "^8.1.0",
+    "jest": "^30.2.0",
+    "joi": "^18.0.1",
+    "node-cache": "^5.1.2",
+    "nodemon": "^3.1.10"
+  }
+}

@@ -1,0 +1,215 @@
+{
+  "result": "success",
+  "products": {
+    "product": [
+      {
+        "pid": "11",
+        "gid": "1",
+        "name": "cPanel Starter",
+        "description": "Perfect for a single blog.",
+        "diskspace": "5",
+        "freedomain": true,
+        "pricing": {
+          "USD": {
+            "monthly": "2.95"
+          }
+        }
+      },
+      {
+        "pid": "12",
+        "gid": "1",
+        "name": "cPanel Plus",
+        "description": "Up to 3 sites.",
+        "diskspace": "15",
+        "freedomain": true,
+        "pricing": {
+          "USD": {
+            "monthly": "5.95"
+          }
+        }
+      },
+      {
+        "pid": "13",
+        "gid": "1",
+        "name": "cPanel Pro",
+        "description": "10 sites, 2× CPU.",
+        "diskspace": "50",
+        "freedomain": false,
+        "pricing": {
+          "USD": {
+            "monthly": "9.95"
+          }
+        }
+      },
+      {
+        "pid": "14",
+        "gid": "1",
+        "name": "cPanel Ultimate",
+        "description": "Unlimited sites.",
+        "diskspace": "100",
+        "freedomain": false,
+        "pricing": {
+          "USD": {
+            "monthly": "14.95"
+          }
+        }
+      },
+      {
+        "pid": "20",
+        "gid": "20",
+        "name": "WP Lite",
+        "description": "1 WordPress install, pre-installed cache.",
+        "diskspace": "10",
+        "freedomain": true,
+        "pricing": {
+          "USD": {
+            "monthly": "3.95"
+          }
+        }
+      },
+      {
+        "pid": "21",
+        "gid": "20",
+        "name": "WP Standard",
+        "description": "3 WordPress sites + staging.",
+        "diskspace": "25",
+        "freedomain": true,
+        "pricing": {
+          "USD": {
+            "monthly": "7.95"
+          }
+        }
+      },
+      {
+        "pid": "22",
+        "gid": "20",
+        "name": "WP Advanced",
+        "description": "10 installs, nightly backups.",
+        "diskspace": "75",
+        "freedomain": false,
+        "pricing": {
+          "USD": {
+            "monthly": "12.95"
+          }
+        }
+      },
+      {
+        "pid": "30",
+        "gid": "21",
+        "name": "Woo Starter",
+        "description": "1 store, 30 products, 1 GB RAM.",
+        "diskspace": "15",
+        "freedomain": true,
+        "pricing": {
+          "USD": {
+            "monthly": "6.95"
+          }
+        }
+      },
+      {
+        "pid": "31",
+        "gid": "21",
+        "name": "Woo Plus",
+        "description": "3 stores, 500 products, 2 GB RAM.",
+        "diskspace": "40",
+        "freedomain": true,
+        "pricing": {
+          "USD": {
+            "monthly": "13.95"
+          }
+        }
+      },
+      {
+        "pid": "32",
+        "gid": "21",
+        "name": "Woo Pro",
+        "description": "Unlimited products, 4 GB RAM, Elasticsearch.",
+        "diskspace": "100",
+        "freedomain": false,
+        "pricing": {
+          "USD": {
+            "monthly": "24.95"
+          }
+        }
+      },
+      {
+        "pid": "40",
+        "gid": "25",
+        "name": "Business Mail-First",
+        "description": "1 site, dedicated IP, MailChannels.",
+        "diskspace": "20",
+        "freedomain": true,
+        "pricing": {
+          "USD": {
+            "monthly": "8.95"
+          }
+        }
+      },
+      {
+        "pid": "41",
+        "gid": "25",
+        "name": "Business Scale",
+        "description": "5 sites, 4 GB RAM, MailChannels + SpamExperts.",
+        "diskspace": "60",
+        "freedomain": true,
+        "pricing": {
+          "USD": {
+            "monthly": "19.95"
+          }
+        }
+      },
+      {
+        "pid": "42",
+        "gid": "25",
+        "name": "Business Premium",
+        "description": "15 sites, 8 GB RAM, private DNS.",
+        "diskspace": "150",
+        "freedomain": false,
+        "pricing": {
+          "USD": {
+            "monthly": "34.95"
+          }
+        }
+      },
+      {
+        "pid": "50",
+        "gid": "28",
+        "name": "Windows Basic",
+        "description": "1 site, ASP.NET 4.8, 512 MB MSSQL.",
+        "diskspace": "10",
+        "freedomain": true,
+        "pricing": {
+          "USD": {
+            "monthly": "4.95"
+          }
+        }
+      },
+      {
+        "pid": "51",
+        "gid": "28",
+        "name": "Windows Standard",
+        "description": "3 sites, ASP.NET 6, 2 GB MSSQL.",
+        "diskspace": "30",
+        "freedomain": true,
+        "pricing": {
+          "USD": {
+            "monthly": "9.95"
+          }
+        }
+      },
+      {
+        "pid": "52",
+        "gid": "28",
+        "name": "Windows Enterprise",
+        "description": "Unlimited sites, .NET 8, 5 GB MSSQL, 4 GB RAM.",
+        "diskspace": "100",
+        "freedomain": false,
+        "pricing": {
+          "USD": {
+            "monthly": "22.95"
+          }
+        }
+      }
+    ]
+  }
+}
