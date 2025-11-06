@@ -1,65 +1,100 @@
 const planMatcher = require('../services/planMatcher');
 const whmcs      = require('../services/whmcs');
 const Joi        = require('joi');
+const { getTierFromPlan, getTierRank } = require('../utils/tierHelper');
+const { findNearestNeighbors } = require('../services/nearestNeighbor');
+const { calculateConfidence } = require('../services/confidenceScorer');
+const { selectThreePlans } = require('../services/planSelector');
 
 /* ---------- validation schema ---------- */
 const bodySchema = Joi.object({
-  purpose: Joi.string().valid('Blog', 'Business Site', 'Ecommerce', 'Portfolio', 'Other').required(),
-  websites_count: Joi.string().required(), // ← accept any string
-  tech_stack: Joi.string().valid('Linux', 'Windows').required(),
-  cms: Joi.string().valid('WordPress', 'WooCommerce', 'None').required(),
-  email_needed: Joi.boolean().required(),
-  storage_needed_gb: Joi.number().integer().min(1).required(),
-  monthly_budget: Joi.number().integer().min(0).required(),
-  free_domain: Joi.boolean().required(),
-  migrate_from_existing_host: Joi.boolean().required(),
+  // Make fields optional and provide sensible defaults so an empty body is accepted
+  purpose: Joi.string().valid('Blog', 'Business Site', 'Ecommerce', 'Portfolio', 'Other').default('Blog'),
+  websites_count: Joi.string().default('1'), // accept any string, default to single site
+  tech_stack: Joi.string().valid('Linux', 'Windows').default('Linux'),
+  cms: Joi.string().valid('WordPress', 'WooCommerce', 'None').default('None'),
+  email_needed: Joi.boolean().allow(null).default(false),
+  storage_needed_gb: Joi.number().integer().min(1).default(10),
+  monthly_budget: Joi.number().integer().min(0).default(0),
+  free_domain: Joi.boolean().default(false),
+  migrate_from_existing_host: Joi.boolean().default(false),
   email_deliverability_priority: Joi.boolean().default(false)
 });
 
 /* ---------- main controller ---------- */
 exports.recommend = async (req, res, next) => {
+  const clientTimeout = parseInt(req.headers['Timeout']) || 30000;
   console.log('🔍 Recommendation request received with body:', req.body);
   try {
     const answers = await bodySchema.validateAsync(req.body);
     const { gid, minTier } = planMatcher(answers);
 
     /* 1.  fetch products for determined group */
-    let plans = await whmcs.getProductsByGid(gid);
+    let allPlans = await whmcs.getProductsByGid(gid);
+    
+    if (!allPlans.length) {
+      console.log('⚠️  No plans found for GID:', gid);
+      return res.json({ matches: [] });
+    }
 
-    /* 2.  storage hard filter */
-    plans = plans.filter(p => parseInt(p.diskspace) >= answers.storage_needed_gb);
-
+    /* 2.  Try exact match with hard filters first */
+    let exactMatches = allPlans.filter(p => parseInt(p.diskspace) >= answers.storage_needed_gb);
+    
     /* 3.  tier filter (entry ≤ mid ≤ upper) */
-    const tierRank = { entry: 1, mid: 2, upper: 3 };
-    plans = plans.filter(p => tierRank[tierOfPlan(p)] >= tierRank[minTier]);
+    exactMatches = exactMatches.filter(p => getTierRank(getTierFromPlan(p)) >= getTierRank(minTier));
 
     /* 4.  budget hard filter */
-    plans = plans.map(p => ({ ...p, priceNum: Number(p.pricing.USD.monthly) }))
-                 .filter(p => p.priceNum <= answers.monthly_budget);
+    exactMatches = exactMatches.filter(p => Number(p.pricing.USD.monthly) <= answers.monthly_budget);
 
     /* 5.  free-domain soft constraint */
     if (answers.free_domain) {
-      const withDomain = plans.filter(p => p.freedomain);
-      if (withDomain.length) plans = withDomain;   // keep only if any exist
+      const withDomain = exactMatches.filter(p => p.freedomain);
+      if (withDomain.length) exactMatches = withDomain;
     }
 
-    if (!plans.length) return res.json({ matches: [] });
+    let finalPlans = [];
+    
+    if (exactMatches.length > 0) {
+      /* Exact matches found - calculate confidence and select 3 plans */
+      console.log(`✅ Found ${exactMatches.length} exact matches`);
+      
+      const plansWithConfidence = exactMatches.map(p => ({
+        ...p,
+        confidence: calculateConfidence(p, { ...answers, minTier })
+      }));
+      
+      // Select 3 plans: best fit, one cheaper, one higher
+      finalPlans = selectThreePlans(plansWithConfidence, answers.monthly_budget);
+      
+      // Log confidence stats
+      if (finalPlans.length > 0) {
+        const confidences = finalPlans.map(p => p.confidence);
+        console.log(`📊 Confidence scores: min=${Math.min(...confidences)}, max=${Math.max(...confidences)}, avg=${(confidences.reduce((a,b) => a+b, 0) / confidences.length).toFixed(2)}`);
+      }
+      
+    } else {
+      /* No exact matches - use nearest neighbor within same GID */
+      console.log('🔄 No exact matches, searching for nearest neighbors within GID:', gid);
+      
+      finalPlans = findNearestNeighbors(allPlans, { ...answers, minTier });
+      
+      if (finalPlans.length > 0) {
+        const confidences = finalPlans.map(p => p.confidence);
+        console.log(`📊 Nearest neighbor confidence scores: min=${Math.min(...confidences)}, max=${Math.max(...confidences)}, avg=${(confidences.reduce((a,b) => a+b, 0) / confidences.length).toFixed(2)}`);
+      } else {
+        console.log('⚠️  No viable nearest neighbors found (all below 40% confidence threshold)');
+      }
+    }
 
-    /* 6.  return up-to-3 plans, cheapest first */
-    plans.sort((a, b) => a.priceNum - b.priceNum);
-    const three = plans.slice(0, 3);
-    three.forEach(p => delete p.priceNum);
-
-    res.json({ matches: three });
+    res.json({ matches: finalPlans });
   } catch (e) {
+    console.error('❌ Error in recommendation:', e);
     next(e);
   }
 };
 
-/* ---------- helper: map WHMCS plan → tier ---------- */
+/* ---------- helper: map WHMCS plan → tier (deprecated - use tierHelper) ---------- */
+// Kept for backward compatibility if needed elsewhere
 function tierOfPlan(product) {
-  const name = product.name.toLowerCase();
-  if (name.includes('starter') || name.includes('lite') || name.includes('basic')) return 'entry';
-  if (name.includes('plus') || name.includes('standard')) return 'mid';
-  return 'upper';   // pro, advanced, ultimate, enterprise, etc.
+  return getTierFromPlan(product);
 }

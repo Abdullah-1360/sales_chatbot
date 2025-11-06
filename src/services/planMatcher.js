@@ -8,7 +8,7 @@ module.exports = function planMatcher(answers) {
   const cleanCount = normaliseCount(websites_count);
   const minTier    = tierOf(cleanCount);
 
-  // 2.  original mapping rules
+  // 2.  mapping rules (WHMCS GID specification)
   if (cms === CMS.WOO || purpose === PURPOSE.ECOM)       return { gid: 21, minTier };
   if (cms === CMS.WP)                                    return { gid: 20, minTier };
   if (tech_stack === TECH_STACK.WIN || wantsWindows(answers)) return { gid: 28, minTier };
