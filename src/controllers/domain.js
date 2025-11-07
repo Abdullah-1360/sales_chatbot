@@ -46,11 +46,19 @@ exports.checkAvailability = async (req, res, next) => {
       available: result.available,
       message: result.message
     };
+    // include pricing for the base domain if present
+    if (result.pricing) {
+      response.pricing = result.pricing;
+    }
     
     // Add suggestions if domain is not available
     if (!result.available && result.suggestions.length > 0) {
       response.suggestions = result.suggestions;
       response.suggestionsCount = result.suggestions.length;
+      // include detailed priced suggestions if present
+      if (Array.isArray(result.pricedSuggestions)) {
+        response.pricedSuggestions = result.pricedSuggestions;
+      }
     }
     
     // Log result

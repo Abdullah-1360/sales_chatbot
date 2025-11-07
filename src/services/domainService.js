@@ -7,6 +7,7 @@
 const axios   = require('axios');
 const whois   = require('whois-json');
 const cfg     = require('../config');
+const { getPricingForTld } = require('./tldPricing');
 /* ------------------------------------------------------------- */
 /* tiny RDAP wrapper                                             */
 /* ------------------------------------------------------------- */
@@ -158,6 +159,11 @@ async function getDomainAvailability(domain) {
     const primary = await checkDomainAvailability(domain);
 
     if (primary.available) {
+      // fetch price for the base domain's TLD in parallel
+      const tld = `.${domain.split('.').pop()}`;
+      const [pricingDoc] = await Promise.all([
+        getPricingForTld(tld)
+      ]);
       console.log(`✅  ${domain} is available!`);
       return {
         success: true,
@@ -165,7 +171,17 @@ async function getDomainAvailability(domain) {
         available: true,
         message: 'Domain is available for registration!',
         suggestions: [],
-        source: primary.source
+        source: primary.source,
+        pricing: pricingDoc ? {
+          tld: pricingDoc.tld,
+          register: pricingDoc.register,
+          renew: pricingDoc.renew,
+          transfer: pricingDoc.transfer,
+          grace_period: pricingDoc.grace_period,
+          redemption_period: pricingDoc.redemption_period,
+          exchange_rate: pricingDoc.exchange_rate,
+          exchange_rate_date: pricingDoc.exchange_rate_date
+        } : null
       };
     }
 
@@ -176,6 +192,30 @@ async function getDomainAvailability(domain) {
     const checked = await checkMultipleDomains(suggestions.slice(0, 10), 10);
     const available = checked.filter(r => r.available).map(r => r.domain);
 
+    // parallel TLD pricing lookup for available suggestions
+    const uniqueTlds = [...new Set(available.map(d => `.${d.split('.').pop()}`))];
+    const pricingDocs = await Promise.all(uniqueTlds.map(t => getPricingForTld(t)));
+    const tldToPricing = new Map();
+    uniqueTlds.forEach((tld, i) => { if (pricingDocs[i]) tldToPricing.set(pricingDocs[i].tld, pricingDocs[i]); });
+
+    const pricedSuggestions = available.map(d => {
+      const t = (d.split('.').pop());
+      const p = tldToPricing.get(t);
+      return {
+        domain: d,
+        tld: t,
+        pricing: p ? {
+          register: p.register,
+          renew: p.renew,
+          transfer: p.transfer,
+          grace_period: p.grace_period,
+          redemption_period: p.redemption_period,
+          exchange_rate: p.exchange_rate,
+          exchange_rate_date: p.exchange_rate_date
+        } : null
+      };
+    });
+
     console.log(`📊  Found ${available.length} available alternatives out of ${checked.length} checked`);
 
     return {
@@ -185,6 +225,7 @@ async function getDomainAvailability(domain) {
       message: 'Domain is not available',
       suggestions: available,
       suggestionsCount: available.length,
+      pricedSuggestions,
       checkedSuggestions: checked.length,
       registrar: primary.registrar,
       expirationDate: primary.expirationDate,

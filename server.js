@@ -2,6 +2,7 @@ require('dotenv').config();
 const app = require('./src/app');
 const { connectDB } = require('./src/config/database');
 const { syncAllProducts, scheduleSync } = require('./src/services/whmcsSync');
+const { upsertAllTldPricing } = require('./src/services/tldPricing');
 const cfg = require('./src/config');
 
 const PORT = process.env.PORT || 3000;
@@ -14,13 +15,24 @@ async function startServer() {
       
       // Auto-sync on startup if enabled
       if (cfg.AUTO_SYNC_ON_STARTUP) {
-        console.log('\n🔄 Auto-sync enabled, fetching products from WHMCS...\n');
-        const result = await syncAllProducts();
-        
-        if (result.success) {
-          console.log(`✅ Initial sync completed: ${result.totalInserted} products loaded\n`);
-        } else {
-          console.warn(`⚠️  Initial sync failed: ${result.error || result.message}`);
+        console.log('\n🔄 Auto-sync enabled, fetching products and TLD pricing from WHMCS...\n');
+        try {
+          const [productsResult] = await Promise.all([
+            syncAllProducts(),
+            upsertAllTldPricing().catch(err => {
+              console.warn(`⚠️  TLD pricing sync failed: ${err.message}`);
+              return null;
+            })
+          ]);
+
+          if (productsResult?.success) {
+            console.log(`✅ Initial product sync completed: ${productsResult.totalInserted} products loaded`);
+          } else {
+            console.warn(`⚠️  Initial product sync failed: ${productsResult?.error || productsResult?.message || 'unknown error'}`);
+          }
+          console.log('');
+        } catch (e) {
+          console.warn(`⚠️  Initial sync encountered errors: ${e.message}`);
           console.warn('⚠️  Server will start but may have stale data\n');
         }
       }

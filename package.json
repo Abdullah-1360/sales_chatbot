@@ -9,7 +9,8 @@
     "test": "jest",
     "seed": "node src/scripts/seedProducts.js",
     "sync": "node src/scripts/syncFromWHMCS.js",
-    "sync:gid": "node src/scripts/syncFromWHMCS.js"
+    "sync:gid": "node src/scripts/syncFromWHMCS.js",
+    "sync:tlds": "node src/scripts/syncTldPricing.js"
   },
   "keywords": [],
   "author": "",
