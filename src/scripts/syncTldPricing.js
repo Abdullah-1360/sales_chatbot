@@ -10,8 +10,7 @@ const { upsertAllTldPricing } = require('../services/tldPricing');
     console.log(`\n✅ Sync completed!`);
     console.log(`   Upserted: ${result.upserted}`);
     console.log(`   Modified: ${result.modified}`);
-    console.log(`   Exchange Rate: 1 USD = ${result.exchangeRate} PKR`);
-    console.log(`   Rate Date: ${result.exchangeDate?.toISOString().split('T')[0] || 'N/A'}\n`);
+    console.log(`   Currency: PKR (fetched directly from WHMCS)\n`);
     process.exit(0);
   } catch (err) {
     console.error('❌ TLD pricing sync failed:', err.message);

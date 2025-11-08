@@ -17,11 +17,11 @@ async function startServer() {
       if (cfg.AUTO_SYNC_ON_STARTUP) {
         console.log('\n🔄 Auto-sync enabled, fetching products and TLD pricing from WHMCS...\n');
         try {
-          const [productsResult] = await Promise.all([
+          const [productsResult, tldResult] = await Promise.all([
             syncAllProducts(),
             upsertAllTldPricing().catch(err => {
               console.warn(`⚠️  TLD pricing sync failed: ${err.message}`);
-              return null;
+              return { success: false, error: err.message };
             })
           ]);
 
@@ -30,6 +30,14 @@ async function startServer() {
           } else {
             console.warn(`⚠️  Initial product sync failed: ${productsResult?.error || productsResult?.message || 'unknown error'}`);
           }
+
+          if (tldResult?.success) {
+            const total = (tldResult.upserted || 0) + (tldResult.modified || 0);
+            console.log(`✅ TLD pricing sync completed: ${total} TLDs loaded in PKR`);
+          } else {
+            console.warn(`⚠️  TLD pricing sync failed: ${tldResult?.error || 'unknown error'}`);
+          }
+          
           console.log('');
         } catch (e) {
           console.warn(`⚠️  Initial sync encountered errors: ${e.message}`);

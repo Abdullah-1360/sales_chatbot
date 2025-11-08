@@ -11,4 +11,7 @@ module.exports = {
   AUTO_SYNC_ON_STARTUP: process.env.AUTO_SYNC_ON_STARTUP !== 'false', // Default to true
   SYNC_INTERVAL_HOURS: Number(process.env.SYNC_INTERVAL_HOURS) || 24,
   USE_MOCK_DOMAIN_CHECK: process.env.USE_MOCK_DOMAIN_CHECK !== 'false', // Default to true
+  // Exchange rate configuration
+  FIXED_EXCHANGE_RATE: process.env.FIXED_EXCHANGE_RATE ? Number(process.env.FIXED_EXCHANGE_RATE) : null, // Override exchange rate if set
+  AUTO_REFRESH_STALE_PRICING: process.env.AUTO_REFRESH_STALE_PRICING === 'true', // Auto-refresh stale pricing
 };

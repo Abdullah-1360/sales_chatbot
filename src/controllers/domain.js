@@ -9,11 +9,17 @@ const { getDomainAvailability } = require('../services/domainService');
 /* ---------- validation schema ---------- */
 const domainSchema = Joi.object({
   domain: Joi.string()
-    .pattern(/^[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9]*\.[a-zA-Z]{2,}$/)
+    .pattern(/^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)+$/)
     .required()
     .messages({
-      'string.pattern.base': 'Please provide a valid domain name (e.g., example.com)',
+      'string.pattern.base': 'Please provide a valid domain name (e.g., example.com or example.com.pk)',
       'any.required': 'Domain name is required'
+    }),
+  phone_number: Joi.string()
+    .optional()
+    .allow('', null)
+    .messages({
+      'string.base': 'Phone number must be a string'
     })
 });
 
@@ -23,13 +29,13 @@ exports.checkAvailability = async (req, res, next) => {
   
   try {
     // Validate input
-    const { domain } = await domainSchema.validateAsync(req.body);
+    const { domain, phone_number } = await domainSchema.validateAsync(req.body);
     
     // Normalize domain (lowercase, trim)
     const normalizedDomain = domain.toLowerCase().trim();
     
-    // Check availability
-    const result = await getDomainAvailability(normalizedDomain);
+    // Check availability with phone number for currency detection
+    const result = await getDomainAvailability(normalizedDomain, phone_number);
     
     if (!result.success) {
       return res.status(500).json({
@@ -91,7 +97,7 @@ exports.checkMultiple = async (req, res, next) => {
   try {
     const bulkSchema = Joi.object({
       domains: Joi.array()
-        .items(Joi.string().pattern(/^[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9]*\.[a-zA-Z]{2,}$/))
+        .items(Joi.string().pattern(/^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)+$/))
         .min(1)
         .max(10)
         .required()
