@@ -6,19 +6,76 @@ const { findNearestNeighbors } = require('../services/nearestNeighbor');
 const { calculateConfidence } = require('../services/confidenceScorer');
 const { selectThreePlans } = require('../services/planSelector');
 
+/**
+ * Normalize None/null/NULL values to proper defaults
+ * @param {Object} data - Input data that may contain 'None', null, or 'NULL' values
+ * @returns {Object} - Normalized data
+ */
+function normalizeNoneValues(data) {
+  const normalized = {};
+  
+  for (const [key, value] of Object.entries(data)) {
+    // Check if value is 'None', 'NULL', null, or undefined
+    if (value === 'None' || value === 'NULL' || value === null || value === undefined) {
+      // Set appropriate defaults based on field type
+      switch (key) {
+        case 'purpose':
+          normalized[key] = 'Blog';
+          break;
+        case 'websites_count':
+          normalized[key] = '1';
+          break;
+        case 'tech_stack':
+          normalized[key] = 'Linux';
+          break;
+        case 'cms':
+          normalized[key] = 'None';
+          break;
+        case 'email_needed':
+        case 'free_domain':
+        case 'migrate_from_existing_host':
+        case 'email_deliverability_priority':
+          normalized[key] = false;
+          break;
+        case 'storage_needed_gb':
+          normalized[key] = 10;
+          break;
+        case 'monthly_budget':
+          normalized[key] = 0;
+          break;
+        default:
+          normalized[key] = value;
+      }
+    } else {
+      normalized[key] = value;
+    }
+  }
+  
+  return normalized;
+}
+
 /* ---------- validation schema ---------- */
 const bodySchema = Joi.object({
   // Make fields optional and provide sensible defaults so an empty body is accepted
-  purpose: Joi.string().valid('Blog', 'Business Site', 'Ecommerce', 'Portfolio', 'Other').default('Blog'),
-  websites_count: Joi.string().default('1'), // accept any string, default to single site
-  tech_stack: Joi.string().valid('Linux', 'Windows').default('Linux'),
+  purpose: Joi.string().valid('Blog', 'Business Site', 'Ecommerce', 'Portfolio', 'Other', 'None').default('Blog'),
+  websites_count: Joi.alternatives().try(
+    Joi.string(),
+    Joi.number()
+  ).default('1'), // accept string or number, default to single site
+  tech_stack: Joi.string().valid('Linux', 'Windows', 'None').default('Linux'),
   cms: Joi.string().valid('WordPress', 'WooCommerce', 'None').default('None'),
   email_needed: Joi.boolean().allow(null).default(false),
-  storage_needed_gb: Joi.number().integer().min(1).default(10),
-  monthly_budget: Joi.number().integer().min(0).default(0),
-  free_domain: Joi.boolean().default(false),
-  migrate_from_existing_host: Joi.boolean().default(false),
-  email_deliverability_priority: Joi.boolean().default(false)
+  storage_needed_gb: Joi.alternatives().try(
+    Joi.number().integer().min(0),
+    Joi.string()
+  ).default(10),
+  monthly_budget: Joi.alternatives().try(
+    Joi.number().min(0),
+    Joi.string()
+  ).default(0),
+  free_domain: Joi.boolean().allow(null).default(false),
+  migrate_from_existing_host: Joi.boolean().allow(null).default(false),
+  email_deliverability_priority: Joi.boolean().allow(null).default(false)
 });
 
 /* ---------- main controller ---------- */
@@ -26,7 +83,11 @@ exports.recommend = async (req, res, next) => {
   const clientTimeout = parseInt(req.headers['Timeout']) || 30000;
   console.log('🔍 Recommendation request received with body:', req.body);
   try {
-    const answers = await bodySchema.validateAsync(req.body);
+    // Normalize None/null/NULL values before validation
+    const normalizedBody = normalizeNoneValues(req.body);
+    console.log('📝 Normalized body:', normalizedBody);
+    
+    const answers = await bodySchema.validateAsync(normalizedBody);
     const { gid, minTier } = planMatcher(answers);
 
     /* 1.  fetch products for determined group */
