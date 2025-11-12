@@ -6,6 +6,10 @@
 const axios = require('axios');
 const Product = require('../models/Product');
 const cfg = require('../config');
+const { getAllGids, getGidName } = require('./gidHelper');
+const { createLogger } = require('../utils/logger');
+
+const logger = createLogger('WHMCS-SYNC');
 
 /**
  * Fetch products from WHMCS API for a specific GID
@@ -15,25 +19,44 @@ async function fetchWHMCSProducts(gid) {
     const params = {
       action: 'GetProducts',
       gid: gid,
+      currencyid:2,
       responsetype: 'json',
       identifier: cfg.WHMCS_API_IDENTIFIER,
       secret: cfg.WHMCS_API_SECRET
     };
 
-    console.log(`📡 Fetching products from WHMCS for GID ${gid}...`);
+    logger.info(`Fetching products from WHMCS for GID ${gid} (${getGidName(gid)})`);
+    logger.logWHMCSRequest('GetProducts', params);
     
+    const startTime = Date.now();
     const response = await axios.get(cfg.WHMCS_URL, { params });
+    const duration = Date.now() - startTime;
+    
+    logger.debug(`WHMCS API response received in ${duration}ms`);
     
     if (response.data.result !== 'success') {
+      logger.error(`WHMCS API error for GID ${gid}`, {
+        result: response.data.result,
+        message: response.data.message
+      });
       throw new Error(`WHMCS API error: ${response.data.message || 'Unknown error'}`);
     }
 
     const products = response.data.products?.product || [];
-    console.log(`✅ Fetched ${products.length} products for GID ${gid}`);
+    logger.info(`Successfully fetched ${products.length} products for GID ${gid}`);
+    logger.logWHMCSResponse('GetProducts', true, { 
+      gid, 
+      productCount: products.length,
+      duration: `${duration}ms`
+    });
     
     return products;
   } catch (error) {
-    console.error(`❌ Error fetching GID ${gid}:`, error.message);
+    logger.error(`Failed to fetch products for GID ${gid}`, {
+      error: error.message,
+      stack: error.stack
+    });
+    logger.logWHMCSResponse('GetProducts', false, { gid, error: error.message });
     return [];
   }
 }
@@ -75,10 +98,11 @@ function transformProduct(whmcsProduct) {
     paytype: whmcsProduct.paytype || 'recurring',
     diskspace: diskspace,
     freedomain: hasFreeDomain,
+    hidden: whmcsProduct.hidden === '1' || whmcsProduct.hidden === true, // Track hidden status
     pricing: whmcsProduct.pricing || {}, // Store complete pricing object (PKR + USD)
     customfields: whmcsProduct.customfields || {},
     configoptions: whmcsProduct.configoptions || {},
-    link: whmcsProduct.orderurl || `https://portal.hostbreak.com/order/${whmcsProduct.gid}/${whmcsProduct.pid}`
+    link: whmcsProduct.orderurl || whmcsProduct.link || `https://portal.hostbreak.com/order/${whmcsProduct.gid}/${whmcsProduct.pid}`
   };
 }
 
@@ -89,16 +113,28 @@ async function syncAllProducts() {
   try {
     console.log('\n🔄 Starting WHMCS → MongoDB sync...\n');
     
-    const gids = [1, 20, 21, 25, 28]; // All product groups
+    // Get all configured GIDs from helper
+    const gids = getAllGids();
     let allProducts = [];
     let totalFetched = 0;
 
     // Fetch products for each GID
+    let hiddenCount = 0;
     for (const gid of gids) {
       const products = await fetchWHMCSProducts(gid);
       
-      // Transform and add to collection
-      const transformed = products.map(transformProduct);
+      // Transform and filter out hidden products
+      const transformed = products
+        .map(transformProduct)
+        .filter(p => {
+          if (p.hidden) {
+            hiddenCount++;
+            logger.debug(`Filtering out hidden product: ${p.name} (PID: ${p.pid})`);
+            return false;
+          }
+          return true;
+        });
+      
       allProducts = allProducts.concat(transformed);
       totalFetched += products.length;
       
@@ -107,12 +143,12 @@ async function syncAllProducts() {
     }
 
     if (allProducts.length === 0) {
-      console.log('⚠️  No products fetched from WHMCS');
+      logger.warn('No products fetched from WHMCS (all may be hidden)');
       return { success: false, message: 'No products fetched' };
     }
 
-    console.log(`\n📦 Total products fetched: ${totalFetched}`);
-    console.log('💾 Syncing to MongoDB...\n');
+    logger.info(`Total products fetched: ${totalFetched}, Hidden: ${hiddenCount}, Visible: ${allProducts.length}`);
+    logger.info('Syncing visible products to MongoDB');
 
     // Clear existing products
     const deleteResult = await Product.deleteMany({});
@@ -126,7 +162,8 @@ async function syncAllProducts() {
     console.log('\n📊 Products by GID:');
     for (const gid of gids) {
       const count = allProducts.filter(p => p.gid === String(gid)).length;
-      console.log(`   GID ${gid}: ${count} products`);
+      const name = getGidName(gid);
+      console.log(`   GID ${gid} (${name}): ${count} products`);
     }
 
     console.log('\n✅ Sync completed successfully!\n');

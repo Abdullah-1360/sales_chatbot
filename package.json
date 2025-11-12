@@ -2,9 +2,9 @@
   "name": "sales_chatbot",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "app.js",
   "scripts": {
-    "start": "node server.js",
+    "start": "node app.js",
     "dev": "nodemon server.js",
     "test": "jest",
     "seed": "node src/scripts/seedProducts.js",

@@ -2,7 +2,12 @@
  * Seed script to migrate fixture data to MongoDB
  */
 
-require('dotenv').config();
+// Load .env file only if it exists (optional for production)
+try {
+  require('dotenv').config();
+} catch (err) {
+  // Using environment variables directly
+}
 const { connectDB } = require('../config/database');
 const Product = require('../models/Product');
 const fixtureData = require('../_fixtures/whmcs-products.json');

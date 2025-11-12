@@ -1,126 +1,92 @@
 # Quick Start Guide
 
-## Setup
+## Your Example Request
 
-### 1. Install Dependencies
-```bash
-npm install
-```
-
-### 2. Configure Environment
-Copy `.env.example` to `.env` and update:
-```env
-MONGODB_URI=your_mongodb_connection_string
-WHMCS_API_IDENTIFIER=your_identifier
-WHMCS_API_SECRET=your_secret
-```
-
-### 3. Sync Data from WHMCS
-```bash
-npm run sync
-```
-
-### 4. Start Server
-```bash
-npm start
-```
-
-## Commands
-
-```bash
-# Development
-npm run dev              # Start with nodemon
-
-# Sync
-npm run sync             # Sync all products from WHMCS
-npm run sync:gid 20      # Sync specific GID
-
-# Testing
-npm test                 # Run all tests
-node test-all-requirements.js  # Test all requirements
-
-# Verification
-node src/scripts/verifyMongoDB.js  # Verify MongoDB data
-```
-
-## API Usage
-
-### Request
-```bash
-POST http://localhost:4000/api/recommendations
-Content-Type: application/json
-
-{
-  "purpose": "Blog",
-  "websites_count": "2-3",
-  "tech_stack": "Linux",
-  "cms": "WordPress",
-  "email_needed": true,
-  "storage_needed_gb": 12,
-  "monthly_budget": 10,
-  "free_domain": true,
-  "migrate_from_existing_host": false,
-  "email_deliverability_priority": false
-}
-```
-
-### Response
 ```json
 {
-  "matches": [
-    {
-      "pid": "52",
-      "gid": "20",
-      "name": "WP Studio",
-      "confidence": 95.5,
-      "pricing": {
-        "USD": {
-          "monthly": 3.5
-        }
-      }
-    }
-  ]
+  "purpose": "Business Site",
+  "websites_count": "2-3",
+  "storage_needed_gb": 25,
+  "free_domain": false
 }
 ```
 
-## Troubleshooting
+## How It Works
 
-### Sync Not Working
-```bash
-# Check WHMCS connection
-curl "https://portal.hostbreak.com/includes/api.php?action=GetProducts&gid=20&responsetype=json&identifier=YOUR_ID&secret=YOUR_SECRET"
+1. **Routes to:** GID 1 (cPanel Hosting)
+2. **Filters by:** >= 25GB storage, Mid tier
+3. **Scores by:** Diskspace (40%) + Tier (40%) + Free Domain (20%)
+4. **Returns:** Top 3 plans
 
-# Re-sync manually
-npm run sync
+## Expected Response
+
+```json
+{
+  "version": "v1",
+  "content": {
+    "messages": [
+      {
+        "type": "text",
+        "text": "Business Pro\n💰 Rs. 850/month | 💾 30GB SSD | 🌐 No Domain\n\n✓ 30GB SSD Storage\n✓ Unlimited Bandwidth\n✓ Free SSL Certificate\n✓ 24/7 Support\n✓ Daily Backups",
+        "buttons": [
+          {
+            "type": "url",
+            "caption": "Select This Plan",
+            "url": "https://portal.hostbreak.com/order/1/123"
+          }
+        ]
+      }
+      // 2 more plans...
+    ]
+  }
+}
 ```
 
-### No Products Returned
-```bash
-# Verify MongoDB data
-node src/scripts/verifyMongoDB.js
+## Test It
 
-# Check if sync completed
-npm run sync
+```bash
+# Start server
+npm start
+
+# Test your example
+curl -X POST http://localhost:3000/api/recommendations \
+  -H "Content-Type: application/json" \
+  -d '{
+    "purpose": "Business Site",
+    "websites_count": "2-3",
+    "storage_needed_gb": 25,
+    "free_domain": false
+  }'
 ```
 
-### Server Won't Start
-```bash
-# Check MongoDB connection
-# Verify .env file exists
-# Check logs for errors
+## Core Criteria
+
+1. **Diskspace** - Plans must have >= 25GB
+2. **Websites Count** - "2-3" = Mid tier
+3. **Free Domain** - false = no preference
+4. **Purpose** - "Business Site" = informational
+
+## All Request Options
+
+```json
+{
+  "purpose": "Blog | Business Site | Ecommerce | Portfolio | Other",
+  "websites_count": "1 | 2-3 | 4-10 | 10+ | unlimited",
+  "storage_needed_gb": 10,
+  "free_domain": false,
+  "needs_reseller": false,
+  "needs_ssl": false,
+  "tech_stack": "Linux | Windows"
+}
 ```
 
 ## Documentation
 
-- `WHMCS_SYNC_DOCUMENTATION.md` - Complete sync documentation
-- `FINAL_REQUIREMENTS_DOCUMENTATION.md` - Requirements & logic
-- `RECOMMENDATION_SYSTEM_EXPLAINED.md` - How recommendations work
-- `WHMCS_INTEGRATION_COMPLETE.md` - Integration summary
+- 📖 `COMPLETE_SYSTEM_SUMMARY.md` - Full overview
+- 📋 `SIMPLIFIED_MATCHING_LOGIC.md` - Matching details
+- 🚀 `FRONTEND_API_GUIDE.md` - Complete API guide
+- 📊 `FINAL_GID_MAPPING.md` - All 8 GIDs
 
-## Status
+---
 
-✅ WHMCS API integrated
-✅ MongoDB synced (30 products)
-✅ Auto-sync enabled
-✅ All tests passing
-✅ Production ready
+**Ready to use!** 🎉

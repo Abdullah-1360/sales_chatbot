@@ -2,7 +2,12 @@
  * Manual sync script - Fetch from WHMCS and sync to MongoDB
  */
 
-require('dotenv').config();
+// Load .env file only if it exists (optional for production)
+try {
+  require('dotenv').config();
+} catch (err) {
+  // Using environment variables directly
+}
 const { connectDB } = require('../config/database');
 const { syncAllProducts, syncGID } = require('../services/whmcsSync');
 

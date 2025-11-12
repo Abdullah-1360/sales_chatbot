@@ -2,7 +2,12 @@
  * Verify MongoDB data
  */
 
-require('dotenv').config();
+// Load .env file only if it exists (optional for production)
+try {
+  require('dotenv').config();
+} catch (err) {
+  // Using environment variables directly
+}
 const { connectDB } = require('../config/database');
 const Product = require('../models/Product');
 

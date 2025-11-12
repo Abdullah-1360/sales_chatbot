@@ -1,6 +1,9 @@
 const axios = require('axios');
 const cfg = require('../config');
 const TldPricing = require('../models/TldPricing');
+const { createLogger } = require('../utils/logger');
+
+const logger = createLogger('TLD-PRICING');
 
 // Retry configuration for WHMCS API calls
 const RETRY_CONFIG = {

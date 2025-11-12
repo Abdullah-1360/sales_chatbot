@@ -1,0 +1,4 @@
+shop,store,commerce,->Ecommerce
+Personal,catalogue,normal web,->wordpress 
+corporate, application , SaaS->Business 
+certificate ,secure-> SSL

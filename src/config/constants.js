@@ -6,13 +6,10 @@ exports.PURPOSE = {
   OTHER: 'Other',
 };
 
-exports.CMS = {
-  WP: 'WordPress',
-  WOO: 'WooCommerce',
-  NONE: 'None',
+// Storage tiers for intelligent routing
+exports.STORAGE_TIER = {
+  SMALL: 'small',    // < 20GB
+  MEDIUM: 'medium',  // 20-50GB
+  LARGE: 'large',    // > 50GB
 };
 
-exports.TECH_STACK = {
-  LIN: 'Linux',
-  WIN: 'Windows',
-};

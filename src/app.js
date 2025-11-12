@@ -2,12 +2,20 @@ const express = require('express');
 const helmet = require('helmet');
 const compression = require('compression');
 const router = require('./routes');
+const { requestLogger, errorLogger } = require('./middleware/requestLogger');
 
 const app = express();
 app.use(helmet());
 app.use(compression());
 app.use(express.json());
+
+// Request/Response logging middleware
+app.use(requestLogger);
+
 app.use('/api', router);
+
+// Error logging middleware
+app.use(errorLogger);
 
 // centralised error handler
 app.use((err, _req, res, _next) => {

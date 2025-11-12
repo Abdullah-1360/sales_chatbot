@@ -65,8 +65,14 @@ exports.getProductsByGid = async (gid) => {
 
   if (useMongoDB) {
     try {
-      // Fetch from MongoDB
-      const products = await Product.find({ gid: String(gid) }).lean();
+      // Fetch from MongoDB, excluding hidden products
+      const products = await Product.find({ 
+        gid: String(gid),
+        $or: [
+          { hidden: { $exists: false } }, // Products without hidden field
+          { hidden: false }                // Products explicitly not hidden
+        ]
+      }).lean();
       
       // Transform to match WHMCS API format for backward compatibility
       return products.map(p => ({
@@ -77,7 +83,8 @@ exports.getProductsByGid = async (gid) => {
         diskspace: p.diskspace,
         freedomain: p.freedomain,
         pricing: p.pricing,
-        link: p.link
+        link: p.link,
+        hidden: p.hidden || false
       }));
     } catch (err) {
       console.error('MongoDB query failed, falling back to WHMCS API:', err.message);

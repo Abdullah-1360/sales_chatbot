@@ -1,4 +1,10 @@
-require('dotenv').config();
+// Load .env file only if it exists (optional for production)
+try {
+  require('dotenv').config();
+} catch (err) {
+  // Using environment variables directly
+}
+
 const app = require('./src/app');
 const { connectDB } = require('./src/config/database');
 const { syncAllProducts, scheduleSync } = require('./src/services/whmcsSync');
@@ -17,13 +23,16 @@ async function startServer() {
       if (cfg.AUTO_SYNC_ON_STARTUP) {
         console.log('\n🔄 Auto-sync enabled, fetching products and TLD pricing from WHMCS...\n');
         try {
-          const [productsResult, tldResult] = await Promise.all([
-            syncAllProducts(),
-            upsertAllTldPricing().catch(err => {
-              console.warn(`⚠️  TLD pricing sync failed: ${err.message}`);
-              return { success: false, error: err.message };
-            })
-          ]);
+          // Run sequentially to avoid memory issues with concurrent HTTP requests
+          const productsResult = await syncAllProducts();
+          
+          // Small delay between syncs
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          
+          const tldResult = await upsertAllTldPricing().catch(err => {
+            console.warn(`⚠️  TLD pricing sync failed: ${err.message}`);
+            return { success: false, error: err.message };
+          });
 
           if (productsResult?.success) {
             console.log(`✅ Initial product sync completed: ${productsResult.totalInserted} products loaded`);

@@ -1,73 +1,186 @@
 /**
  * Nearest Neighbor Finder Module
- * Finds best matching plans within the same GID based on confidence scores
+ * Finds best matching plans within the same GID using enhanced distance metrics
  */
 
 const { calculateConfidence } = require('./confidenceScorer');
 
 /**
+ * Calculate Euclidean distance in normalized feature space
+ * @param {Object} plan - WHMCS product object
+ * @param {Object} requirements - User requirements
+ * @param {number} maxStorage - Maximum storage in plan set
+ * @param {number} maxPrice - Maximum price in plan set
+ * @returns {number} Distance score (lower is better)
+ */
+function calculateDistance(plan, requirements, maxStorage, maxPrice) {
+  // Normalize features to 0-1 range for fair comparison
+  const planStorage = parseFloat(plan.diskspace) || 0;
+  const planPrice = parseFloat(plan.pricing.USD.monthly) || 0;
+  
+  // Storage distance (normalized)
+  const storageNorm = maxStorage > 0 ? planStorage / maxStorage : 0;
+  const reqStorageNorm = maxStorage > 0 ? requirements.storage_needed_gb / maxStorage : 0;
+  const storageDist = Math.abs(storageNorm - reqStorageNorm);
+  
+  // Price distance (normalized)
+  const priceNorm = maxPrice > 0 ? planPrice / maxPrice : 0;
+  const reqPriceNorm = maxPrice > 0 ? requirements.monthly_budget / maxPrice : 0;
+  const priceDist = Math.abs(priceNorm - reqPriceNorm);
+  
+  // Feature distance (binary features)
+  const domainDist = requirements.free_domain && !plan.freedomain ? 1 : 0;
+  
+  // Weighted Euclidean distance
+  // Storage: 40%, Price: 40%, Domain: 20%
+  const distance = Math.sqrt(
+    Math.pow(storageDist * 0.4, 2) +
+    Math.pow(priceDist * 0.4, 2) +
+    Math.pow(domainDist * 0.2, 2)
+  );
+  
+  return distance;
+}
+
+/**
+ * Calculate diversity score for plan selection
+ * Ensures recommended plans cover different price/feature ranges
+ * @param {Array} selectedPlans - Already selected plans
+ * @param {Object} candidatePlan - Plan being considered
+ * @returns {number} Diversity bonus (0-10)
+ */
+function calculateDiversityBonus(selectedPlans, candidatePlan) {
+  if (selectedPlans.length === 0) return 0;
+  
+  const candidatePrice = parseFloat(candidatePlan.pricing.USD.monthly);
+  const candidateStorage = parseFloat(candidatePlan.diskspace);
+  
+  let minPriceDiff = Infinity;
+  let minStorageDiff = Infinity;
+  
+  selectedPlans.forEach(selected => {
+    const priceDiff = Math.abs(candidatePrice - parseFloat(selected.pricing.USD.monthly));
+    const storageDiff = Math.abs(candidateStorage - parseFloat(selected.diskspace));
+    
+    minPriceDiff = Math.min(minPriceDiff, priceDiff);
+    minStorageDiff = Math.min(minStorageDiff, storageDiff);
+  });
+  
+  // Bonus for being different from already selected plans
+  const diversityScore = (minPriceDiff / 10) + (minStorageDiff / 20);
+  return Math.min(10, diversityScore);
+}
+
+/**
  * Find nearest neighbor plans within the same GID
+ * Uses hybrid approach: confidence scoring + distance metrics + diversity
  * @param {Array} plans - Array of WHMCS product objects (all from same GID)
  * @param {Object} requirements - User requirements
  * @param {number} requirements.storage_needed_gb - Required storage
  * @param {number} requirements.monthly_budget - Monthly budget
  * @param {string} requirements.minTier - Minimum tier
  * @param {boolean} requirements.free_domain - Free domain needed
- * @returns {Array} Top 3 plans sorted by confidence (desc) and price (asc)
+ * @returns {Array} Top 3 plans sorted by composite score
  */
 function findNearestNeighbors(plans, requirements) {
   if (!plans || plans.length === 0) {
     return [];
   }
-  // If required storage is astronomically larger than any plan in this GID,
-  // treat as impossible and return empty (prevents returning low-quality nearest neighbors)
+  
+  // Early exit for impossible requirements
   try {
     const maxDisk = Math.max(...plans.map(p => parseFloat(p.diskspace) || 0));
+    const minPrice = Math.min(...plans.map(p => parseFloat(p.pricing.USD.monthly) || Infinity));
+    
+    // Storage requirement is 10x+ beyond any plan in GID
     if (requirements.storage_needed_gb && maxDisk > 0 && requirements.storage_needed_gb > maxDisk * 10) {
       return [];
     }
+    
+    // Budget is less than 20% of cheapest plan (unrealistic)
+    if (requirements.monthly_budget > 0 && minPrice > 0 && requirements.monthly_budget < minPrice * 0.2) {
+      return [];
+    }
   } catch (err) {
-    // ignore and continue
+    // Continue with normal processing
   }
   
-  // Calculate confidence for all plans
-  const plansWithConfidence = plans.map(plan => {
+  // Calculate normalization factors
+  const maxStorage = Math.max(...plans.map(p => parseFloat(p.diskspace) || 0));
+  const maxPrice = Math.max(...plans.map(p => parseFloat(p.pricing.USD.monthly) || 0));
+  
+  // Calculate confidence and distance for all plans
+  const plansWithScores = plans.map(plan => {
     const confidence = calculateConfidence(plan, requirements);
+    const distance = calculateDistance(plan, requirements, maxStorage, maxPrice);
     const priceNum = parseFloat(plan.pricing.USD.monthly);
+    
+    // Composite score: 70% confidence + 30% proximity (inverse distance)
+    // Distance is 0-1, so (1-distance) gives proximity
+    const proximityScore = (1 - distance) * 30;
+    const compositeScore = confidence * 0.7 + proximityScore;
     
     return {
       ...plan,
       confidence,
+      distance,
+      compositeScore,
       priceNum
     };
   });
   
-  // Filter out plans with confidence <= 40 (too poor match)
-  // Use strict > 40 so borderline 40.00 matches are treated as non-viable
-  const viablePlans = plansWithConfidence.filter(p => p.confidence > 40);
+  // Adaptive threshold: use 40% for confidence, but allow lower if composite score is good
+  const viablePlans = plansWithScores.filter(p => 
+    p.confidence > 40 || (p.confidence > 30 && p.compositeScore > 50)
+  );
   
   if (viablePlans.length === 0) {
-    // If no plans meet 40% threshold, return empty
     return [];
   }
   
-  // Sort by confidence (descending), then by price (ascending)
+  // Sort by composite score (descending), then by price (ascending)
   viablePlans.sort((a, b) => {
-    if (b.confidence !== a.confidence) {
-      return b.confidence - a.confidence; // Higher confidence first
-    }
-    return a.priceNum - b.priceNum; // Cheaper first for same confidence
+    const scoreDiff = b.compositeScore - a.compositeScore;
+    if (Math.abs(scoreDiff) > 1) return scoreDiff;
+    return a.priceNum - b.priceNum;
   });
   
-  // Return top 3 plans maximum
-  const topPlans = viablePlans.slice(0, 3);
+  // Select top 3 with diversity consideration
+  const selected = [viablePlans[0]];
   
-  // Clean up temporary priceNum field
-  topPlans.forEach(p => delete p.priceNum);
+  for (let i = 1; i < viablePlans.length && selected.length < 3; i++) {
+    const candidate = viablePlans[i];
+    const diversityBonus = calculateDiversityBonus(selected, candidate);
+    candidate.finalScore = candidate.compositeScore + diversityBonus;
+    
+    // Add if score is competitive or provides good diversity
+    if (selected.length < 3) {
+      selected.push(candidate);
+    }
+  }
   
-  return topPlans;
+  // Re-sort by confidence for final output (user-facing metric)
+  selected.sort((a, b) => {
+    if (Math.abs(b.confidence - a.confidence) > 1) {
+      return b.confidence - a.confidence;
+    }
+    return a.priceNum - b.priceNum;
+  });
+  
+  // Clean up temporary fields
+  selected.forEach(p => {
+    delete p.priceNum;
+    delete p.distance;
+    delete p.compositeScore;
+    delete p.finalScore;
+  });
+  
+  return selected;
 }
 
 module.exports = {
-  findNearestNeighbors
+  findNearestNeighbors,
+  calculateDistance,
+  calculateDiversityBonus
 };
+

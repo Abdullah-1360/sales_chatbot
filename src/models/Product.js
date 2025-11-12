@@ -14,6 +14,7 @@ const productSchema = new mongoose.Schema({
   paytype: { type: String },
   diskspace: { type: String, required: true },
   freedomain: { type: Boolean, required: true },
+  hidden: { type: Boolean, default: false }, // Track if product is hidden in WHMCS
   pricing: { type: mongoose.Schema.Types.Mixed, required: true },
   customfields: { type: mongoose.Schema.Types.Mixed },
   configoptions: { type: mongoose.Schema.Types.Mixed },
@@ -26,5 +27,8 @@ const productSchema = new mongoose.Schema({
 
 // Index for efficient GID queries
 productSchema.index({ gid: 1 });
+
+// Index for filtering hidden products
+productSchema.index({ hidden: 1 });
 
 module.exports = mongoose.model('Product', productSchema);
