@@ -1,11 +1,19 @@
 const router = require('express').Router();
 const { recommend } = require('../controllers/recommendation');
 const { checkAvailability, checkMultiple } = require('../controllers/domain');
+const { searchPlans } = require('../controllers/planSearch');
+const { createLead } = require('../controllers/vtiger');
 const { getAllGidsWithNames, getGidName, isValidGid } = require('../services/gidHelper');
 
 router.post('/recommendations', recommend);
 router.post('/domain/check', checkAvailability);
 router.post('/domain/bulk-check', checkMultiple);
+
+// Plan search endpoint
+router.get('/plans/search', searchPlans);
+
+// VTiger lead creation endpoint
+router.post('/leads', createLead);
 
 // GID information endpoints
 router.get('/gids', (_req, res) => {

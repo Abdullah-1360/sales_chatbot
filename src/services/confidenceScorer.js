@@ -6,36 +6,50 @@
 const { getTierFromPlan, getTierRank } = require('../utils/tierHelper');
 
 /**
- * Score storage match (30% weight)
- * Uses logarithmic scaling for better differentiation across ranges
+ * Score storage match (40% weight)
+ * Prioritizes exact matches and plans that meet requirements
+ * Heavily penalizes plans far below requirements
  * @param {number} planStorage - Plan storage in GB
  * @param {number} requiredStorage - Required storage in GB
- * @returns {number} Score (0-30)
+ * @returns {number} Score (0-40)
  */
 function scoreStorage(planStorage, requiredStorage) {
   if (planStorage >= requiredStorage) {
-    // Exact or better match
-    if (planStorage === requiredStorage) return 30;
+    // EXACT MATCH - highest score
+    if (planStorage === requiredStorage) return 40;
     
-    // Use logarithmic scaling for excess storage penalty
-    // This provides smoother degradation for over-provisioned plans
-    const excess = planStorage - requiredStorage;
-    const excessRatio = excess / requiredStorage;
+    // Meets requirement with reasonable overhead (1-2x) - very good
+    const excessRatio = planStorage / requiredStorage;
     
-    // Logarithmic penalty: log2(1 + excessRatio) normalized
-    // Plans with 2x storage get ~23 points, 4x get ~18, 8x get ~15
-    if (excessRatio > 10) return 12; // Extreme over-provisioning
-    const penalty = Math.log2(1 + excessRatio) * 6;
-    return Math.max(12, 30 - penalty);
+    if (excessRatio <= 1.5) return 38; // Up to 50% more - excellent
+    if (excessRatio <= 2.0) return 35; // Up to 2x - very good
+    if (excessRatio <= 3.0) return 30; // Up to 3x - good
+    if (excessRatio <= 5.0) return 25; // Up to 5x - acceptable
+    
+    // Extreme over-provisioning (>5x) - diminishing returns
+    return Math.max(15, 40 - Math.log2(excessRatio) * 8);
   }
   
-  // Plan has less than required - exponential penalty for severe shortfalls
+  // Plan has less than required - HEAVY PENALTY
   const ratio = planStorage / requiredStorage;
   
-  // Exponential curve: plans with 90% get ~27 points, 50% get ~15, 25% get ~7.5
-  if (ratio >= 0.9) return 27 + (ratio - 0.9) * 30; // Near-match bonus
-  if (ratio >= 0.5) return 15 + (ratio - 0.5) * 30; // Moderate shortfall
-  return ratio * 30; // Severe shortfall
+  // Near-match (90-99%) - minor penalty
+  if (ratio >= 0.9) return 35 + (ratio - 0.9) * 50;
+  
+  // Close match (80-90%) - moderate penalty
+  if (ratio >= 0.8) return 28 + (ratio - 0.8) * 70;
+  
+  // Moderate shortfall (60-80%) - significant penalty
+  if (ratio >= 0.6) return 18 + (ratio - 0.6) * 50;
+  
+  // Severe shortfall (40-60%) - heavy penalty
+  if (ratio >= 0.4) return 10 + (ratio - 0.4) * 40;
+  
+  // Critical shortfall (20-40%) - very heavy penalty
+  if (ratio >= 0.2) return 5 + (ratio - 0.2) * 25;
+  
+  // Extreme shortfall (<20%) - near zero score
+  return ratio * 25;
 }
 
 /**
@@ -83,11 +97,11 @@ function scoreBudget(planPrice, budget) {
 }
 
 /**
- * Score tier appropriateness (25% weight)
- * Considers both tier matching and growth potential
+ * Score tier appropriateness (40% weight)
+ * Prioritizes exact tier matches and plans that meet website count requirements
  * @param {Object} plan - WHMCS product object
  * @param {string} minTier - Minimum required tier (entry/mid/upper)
- * @returns {number} Score (0-25)
+ * @returns {number} Score (0-40)
  */
 function scoreTier(plan, minTier) {
   const planTier = getTierFromPlan(plan);
@@ -95,42 +109,45 @@ function scoreTier(plan, minTier) {
   const minRank = getTierRank(minTier);
   
   if (planRank >= minRank) {
-    // Meets or exceeds tier requirement
-    if (planRank === minRank) return 25; // Perfect match
+    // EXACT MATCH - highest score
+    if (planRank === minRank) return 40;
     
-    // One tier higher: slight bonus for growth room
-    if (planRank === minRank + 1) return 24;
+    // One tier higher: excellent for growth potential
+    if (planRank === minRank + 1) return 38;
     
-    // Two+ tiers higher: over-provisioned, diminishing returns
+    // Two tiers higher: good but over-provisioned
+    if (planRank === minRank + 2) return 32;
+    
+    // Three+ tiers higher: significant over-provisioning
     const tierDiff = planRank - minRank;
-    return Math.max(15, 25 - (tierDiff * 6));
+    return Math.max(20, 40 - (tierDiff * 8));
   }
   
-  // Below required tier - steep penalty
+  // Below required tier - HEAVY penalty (doesn't meet requirements)
   const tierDiff = minRank - planRank;
   
-  // One tier below: significant penalty but not disqualifying
-  if (tierDiff === 1) return 12;
+  // One tier below: major penalty
+  if (tierDiff === 1) return 15;
   
-  // Two+ tiers below: severe penalty
-  return Math.max(0, 12 - (tierDiff - 1) * 8);
+  // Two+ tiers below: severe penalty (likely unusable)
+  return Math.max(0, 15 - (tierDiff - 1) * 10);
 }
 
 /**
- * Score free domain availability (15% weight)
+ * Score free domain availability (20% weight)
  * @param {Object} plan - WHMCS product object
  * @param {boolean} freeDomainNeeded - Whether user needs free domain
- * @returns {number} Score (0-15)
+ * @returns {number} Score (0-20)
  */
 function scoreFreeDomain(plan, freeDomainNeeded) {
-  if (!freeDomainNeeded) return 15; // Not needed, full score
+  if (!freeDomainNeeded) return 20; // Not needed, full score
   
-  return plan.freedomain ? 15 : 0; // Has it or doesn't
+  return plan.freedomain ? 20 : 0; // Has it or doesn't
 }
 
 /**
  * Calculate overall confidence score
- * Simplified scoring based on: diskspace, websites_count (tier), free_domain, purpose
+ * Prioritizes exact matches: storage (40%), tier/websites (40%), free_domain (20%)
  * @param {Object} plan - WHMCS product object
  * @param {Object} requirements - User requirements
  * @param {number} requirements.storage_needed_gb - Required storage (40% weight)
@@ -143,10 +160,10 @@ function calculateConfidence(plan, requirements) {
   try {
     const planStorage = parseFloat(plan.diskspace);
     
-    // Simplified scoring: diskspace (40%), tier (40%), free_domain (20%)
-    const storageScore = scoreStorage(planStorage, requirements.storage_needed_gb) * 1.33; // Scale to 40%
-    const tierScore = scoreTier(plan, requirements.minTier) * 1.6; // Scale to 40%
-    const domainScore = scoreFreeDomain(plan, requirements.free_domain) * 1.33; // Scale to 20%
+    // Direct scoring: storage (40%), tier (40%), free_domain (20%)
+    const storageScore = scoreStorage(planStorage, requirements.storage_needed_gb);
+    const tierScore = scoreTier(plan, requirements.minTier);
+    const domainScore = scoreFreeDomain(plan, requirements.free_domain);
     
     const totalScore = storageScore + tierScore + domainScore;
     

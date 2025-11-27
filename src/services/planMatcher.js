@@ -2,8 +2,19 @@
 const { PURPOSE, STORAGE_TIER } = require('../config/constants');
 
 /**
+ * Keyword mappings for intelligent routing
+ */
+const KEYWORD_MAPPINGS = {
+  ecommerce: ['shop', 'store', 'commerce', 'ecommerce', 'e-commerce', 'woocommerce', 'shopping', 'cart', 'payment', 'checkout', 'product'],
+  wordpress: ['personal', 'catalogue', 'catalog', 'normal', 'blog', 'content', 'article', 'post', 'news', 'magazine'],
+  business: ['business', 'corporate', 'application', 'app', 'saas', 'software', 'enterprise', 'professional', 'company'],
+  ssl: ['certificate', 'cert', 'secure', 'ssl', 'https', 'security', 'encryption', 'tls']
+};
+
+/**
  * Enhanced plan matcher with robust routing logic
  * Routes based on: purpose, websites_count, storage_needed_gb, needs_ssl, needs_reseller
+ * Includes intelligent keyword detection for natural language input
  * 
  * @param {Object} answers - User requirements
  * @returns {Object} { gid, minTier, reasoning } - Matched group ID, minimum tier, and reasoning
@@ -17,11 +28,14 @@ module.exports = function planMatcher(answers) {
   const storageTier = getStorageTier(storage_needed_gb);
   const isHighVolume = cleanCount === '10+';
   const isMultiSite = cleanCount !== '1';
+  
+  // Detect keywords in purpose field for intelligent routing
+  const detectedIntent = detectKeywords(purpose);
 
   // 2. Priority-based routing (order matters!)
   
-  // PRIORITY 1: SSL Certificates (if specifically requested)
-  if (needs_ssl === true) {
+  // PRIORITY 1: SSL Certificates (if specifically requested or detected)
+  if (needs_ssl === true || detectedIntent === 'ssl') {
     return { 
       gid: 6, 
       minTier, 
@@ -38,54 +52,37 @@ module.exports = function planMatcher(answers) {
     };
   }
   
-  // PRIORITY 3: Purpose-based routing with enhanced logic
+  // PRIORITY 3: Keyword-based intelligent routing
+  // Detects intent from natural language input
   
-  // E-commerce sites → WooCommerce Hosting (GID 21)
-  // Best for online stores with shopping cart, payments, inventory
-  if (purpose === PURPOSE.ECOM) {
+  // E-commerce keywords → WooCommerce Hosting (GID 21)
+  // Keywords: shop, store, commerce, ecommerce, shopping, cart, payment
+  if (detectedIntent === 'ecommerce' || purpose === PURPOSE.ECOM) {
     return { 
       gid: 21, 
       minTier, 
-      reasoning: 'E-commerce site requires WooCommerce optimized hosting' 
+      reasoning: 'E-commerce/store detected - WooCommerce optimized hosting' 
     };
   }
   
-  // Blog sites → WordPress Hosting (GID 20)
-  // Optimized for content management, blogging, and WordPress performance
-  if (purpose === PURPOSE.BLOG) {
+  // Business/Corporate keywords → Business Hosting (GID 25)
+  // Keywords: business, corporate, application, app, SaaS, software, enterprise
+  // Always route to Business Hosting when business intent is detected
+  if (detectedIntent === 'business' || purpose === PURPOSE.BUSINESS) {
     return { 
-      gid: 20, 
+      gid: 25, 
       minTier, 
-      reasoning: 'Blog site optimized for WordPress hosting' 
+      reasoning: 'Business/corporate hosting requested' 
     };
   }
   
-  // Portfolio sites → WordPress Hosting (GID 20)
-  // Great for showcasing work with visual themes and galleries
-  if (purpose === PURPOSE.PORTFOLIO) {
+  // WordPress keywords → WordPress Hosting (GID 20)
+  // Keywords: personal, catalogue, normal, blog, content
+  if (detectedIntent === 'wordpress' || purpose === PURPOSE.BLOG || purpose === PURPOSE.PORTFOLIO) {
     return { 
       gid: 20, 
       minTier, 
-      reasoning: 'Portfolio site works best with WordPress hosting' 
-    };
-  }
-  
-  // Business sites with high requirements → Business Hosting (GID 25)
-  // For professional sites with higher traffic, storage, or multiple sites
-  if (purpose === PURPOSE.BUSINESS) {
-    // Route to Business Hosting if high volume or large storage needs
-    if (isHighVolume || storageTier === STORAGE_TIER.LARGE) {
-      return { 
-        gid: 25, 
-        minTier, 
-        reasoning: 'Business site with high volume/storage needs' 
-      };
-    }
-    // Otherwise, WordPress Hosting is sufficient for most business sites
-    return { 
-      gid: 20, 
-      minTier, 
-      reasoning: 'Business site with standard requirements' 
+      reasoning: 'Personal/blog/catalogue site - WordPress hosting' 
     };
   }
   
@@ -100,12 +97,22 @@ module.exports = function planMatcher(answers) {
     };
   }
   
-  // Large storage needs → Business Hosting (GID 25)
+  // Large storage needs (>50GB) → Business Hosting (GID 25)
   if (storageTier === STORAGE_TIER.LARGE) {
     return { 
       gid: 25, 
       minTier, 
       reasoning: 'Large storage requirements (>50GB)' 
+    };
+  }
+  
+  // High-parameter requests: upper tier + medium/large storage → Business Hosting (GID 25)
+  // This catches requests like 4-10 websites with 40-50GB storage
+  if (minTier === 'upper' && storageTier === STORAGE_TIER.MEDIUM && storage_needed_gb >= 40) {
+    return { 
+      gid: 25, 
+      minTier, 
+      reasoning: 'High-parameter requirements (4+ sites with 40+ GB storage)' 
     };
   }
   
@@ -179,5 +186,43 @@ function getStorageTier(storageGb) {
   if (storage < 20) return STORAGE_TIER.SMALL;
   if (storage <= 50) return STORAGE_TIER.MEDIUM;
   return STORAGE_TIER.LARGE;
+}
+
+/**
+ * Detect intent from keywords in purpose or other text fields
+ * Analyzes text for keywords and returns the detected intent
+ * 
+ * @param {string} text - Text to analyze (purpose, description, etc.)
+ * @returns {string|null} - Detected intent ('ecommerce', 'wordpress', 'business', 'ssl') or null
+ */
+function detectKeywords(text) {
+  if (!text || typeof text !== 'string') return null;
+  
+  const normalized = text.toLowerCase().trim();
+  
+  // Check each keyword category
+  // Priority order: ssl > ecommerce > business > wordpress
+  
+  // SSL keywords (highest priority for security needs)
+  if (KEYWORD_MAPPINGS.ssl.some(keyword => normalized.includes(keyword))) {
+    return 'ssl';
+  }
+  
+  // E-commerce keywords (shop, store, commerce)
+  if (KEYWORD_MAPPINGS.ecommerce.some(keyword => normalized.includes(keyword))) {
+    return 'ecommerce';
+  }
+  
+  // Business keywords (corporate, application, SaaS)
+  if (KEYWORD_MAPPINGS.business.some(keyword => normalized.includes(keyword))) {
+    return 'business';
+  }
+  
+  // WordPress keywords (personal, catalogue, normal, blog)
+  if (KEYWORD_MAPPINGS.wordpress.some(keyword => normalized.includes(keyword))) {
+    return 'wordpress';
+  }
+  
+  return null; // No keywords detected
 }
 

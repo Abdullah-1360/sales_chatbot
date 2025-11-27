@@ -5,6 +5,9 @@ const Product = require('../models/Product');
 
 const cache = new NodeCache({ stdTTL: cfg.WHMCS_CACHE_TTL });
 
+// PIDs that should never be returned
+const EXCLUDED_PIDS = ['238', '250'];
+
 // Load fixtures for test environment to avoid external HTTP calls
 let testFixtures = null;
 if (process.env.NODE_ENV === 'test') {
@@ -50,7 +53,9 @@ exports.getProductsByGid = async (gid) => {
 
   // If running tests, prefer fixture data to avoid external API calls
   if (process.env.NODE_ENV === 'test' && testFixtures) {
-    const products = (testFixtures.products?.product || []).filter(p => String(p.gid) === String(gid));
+    const products = (testFixtures.products?.product || [])
+      .filter(p => String(p.gid) === String(gid))
+      .filter(p => !EXCLUDED_PIDS.includes(String(p.pid))); // Exclude specific PIDs
     return products.map(p => ({
       pid: p.pid,
       gid: p.gid,
@@ -65,9 +70,10 @@ exports.getProductsByGid = async (gid) => {
 
   if (useMongoDB) {
     try {
-      // Fetch from MongoDB, excluding hidden products
+      // Fetch from MongoDB, excluding hidden products and excluded PIDs
       const products = await Product.find({ 
         gid: String(gid),
+        pid: { $nin: EXCLUDED_PIDS }, // Exclude specific PIDs
         $or: [
           { hidden: { $exists: false } }, // Products without hidden field
           { hidden: false }                // Products explicitly not hidden
@@ -94,5 +100,7 @@ exports.getProductsByGid = async (gid) => {
 
   // Fallback to WHMCS API
   const data = await callWhmcs('GetProducts', { gid, hidden: 0 });
-  return (data.products?.product || []).filter(p => String(p.gid) === String(gid));
+  return (data.products?.product || [])
+    .filter(p => String(p.gid) === String(gid))
+    .filter(p => !EXCLUDED_PIDS.includes(String(p.pid))); // Exclude specific PIDs
 };

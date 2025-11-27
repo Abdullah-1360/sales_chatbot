@@ -11,6 +11,9 @@ const { createLogger } = require('../utils/logger');
 
 const logger = createLogger('WHMCS-SYNC');
 
+// PIDs that should never be synced
+const EXCLUDED_PIDS = ['238', '250'];
+
 /**
  * Fetch products from WHMCS API for a specific GID
  */
@@ -123,10 +126,14 @@ async function syncAllProducts() {
     for (const gid of gids) {
       const products = await fetchWHMCSProducts(gid);
       
-      // Transform and filter out hidden products
+      // Transform and filter out hidden products and excluded PIDs
       const transformed = products
         .map(transformProduct)
         .filter(p => {
+          if (EXCLUDED_PIDS.includes(p.pid)) {
+            logger.info(`Filtering out excluded PID: ${p.pid} - ${p.name}`);
+            return false;
+          }
           if (p.hidden) {
             hiddenCount++;
             logger.debug(`Filtering out hidden product: ${p.name} (PID: ${p.pid})`);

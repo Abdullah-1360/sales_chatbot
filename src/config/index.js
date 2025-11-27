@@ -21,6 +21,11 @@ module.exports = {
   FIXED_EXCHANGE_RATE: process.env.FIXED_EXCHANGE_RATE ? Number(process.env.FIXED_EXCHANGE_RATE) : null, // Override exchange rate if set
   AUTO_REFRESH_STALE_PRICING: process.env.AUTO_REFRESH_STALE_PRICING === 'true', // Auto-refresh stale pricing
   
+  // VTiger CRM configuration
+  VTIGER_URL: process.env.VTIGER_URL || '',
+  VTIGER_USERNAME: process.env.VTIGER_USERNAME || '',
+  VTIGER_ACCESS_KEY: process.env.VTIGER_ACCESS_KEY || '',
+  
   // WHMCS Product Group IDs (GIDs)
   WHMCS_GIDS: {
     CPANEL_HOSTING: 1,        // cPanel Hosting

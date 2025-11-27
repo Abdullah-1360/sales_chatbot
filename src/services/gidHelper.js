@@ -8,6 +8,7 @@ const cfg = require('../config');
 /**
  * Get all configured GIDs
  * @returns {Array<number>} - Array of GID numbers
+ * Note: GIDs 238 and 250 are permanently excluded
  */
 function getAllGids() {
   return [1, 2, 6, 20, 21, 25, 26, 28];

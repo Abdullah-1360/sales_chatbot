@@ -129,19 +129,36 @@ function findNearestNeighbors(plans, requirements) {
     };
   });
   
-  // Adaptive threshold: use 40% for confidence, but allow lower if composite score is good
-  const viablePlans = plansWithScores.filter(p => 
-    p.confidence > 40 || (p.confidence > 30 && p.compositeScore > 50)
-  );
+  // IMPROVED: Prioritize plans closest to requirements
+  // First, try to find plans with confidence > 50% (reasonable match)
+  let viablePlans = plansWithScores.filter(p => p.confidence > 50);
   
+  // If no good matches, lower threshold to 40%
+  if (viablePlans.length === 0) {
+    viablePlans = plansWithScores.filter(p => p.confidence > 40);
+  }
+  
+  // If still no matches, use best available (minimum 30% confidence)
+  if (viablePlans.length === 0) {
+    viablePlans = plansWithScores.filter(p => p.confidence > 30);
+  }
+  
+  // Last resort: return empty if all plans are below 30% confidence
   if (viablePlans.length === 0) {
     return [];
   }
   
-  // Sort by composite score (descending), then by price (ascending)
+  // Sort by confidence FIRST (prioritize better matches), then by composite score
   viablePlans.sort((a, b) => {
+    // Confidence is the primary sort key
+    const confDiff = b.confidence - a.confidence;
+    if (Math.abs(confDiff) > 5) return confDiff;
+    
+    // For similar confidence, use composite score
     const scoreDiff = b.compositeScore - a.compositeScore;
     if (Math.abs(scoreDiff) > 1) return scoreDiff;
+    
+    // For similar scores, prefer lower price
     return a.priceNum - b.priceNum;
   });
   

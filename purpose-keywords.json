@@ -1,0 +1,221 @@
+{
+  "version": "1.0.0",
+  "description": "All supported keywords for the purpose parameter in the recommendation API",
+  "total_keywords": 42,
+  "categories": {
+    "ecommerce": {
+      "description": "E-commerce and online store keywords",
+      "routes_to": "WooCommerce Hosting",
+      "gid": 21,
+      "keywords": [
+        "shop",
+        "store",
+        "commerce",
+        "ecommerce",
+        "e-commerce",
+        "woocommerce",
+        "shopping",
+        "cart",
+        "payment",
+        "checkout",
+        "product"
+      ],
+      "count": 11,
+      "examples": [
+        "shop",
+        "online store",
+        "ecommerce site",
+        "shopping cart",
+        "payment gateway"
+      ]
+    },
+    "wordpress": {
+      "description": "WordPress, blog, and personal site keywords",
+      "routes_to": "WordPress Hosting",
+      "gid": 20,
+      "keywords": [
+        "personal",
+        "catalogue",
+        "catalog",
+        "normal",
+        "blog",
+        "content",
+        "article",
+        "post",
+        "news",
+        "magazine"
+      ],
+      "count": 10,
+      "examples": [
+        "personal website",
+        "catalogue",
+        "normal blog",
+        "content site",
+        "news magazine"
+      ]
+    },
+    "business": {
+      "description": "Business, corporate, and application keywords",
+      "routes_to": "Business Hosting (high requirements) or WordPress Hosting (standard)",
+      "gid": "25 or 20",
+      "keywords": [
+        "corporate",
+        "application",
+        "app",
+        "saas",
+        "software",
+        "enterprise",
+        "professional",
+        "company"
+      ],
+      "count": 8,
+      "examples": [
+        "corporate website",
+        "saas platform",
+        "enterprise application",
+        "company site"
+      ],
+      "routing_logic": {
+        "high_requirements": {
+          "condition": "websites_count >= 10+ OR storage_needed_gb > 50",
+          "gid": 25,
+          "hosting_type": "Business Hosting"
+        },
+        "standard_requirements": {
+          "condition": "websites_count < 10 AND storage_needed_gb <= 50",
+          "gid": 20,
+          "hosting_type": "WordPress Hosting"
+        }
+      }
+    },
+    "ssl": {
+      "description": "SSL certificate and security keywords",
+      "routes_to": "SSL Certificates",
+      "gid": 6,
+      "keywords": [
+        "certificate",
+        "cert",
+        "secure",
+        "ssl",
+        "https",
+        "security",
+        "encryption",
+        "tls"
+      ],
+      "count": 8,
+      "examples": [
+        "need certificate",
+        "secure my site",
+        "ssl certificate",
+        "https security"
+      ]
+    },
+    "standard": {
+      "description": "Standard purpose values (backward compatible)",
+      "routes_to": "Various hosting types",
+      "values": [
+        {
+          "value": "Blog",
+          "gid": 20,
+          "hosting_type": "WordPress Hosting"
+        },
+        {
+          "value": "Ecommerce",
+          "gid": 21,
+          "hosting_type": "WooCommerce Hosting"
+        },
+        {
+          "value": "Business Site",
+          "gid": "20 or 25",
+          "hosting_type": "WordPress or Business Hosting"
+        },
+        {
+          "value": "Portfolio",
+          "gid": 20,
+          "hosting_type": "WordPress Hosting"
+        },
+        {
+          "value": "Other",
+          "gid": 1,
+          "hosting_type": "cPanel Hosting"
+        }
+      ],
+      "count": 5
+    }
+  },
+  "priority_order": [
+    {
+      "rank": 1,
+      "category": "ssl",
+      "description": "SSL keywords have highest priority for security needs"
+    },
+    {
+      "rank": 2,
+      "category": "ecommerce",
+      "description": "E-commerce keywords for online stores"
+    },
+    {
+      "rank": 3,
+      "category": "business",
+      "description": "Business keywords for corporate sites"
+    },
+    {
+      "rank": 4,
+      "category": "wordpress",
+      "description": "WordPress keywords have lowest priority"
+    }
+  ],
+  "features": {
+    "case_insensitive": true,
+    "partial_matching": true,
+    "natural_language": true,
+    "backward_compatible": true
+  },
+  "usage_notes": [
+    "All keywords are case-insensitive",
+    "Keywords work as partial matches within longer phrases",
+    "When multiple keywords are detected, highest priority wins",
+    "Standard purpose values still work for backward compatibility",
+    "Keywords can be combined with other parameters (websites_count, storage_needed_gb, etc.)"
+  ],
+  "api_endpoint": "/api/recommendations",
+  "parameter_name": "purpose",
+  "example_requests": [
+    {
+      "description": "E-commerce store",
+      "request": {
+        "purpose": "shop",
+        "websites_count": "1",
+        "storage_needed_gb": 10
+      },
+      "expected_gid": 21
+    },
+    {
+      "description": "Personal blog",
+      "request": {
+        "purpose": "personal blog",
+        "websites_count": "1",
+        "storage_needed_gb": 10
+      },
+      "expected_gid": 20
+    },
+    {
+      "description": "Corporate website",
+      "request": {
+        "purpose": "corporate website",
+        "websites_count": "1",
+        "storage_needed_gb": 15
+      },
+      "expected_gid": 20
+    },
+    {
+      "description": "SSL certificate",
+      "request": {
+        "purpose": "need certificate",
+        "websites_count": "1",
+        "storage_needed_gb": 10
+      },
+      "expected_gid": 6
+    }
+  ]
+}

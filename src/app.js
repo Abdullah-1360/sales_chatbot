@@ -18,20 +18,33 @@ app.use('/api', router);
 app.use(errorLogger);
 
 // centralised error handler
-app.use((err, _req, res, _next) => {
+app.use((err, req, res, _next) => {
   console.error(err);
   
   // JSON parsing errors
   if (err.type === 'entity.parse.failed') {
     return res.status(400).json({ 
-      error: 'Invalid JSON format. Please check your request body for syntax errors.',
-      details: 'Common issues: missing values, trailing commas, unquoted strings'
+      success: false,
+      error: 'Invalid JSON format in request body',
+      details: 'Common issues: missing values after colons, trailing commas, unquoted strings',
+      example: {
+        purpose: "shop",
+        websites_count: "5",
+        storage_needed_gb: 25,
+        email_needed: false,
+        free_domain: true,
+        monthly_budget: 0
+      },
+      hint: 'Make sure all fields have values and remove trailing commas'
     });
   }
   
   // Joi validation errors should return 400
   const status = err.isJoi ? 400 : (err.status || 500);
-  res.status(status).json({ error: err.message || 'Server error' });
+  res.status(status).json({ 
+    success: false,
+    error: err.message || 'Server error' 
+  });
 });
 
 module.exports = app;
