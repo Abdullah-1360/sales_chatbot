@@ -5,13 +5,19 @@ try {
   // Using environment variables directly
 }
 
+const http = require('http');
 const app = require('./src/app');
 const { connectDB } = require('./src/config/database');
 const { syncAllProducts, scheduleSync } = require('./src/services/whmcsSync');
 const { upsertAllTldPricing } = require('./src/services/tldPricing');
+const { initializeWebSocket } = require('./src/services/websocket');
+const { scheduleLeadCleanup } = require('./src/services/leadCleanup');
 const cfg = require('./src/config');
 
 const PORT = process.env.PORT || 3000;
+
+// Create HTTP server
+const httpServer = http.createServer(app);
 
 async function startServer() {
   try {
@@ -60,12 +66,25 @@ async function startServer() {
       }
     }
     
-    app.listen(PORT, () => {
+    // Initialize WebSocket server
+    const corsOrigin = process.env.CORS_ORIGIN || 'http://localhost:5173';
+    initializeWebSocket(httpServer, { corsOrigin });
+    
+    // Schedule automatic lead cleanup (delete leads older than 24 hours)
+    if (cfg.USE_MONGODB) {
+      scheduleLeadCleanup();
+    }
+    
+    httpServer.listen(PORT, () => {
       console.log(`🚀 API running on :${PORT}`);
+      console.log(`🔌 WebSocket server initialized`);
       console.log(`📦 MongoDB: ${cfg.USE_MONGODB ? 'enabled' : 'disabled'}`);
       console.log(`🔄 Auto-sync: ${cfg.AUTO_SYNC_ON_STARTUP ? 'enabled' : 'disabled'}`);
       if (cfg.SYNC_INTERVAL_HOURS > 0) {
         console.log(`⏰ Sync interval: ${cfg.SYNC_INTERVAL_HOURS} hours`);
+      }
+      if (cfg.USE_MONGODB) {
+        console.log(`🧹 Lead cleanup: enabled (runs every hour, deletes leads > 24h old)`);
       }
     });
   } catch (error) {

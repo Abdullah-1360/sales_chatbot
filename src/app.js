@@ -1,10 +1,19 @@
 const express = require('express');
 const helmet = require('helmet');
 const compression = require('compression');
+const cors = require('cors');
 const router = require('./routes');
 const { requestLogger, errorLogger } = require('./middleware/requestLogger');
 
 const app = express();
+
+// CORS configuration for frontend communication
+const corsOrigin = process.env.CORS_ORIGIN || 'http://localhost:5173';
+app.use(cors({
+  origin: corsOrigin,
+  credentials: true
+}));
+
 app.use(helmet());
 app.use(compression());
 app.use(express.json());

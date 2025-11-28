@@ -1,0 +1,115 @@
+/* IncomingChatsTab Styles */
+
+.incoming-chats-tab {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+}
+
+.incoming-chats-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 500px;
+  gap: 1.5rem;
+  padding: 3rem;
+  text-align: center;
+  background: linear-gradient(135deg, var(--primary-light) 0%, #faf5ff 100%);
+  border-radius: 20px;
+  border: 2px dashed var(--border-color);
+  animation: fadeIn 0.5s ease-out;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.placeholder-icon {
+  color: var(--primary-color);
+  margin-bottom: 0.5rem;
+  opacity: 0.7;
+  animation: float 3s ease-in-out infinite;
+}
+
+@keyframes float {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+
+.incoming-chats-placeholder h2 {
+  margin: 0;
+  font-size: 2rem;
+  font-weight: 700;
+  background: linear-gradient(135deg, var(--primary-color) 0%, var(--secondary-color) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.placeholder-description {
+  color: var(--text-secondary);
+  font-size: 1.125rem;
+  font-weight: 500;
+  margin: 0.5rem 0 0 0;
+  max-width: 450px;
+  line-height: 1.6;
+}
+
+.placeholder-subdescription {
+  color: var(--text-tertiary);
+  font-size: 0.9375rem;
+  margin: 0.25rem 0 0 0;
+  max-width: 500px;
+  line-height: 1.5;
+}
+
+@media (max-width: 768px) {
+  .incoming-chats-tab {
+    padding: 1rem;
+  }
+
+  .incoming-chats-placeholder h2 {
+    font-size: 1.5rem;
+  }
+
+  .placeholder-description {
+    font-size: 0.9375rem;
+  }
+
+  .placeholder-subdescription {
+    font-size: 0.8125rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .incoming-chats-tab {
+    padding: 0.75rem;
+  }
+
+  .incoming-chats-placeholder {
+    padding: 1.5rem;
+  }
+
+  .placeholder-icon svg {
+    width: 64px;
+    height: 64px;
+  }
+
+  .incoming-chats-placeholder h2 {
+    font-size: 1.25rem;
+  }
+}

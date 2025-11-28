@@ -3,6 +3,7 @@ const { recommend } = require('../controllers/recommendation');
 const { checkAvailability, checkMultiple } = require('../controllers/domain');
 const { searchPlans } = require('../controllers/planSearch');
 const { createLead } = require('../controllers/vtiger');
+const { getLeads, deleteLead } = require('../controllers/leads');
 const { getAllGidsWithNames, getGidName, isValidGid } = require('../services/gidHelper');
 
 router.post('/recommendations', recommend);
@@ -12,8 +13,11 @@ router.post('/domain/bulk-check', checkMultiple);
 // Plan search endpoint
 router.get('/plans/search', searchPlans);
 
-// VTiger lead creation endpoint
+// VTiger lead endpoints
 router.post('/leads', createLead);
+router.get('/leads', getLeads);
+router.delete('/leads/:id', require('../controllers/leads').deleteLead);
+router.delete('/leads/:id', deleteLead);
 
 // GID information endpoints
 router.get('/gids', (_req, res) => {

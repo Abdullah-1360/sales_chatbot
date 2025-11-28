@@ -1,0 +1,103 @@
+.connection-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 20px;
+  border-radius: 24px;
+  font-size: 14px;
+  font-weight: 600;
+  transition: all 0.3s ease;
+  box-shadow: var(--shadow-sm);
+  backdrop-filter: blur(10px);
+}
+
+.status-icon {
+  font-size: 14px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.status-text {
+  line-height: 1;
+  letter-spacing: 0.3px;
+}
+
+/* Connected state */
+.connection-status.connected {
+  background: linear-gradient(135deg, var(--success-light) 0%, #a7f3d0 100%);
+  color: #065f46;
+  border: 1px solid var(--success-color);
+}
+
+.connection-status.connected .status-icon {
+  color: var(--success-color);
+  animation: pulse 2s ease-in-out infinite;
+}
+
+/* Reconnecting state */
+.connection-status.reconnecting {
+  background: linear-gradient(135deg, var(--warning-light) 0%, #fde68a 100%);
+  color: #92400e;
+  border: 1px solid var(--warning-color);
+}
+
+.connection-status.reconnecting .status-icon {
+  color: var(--warning-color);
+  animation: spin 1s linear infinite;
+}
+
+/* Disconnected state */
+.connection-status.disconnected {
+  background: linear-gradient(135deg, var(--error-light) 0%, #fecaca 100%);
+  color: #991b1b;
+  border: 1px solid var(--error-color);
+}
+
+.connection-status.disconnected .status-icon {
+  color: var(--error-color);
+}
+
+/* Connecting state */
+.connection-status.connecting {
+  background: linear-gradient(135deg, var(--info-light) 0%, #bfdbfe 100%);
+  color: #1e3a8a;
+  border: 1px solid var(--info-color);
+}
+
+.connection-status.connecting .status-icon {
+  color: var(--info-color);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+/* Animations */
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Responsive design */
+@media (max-width: 768px) {
+  .connection-status {
+    padding: 6px 12px;
+    font-size: 13px;
+  }
+
+  .status-icon {
+    font-size: 10px;
+  }
+}
