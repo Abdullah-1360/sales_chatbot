@@ -1,29 +1,28 @@
 /**
- * Lead Model for MongoDB
+ * Chat Model for MongoDB
  */
 
 const mongoose = require('mongoose');
 
-const leadSchema = new mongoose.Schema({
-  vtigerId: { type: String, required: true, unique: true },
+const chatSchema = new mongoose.Schema({
   firstname: { type: String, required: true },
   lastname: { type: String, required: true },
   email: { type: String, required: true },
   phone: { type: String, default: '' },
   description: { type: String, default: '' },
-  comment: { type: String, default: '' }, // VTiger comment field
+  comment: { type: String, default: '' }, // Comment field
   source: { type: String, default: 'Chatbot' },
   userNs: { type: String, default: '' }, // UChat User Namespace ID
   createdAt: { type: Date, default: Date.now }
 }, {
   timestamps: true,
-  collection: 'leads'
+  collection: 'chats'
 });
 
 // Index for efficient sorting by creation date
-leadSchema.index({ createdAt: -1 });
+chatSchema.index({ createdAt: -1 });
 
 // Index for email lookups
-leadSchema.index({ email: 1 });
+chatSchema.index({ email: 1 });
 
-module.exports = mongoose.model('Lead', leadSchema);
+module.exports = mongoose.model('Chat', chatSchema);

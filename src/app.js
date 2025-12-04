@@ -8,9 +8,34 @@ const { requestLogger, errorLogger } = require('./middleware/requestLogger');
 const app = express();
 
 // CORS configuration for frontend communication
-const corsOrigin = process.env.CORS_ORIGIN || 'http://localhost:5173';
+const corsOrigin = 'https://chat.hostbrake.com';
+
+// Support multiple origins (comma-separated)
+const allowedOrigins = corsOrigin.includes(',') 
+  ? corsOrigin.split(',').map(origin => origin.trim())
+  : [corsOrigin];
+
 app.use(cors({
-  origin: corsOrigin,
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps, Postman, curl)
+    if (!origin) return callback(null, true);
+    
+    // Check if origin is in allowed list or matches ngrok pattern
+    const isAllowed = allowedOrigins.some(allowed => {
+      if (allowed === '*') return true;
+      if (allowed === origin) return true;
+      // Allow all ngrok domains
+      if (origin.includes('.ngrok-free.dev') || origin.includes('.ngrok.io')) return true;
+      return false;
+    });
+    
+    if (isAllowed) {
+      callback(null, true);
+    } else {
+      console.warn(`CORS blocked request from origin: ${origin}`);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true
 }));
 

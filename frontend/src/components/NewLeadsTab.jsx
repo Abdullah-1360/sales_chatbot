@@ -1,4 +1,4 @@
-import React, { useEffect, useCallback } from 'react';
+import React, { useEffect, useCallback, useRef } from 'react';
 import useLeads from '../hooks/useLeads';
 import useWebSocket from '../hooks/useWebSocket';
 import useNotifications from '../hooks/useNotifications';
@@ -17,11 +17,19 @@ import '../styles/NewLeadsTab.css';
  * - 2.1: Trigger notifications for new leads
  * - 6.2: Display loading states while fetching initial data
  */
-const NewLeadsTab = () => {
+const NewLeadsTab = ({ onNewLead }) => {
   const { leads, loading, error, addLead, removeLead, refreshLeads } = useLeads();
   const { isConnected, on, off } = useWebSocket();
   const { notifyNewLead } = useNotifications();
   const [expandedLeadId, setExpandedLeadId] = React.useState(null);
+  
+  // Use ref to access current leads without causing re-renders
+  const leadsRef = useRef(leads);
+  
+  // Keep ref in sync with leads
+  useEffect(() => {
+    leadsRef.current = leads;
+  }, [leads]);
 
   /**
    * Handle new lead events from WebSocket
@@ -33,17 +41,36 @@ const NewLeadsTab = () => {
     console.log('📥 NewLeadsTab: handleNewLead called');
     console.log('📋 Lead data:', leadData);
     
-    // Add lead to the list (will be inserted at top)
+    // Check if this is a new lead or an update to existing
+    // Use ref to get current leads array
+    const isNewLead = !leadsRef.current.some((lead) => {
+      const leadId = lead.id || lead._id;
+      const newLeadId = leadData.id || leadData._id;
+      return leadId && newLeadId && leadId === newLeadId;
+    });
+    
+    console.log('🔍 Is new lead?', isNewLead, 'Current leads count:', leadsRef.current.length);
+    
+    // Add lead to the list (will be inserted at top or updated)
     console.log('➕ Adding lead to list...');
     addLead(leadData);
     console.log('✅ Lead added to list');
     
-    // Trigger notification
-    // Requirement 2.1: Display visual notification with lead's name and email
+    // Always trigger notification (for both new and updated leads)
     console.log('🔔 Triggering notification...');
     notifyNewLead(leadData);
     console.log('✅ Notification triggered');
-  }, [addLead, notifyNewLead]);
+    
+    // Only increment unread count for new leads (not updates)
+    if (isNewLead) {
+      if (onNewLead) {
+        console.log('📈 Incrementing unread count (new lead)');
+        onNewLead();
+      }
+    } else {
+      console.log('🔄 Lead updated, notification sent but count not incremented');
+    }
+  }, [addLead, notifyNewLead, onNewLead]);
 
   /**
    * Handle dismiss lead action

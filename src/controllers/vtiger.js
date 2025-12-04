@@ -17,21 +17,45 @@ const logger = createLogger('VTIGER_CONTROLLER');
  */
 exports.createLead = async (req, res, next) => {
   try {
-    const { username, email, phone, description } = req.body;
+    let { username, email, phone, description, comment, User_Ns } = req.body;
+    
+    // Use comment if description is not provided
+    const messageText = description || comment;
     
     logger.info('Lead creation request received', { 
       email,
       hasPhone: !!phone,
       hasDescription: !!description,
+      hasComment: !!comment,
+      hasUserNs: !!User_Ns,
       ip: req.ip 
     });
     
     // Validate required fields
-    if (!username || !email) {
+    if (!username) {
       return res.status(400).json({ 
         success: false,
-        error: 'username and email are required' 
+        error: 'username is required' 
       });
+    }
+    
+    // Generate unique email based on User_Ns if email is empty
+    if (!email || email.trim() === '') {
+      if (User_Ns && User_Ns.trim() !== '') {
+        // Create email from User_Ns: user_ns@uchat.generated
+        email = `${User_Ns.toLowerCase().replace(/[^a-z0-9]/g, '_')}@uchat.generated`;
+        logger.info('Generated email from User_Ns', { 
+          User_Ns,
+          generatedEmail: email 
+        });
+      } else {
+        // No email and no User_Ns - generate random email
+        const randomId = Date.now().toString(36) + Math.random().toString(36).substr(2);
+        email = `guest_${randomId}@uchat.generated`;
+        logger.info('Generated random email (no User_Ns provided)', { 
+          generatedEmail: email 
+        });
+      }
     }
     
     // Create lead in VTiger (status is always 'New')
@@ -39,7 +63,8 @@ exports.createLead = async (req, res, next) => {
       username,
       email,
       phone,
-      description
+      description: messageText, // Use messageText (description or comment)
+      User_Ns // Pass User_Ns for email upgrade logic
     });
     
     // Handle both new leads and updates
@@ -50,8 +75,10 @@ exports.createLead = async (req, res, next) => {
         lastname: response.result.lastname,
         email: response.result.email,
         phone: response.result.mobile || phone || '',
-        description: response.result.description || description || '',
-        source: 'Chatbot'
+        description: response.result.description || messageText || '',
+        comment: response.result.description || messageText || '', // Use description from result or messageText
+        source: 'Chatbot',
+        userNs: User_Ns || '' // UChat User Namespace ID
       };
       
       try {
@@ -67,8 +94,13 @@ exports.createLead = async (req, res, next) => {
           savedLead = await Lead.findOneAndUpdate(
             { vtigerId: leadData.vtigerId },
             { 
-              description: leadData.description,
-              phone: leadData.phone // Update phone if changed
+              firstname: leadData.firstname, // Update firstname
+              lastname: leadData.lastname, // Update lastname
+              email: leadData.email, // Update email
+              description: leadData.description, // Update description
+              comment: leadData.comment, // Update comment
+              phone: leadData.phone, // Update phone if changed
+              userNs: leadData.userNs // Update userNs if provided
             },
             { new: true, upsert: true } // Return updated doc, create if not exists
           );
@@ -91,8 +123,10 @@ exports.createLead = async (req, res, next) => {
           email: savedLead.email,
           phone: savedLead.phone,
           description: savedLead.description,
+          comment: savedLead.comment,
           createdAt: savedLead.createdAt,
           source: savedLead.source,
+          userNs: savedLead.userNs,
           isUpdate: response.isUpdate || false
         };
         

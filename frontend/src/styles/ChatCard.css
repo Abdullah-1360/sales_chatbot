@@ -1,6 +1,6 @@
-/* Modern Redesigned Lead Card */
-.lead-card {
-  background: linear-gradient(135deg, #ffffff 0%, #faf5ff 100%);
+/* Modern Redesigned Chat Card */
+.chat-card {
+  background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);
   border-radius: 16px;
   padding: 0;
   margin-bottom: 1.25rem;
@@ -15,44 +15,44 @@
   animation: slideInUp 0.4s ease-out;
 }
 
-.lead-card::before {
+.chat-card::before {
   content: '';
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
   height: 3px;
-  background: linear-gradient(90deg, #8b5cf6 0%, #7c3aed 50%, #6366f1 100%);
+  background: linear-gradient(90deg, #10b981 0%, #14b8a6 50%, #06b6d4 100%);
   transform: scaleX(0);
   transform-origin: left;
   transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.lead-card:hover {
+.chat-card:hover {
   transform: translateY(-4px);
   box-shadow: 
-    0 12px 24px rgba(139, 92, 246, 0.12),
-    0 4px 8px rgba(139, 92, 246, 0.08);
-  border-color: rgba(139, 92, 246, 0.3);
+    0 12px 24px rgba(16, 185, 129, 0.12),
+    0 4px 8px rgba(16, 185, 129, 0.08);
+  border-color: rgba(16, 185, 129, 0.3);
 }
 
-.lead-card:hover::before {
+.chat-card:hover::before {
   transform: scaleX(1);
 }
 
-.lead-card.expanded {
+.chat-card.expanded {
   box-shadow: 
-    0 16px 32px rgba(139, 92, 246, 0.15),
-    0 8px 16px rgba(139, 92, 246, 0.1);
-  border-color: rgba(139, 92, 246, 0.4);
+    0 16px 32px rgba(16, 185, 129, 0.15),
+    0 8px 16px rgba(16, 185, 129, 0.1);
+  border-color: rgba(16, 185, 129, 0.4);
 }
 
-.lead-card.expanded::before {
+.chat-card.expanded::before {
   transform: scaleX(1);
 }
 
 /* Compact View */
-.lead-card-compact {
+.chat-card-compact {
   display: flex;
   align-items: center;
   gap: 1rem;
@@ -60,12 +60,12 @@
   transition: background 0.2s ease;
 }
 
-.lead-card-compact:hover {
-  background: rgba(139, 92, 246, 0.02);
+.chat-card-compact:hover {
+  background: rgba(16, 185, 129, 0.02);
 }
 
 /* Avatar */
-.lead-card-avatar {
+.chat-card-avatar {
   width: 48px;
   height: 48px;
   border-radius: 12px;
@@ -80,24 +80,24 @@
   transition: transform 0.3s ease;
 }
 
-.lead-card:hover .lead-card-avatar {
-  transform: scale(1.05) rotate(-2deg);
+.chat-card:hover .chat-card-avatar {
+  transform: scale(1.05) rotate(2deg);
 }
 
 /* Info Section */
-.lead-card-info {
+.chat-card-info {
   flex: 1;
   min-width: 0;
 }
 
-.lead-card-name-row {
+.chat-card-name-row {
   display: flex;
   align-items: center;
   gap: 0.75rem;
   margin-bottom: 0.5rem;
 }
 
-.lead-card-name {
+.chat-card-name {
   font-size: 1.125rem;
   font-weight: 600;
   color: #1e293b;
@@ -107,19 +107,19 @@
   text-overflow: ellipsis;
 }
 
-.lead-card-badge {
+.chat-card-badge {
   padding: 0.25rem 0.75rem;
-  background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
   color: white;
   font-size: 0.75rem;
   font-weight: 600;
   border-radius: 6px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  box-shadow: 0 2px 4px rgba(139, 92, 246, 0.2);
+  box-shadow: 0 2px 4px rgba(16, 185, 129, 0.2);
 }
 
-.lead-card-preview {
+.chat-card-preview {
   display: flex;
   align-items: center;
   gap: 1rem;
@@ -127,21 +127,21 @@
   color: #64748b;
 }
 
-.lead-card-email-preview,
-.lead-card-phone-preview {
+.chat-card-email-preview,
+.chat-card-phone-preview {
   display: flex;
   align-items: center;
   gap: 0.375rem;
 }
 
-.lead-card-email-preview svg,
-.lead-card-phone-preview svg {
+.chat-card-email-preview svg,
+.chat-card-phone-preview svg {
   opacity: 0.6;
   flex-shrink: 0;
 }
 
 /* Meta Section */
-.lead-card-meta {
+.chat-card-meta {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
@@ -149,7 +149,7 @@
   flex-shrink: 0;
 }
 
-.lead-card-time {
+.chat-card-time {
   display: flex;
   align-items: center;
   gap: 0.375rem;
@@ -158,17 +158,17 @@
   font-weight: 500;
 }
 
-.lead-card-time svg {
+.chat-card-time svg {
   opacity: 0.7;
 }
 
-.lead-card-expand-btn {
+.chat-card-expand-btn {
   width: 32px;
   height: 32px;
   border: none;
   border-radius: 8px;
-  background: rgba(139, 92, 246, 0.08);
-  color: #8b5cf6;
+  background: rgba(16, 185, 129, 0.08);
+  color: #10b981;
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -176,58 +176,58 @@
   transition: all 0.2s ease;
 }
 
-.lead-card-expand-btn:hover {
-  background: rgba(139, 92, 246, 0.15);
+.chat-card-expand-btn:hover {
+  background: rgba(16, 185, 129, 0.15);
   transform: scale(1.1);
 }
 
-.lead-card-expand-btn svg {
+.chat-card-expand-btn svg {
   transition: transform 0.3s ease;
 }
 
-.lead-card-expand-btn svg.rotated {
+.chat-card-expand-btn svg.rotated {
   transform: rotate(180deg);
 }
 
 /* Expanded Details */
-.lead-card-details {
+.chat-card-details {
   padding: 0 1.25rem 1.25rem;
   animation: expandDown 0.3s ease-out;
 }
 
-.lead-card-divider {
+.chat-card-divider {
   height: 1px;
-  background: linear-gradient(90deg, transparent 0%, rgba(139, 92, 246, 0.2) 50%, transparent 100%);
+  background: linear-gradient(90deg, transparent 0%, rgba(16, 185, 129, 0.2) 50%, transparent 100%);
   margin-bottom: 1.25rem;
 }
 
-.lead-card-details-grid {
+.chat-card-details-grid {
   display: grid;
   gap: 1rem;
   margin-bottom: 1.25rem;
 }
 
-.lead-detail-item {
+.chat-detail-item {
   display: flex;
   gap: 0.875rem;
   padding: 1rem;
-  background: linear-gradient(135deg, rgba(248, 250, 252, 0.8) 0%, rgba(245, 243, 255, 0.8) 100%);
+  background: linear-gradient(135deg, rgba(248, 250, 252, 0.8) 0%, rgba(241, 245, 249, 0.8) 100%);
   border-radius: 12px;
   border: 1px solid rgba(226, 232, 240, 0.6);
   transition: all 0.2s ease;
 }
 
-.lead-detail-item:hover {
-  background: linear-gradient(135deg, rgba(250, 245, 255, 0.8) 0%, rgba(243, 232, 255, 0.8) 100%);
-  border-color: rgba(139, 92, 246, 0.3);
+.chat-detail-item:hover {
+  background: linear-gradient(135deg, rgba(240, 253, 244, 0.8) 0%, rgba(236, 253, 245, 0.8) 100%);
+  border-color: rgba(16, 185, 129, 0.3);
   transform: translateX(4px);
 }
 
-.lead-detail-item.full-width {
+.chat-detail-item.full-width {
   grid-column: 1 / -1;
 }
 
-.lead-detail-icon {
+.chat-detail-icon {
   width: 40px;
   height: 40px;
   border-radius: 10px;
@@ -238,32 +238,32 @@
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
 }
 
-.lead-detail-icon.email-icon {
+.chat-detail-icon.email-icon {
   background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
   color: white;
 }
 
-.lead-detail-icon.phone-icon {
+.chat-detail-icon.phone-icon {
   background: linear-gradient(135deg, #10b981 0%, #059669 100%);
   color: white;
 }
 
-.lead-detail-icon.description-icon {
+.chat-detail-icon.description-icon {
   background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);
   color: white;
 }
 
-.lead-detail-icon.time-icon {
+.chat-detail-icon.time-icon {
   background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
   color: white;
 }
 
-.lead-detail-content {
+.chat-detail-content {
   flex: 1;
   min-width: 0;
 }
 
-.lead-detail-label {
+.chat-detail-label {
   display: block;
   font-size: 0.75rem;
   font-weight: 600;
@@ -273,7 +273,7 @@
   margin-bottom: 0.375rem;
 }
 
-.lead-detail-value {
+.chat-detail-value {
   display: block;
   font-size: 0.9375rem;
   font-weight: 500;
@@ -281,26 +281,26 @@
   word-break: break-word;
 }
 
-.lead-detail-value.email-link,
-.lead-detail-value.phone-link {
-  color: #8b5cf6;
+.chat-detail-value.email-link,
+.chat-detail-value.phone-link {
+  color: #10b981;
   text-decoration: none;
   transition: color 0.2s ease;
 }
 
-.lead-detail-value.email-link:hover,
-.lead-detail-value.phone-link:hover {
-  color: #7c3aed;
+.chat-detail-value.email-link:hover,
+.chat-detail-value.phone-link:hover {
+  color: #059669;
   text-decoration: underline;
 }
 
-.lead-detail-value.description-text {
+.chat-detail-value.description-text {
   line-height: 1.6;
   white-space: pre-wrap;
   color: #475569;
 }
 
-.lead-detail-subtext {
+.chat-detail-subtext {
   display: block;
   font-size: 0.8125rem;
   color: #94a3b8;
@@ -309,12 +309,12 @@
 }
 
 /* Action Buttons */
-.lead-card-actions {
+.chat-card-actions {
   display: flex;
   gap: 0.75rem;
 }
 
-.lead-action-btn {
+.chat-action-btn {
   flex: 1;
   padding: 0.875rem 1.25rem;
   border: none;
@@ -330,40 +330,29 @@
   text-decoration: none;
 }
 
-.lead-action-btn.primary {
-  background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);
-  color: white;
-  box-shadow: 0 4px 12px rgba(139, 92, 246, 0.25);
-}
-
-.lead-action-btn.primary:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 6px 16px rgba(139, 92, 246, 0.35);
-}
-
-.lead-action-btn.secondary {
+.chat-action-btn.primary {
   background: linear-gradient(135deg, #10b981 0%, #059669 100%);
   color: white;
   box-shadow: 0 4px 12px rgba(16, 185, 129, 0.25);
 }
 
-.lead-action-btn.secondary:hover {
+.chat-action-btn.primary:hover {
   transform: translateY(-2px);
   box-shadow: 0 6px 16px rgba(16, 185, 129, 0.35);
 }
 
-.lead-action-btn.danger {
+.chat-action-btn.danger {
   background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
   color: white;
   box-shadow: 0 4px 12px rgba(239, 68, 68, 0.25);
 }
 
-.lead-action-btn.danger:hover {
+.chat-action-btn.danger:hover {
   transform: translateY(-2px);
   box-shadow: 0 6px 16px rgba(239, 68, 68, 0.35);
 }
 
-.lead-action-btn:active {
+.chat-action-btn:active {
   transform: translateY(0);
 }
 
@@ -392,52 +381,52 @@
 
 /* Responsive Design */
 @media (max-width: 768px) {
-  .lead-card-compact {
+  .chat-card-compact {
     padding: 1rem;
     flex-wrap: wrap;
   }
 
-  .lead-card-avatar {
+  .chat-card-avatar {
     width: 44px;
     height: 44px;
     font-size: 1rem;
   }
 
-  .lead-card-name {
+  .chat-card-name {
     font-size: 1rem;
   }
 
-  .lead-card-preview {
+  .chat-card-preview {
     flex-direction: column;
     align-items: flex-start;
     gap: 0.5rem;
   }
 
-  .lead-card-meta {
+  .chat-card-meta {
     width: 100%;
     flex-direction: row;
     justify-content: space-between;
     align-items: center;
   }
 
-  .lead-card-details {
+  .chat-card-details {
     padding: 0 1rem 1rem;
   }
 
-  .lead-detail-item {
+  .chat-detail-item {
     padding: 0.875rem;
   }
 
-  .lead-detail-icon {
+  .chat-detail-icon {
     width: 36px;
     height: 36px;
   }
 
-  .lead-card-actions {
+  .chat-card-actions {
     flex-direction: column;
   }
 
-  .lead-action-btn {
+  .chat-action-btn {
     width: 100%;
   }
 }

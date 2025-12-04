@@ -56,8 +56,10 @@ exports.getLeads = async (req, res, next) => {
       email: lead.email,
       phone: lead.phone || '',
       description: lead.description || '',
+      comment: lead.comment || '',
       createdAt: lead.createdAt,
-      source: lead.source || 'Chatbot'
+      source: lead.source || 'Chatbot',
+      userNs: lead.userNs || ''
     }));
     
     logger.info('Leads fetched successfully', { 

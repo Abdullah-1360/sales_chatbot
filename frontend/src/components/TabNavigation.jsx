@@ -1,9 +1,9 @@
 import '../styles/TabNavigation.css';
 
-function TabNavigation({ activeTab, onTabChange }) {
+function TabNavigation({ activeTab, onTabChange, unreadLeads = 0, unreadChats = 0 }) {
   const tabs = [
-    { id: 'incoming-chats', label: 'Incoming Chats' },
-    { id: 'new-leads', label: 'New Leads' }
+    { id: 'incoming-chats', label: 'Incoming Chats', unreadCount: unreadChats },
+    { id: 'new-leads', label: 'New Leads', unreadCount: unreadLeads }
   ];
 
   return (
@@ -16,7 +16,12 @@ function TabNavigation({ activeTab, onTabChange }) {
           aria-selected={activeTab === tab.id}
           role="tab"
         >
-          {tab.label}
+          <span className="tab-label">{tab.label}</span>
+          {tab.unreadCount > 0 && (
+            <span className="tab-badge">
+              {tab.unreadCount > 99 ? '99+' : tab.unreadCount}
+            </span>
+          )}
         </button>
       ))}
     </div>

@@ -20,9 +20,25 @@ let io = null;
 function initializeWebSocket(httpServer, options = {}) {
   const { corsOrigin = 'http://localhost:5173' } = options;
   
+  // Handle both single origin and array of origins
+  const origins = Array.isArray(corsOrigin) ? corsOrigin : [corsOrigin];
+  
   io = new Server(httpServer, {
     cors: {
-      origin: corsOrigin,
+      origin: function (origin, callback) {
+        // Allow requests with no origin
+        if (!origin) return callback(null, true);
+        
+        // Check if origin is allowed or is ngrok
+        const isAllowed = origins.some(allowed => {
+          if (allowed === '*') return true;
+          if (allowed === origin) return true;
+          if (origin.includes('.ngrok-free.dev') || origin.includes('.ngrok.io')) return true;
+          return false;
+        });
+        
+        callback(null, isAllowed);
+      },
       methods: ['GET', 'POST'],
       credentials: true
     }
@@ -97,6 +113,45 @@ function broadcastNewLead(leadData) {
 }
 
 /**
+ * Broadcast new chat to all connected clients
+ * @param {Object} chatData - Chat information
+ * @param {string} chatData.id - Chat ID
+ * @param {string} chatData.firstname - First name
+ * @param {string} chatData.lastname - Last name
+ * @param {string} chatData.email - Email address
+ * @param {string} chatData.phone - Phone number
+ * @param {string} chatData.description - Chat message
+ * @param {Date} chatData.createdAt - Creation timestamp
+ */
+function broadcastNewChat(chatData) {
+  if (!io) {
+    logger.warn('WebSocket not initialized, cannot broadcast chat');
+    return;
+  }
+  
+  try {
+    const payload = {
+      type: 'new_chat',
+      data: chatData,
+      timestamp: new Date()
+    };
+    
+    io.emit('new_chat', payload);
+    
+    logger.info('Broadcasted new chat', { 
+      chatId: chatData.id,
+      email: chatData.email,
+      connectedClients: io.engine.clientsCount 
+    });
+  } catch (error) {
+    logger.error('Error broadcasting new chat', { 
+      error: error.message,
+      chatId: chatData.id 
+    });
+  }
+}
+
+/**
  * Get Socket.IO server instance
  * @returns {Server|null} Socket.IO server instance or null if not initialized
  */
@@ -107,5 +162,6 @@ function getIO() {
 module.exports = {
   initializeWebSocket,
   broadcastNewLead,
+  broadcastNewChat,
   getIO
 };

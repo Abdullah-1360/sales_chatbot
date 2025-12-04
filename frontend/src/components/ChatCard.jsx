@@ -1,14 +1,13 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { formatRelativeTime } from '../utils/dateFormatter';
-import '../styles/LeadCard.css';
+import '../styles/ChatCard.css';
 
 /**
- * LeadCard Component
- * Displays individual lead information in a modern card format with expand/collapse
+ * ChatCard Component
+ * Displays individual chat information in a modern card format with expand/collapse
  */
-const LeadCard = ({ lead, isExpanded = false, onToggleExpand, onDismiss }) => {
-
-  // Extract lead properties with fallbacks
+const ChatCard = ({ chat, isExpanded = false, onToggleExpand, onDismiss }) => {
+  // Extract chat properties with fallbacks
   const {
     firstname = '',
     lastname = '',
@@ -17,18 +16,15 @@ const LeadCard = ({ lead, isExpanded = false, onToggleExpand, onDismiss }) => {
     description = '',
     comment = '',
     createdAt,
-    created_time,
     source = 'Chatbot',
-    vtigerId = '',
     userNs = '',
-  } = lead;
+  } = chat;
 
   // Use comment if available, otherwise fall back to description
   const messageText = comment || description;
 
-  const timestamp = createdAt || created_time;
   const fullName = `${firstname} ${lastname}`.trim() || 'Unknown Name';
-  const relativeTime = formatRelativeTime(timestamp);
+  const relativeTime = formatRelativeTime(createdAt);
 
   // Get initials for avatar
   const getInitials = () => {
@@ -40,22 +36,14 @@ const LeadCard = ({ lead, isExpanded = false, onToggleExpand, onDismiss }) => {
   // Get avatar color based on name
   const getAvatarColor = () => {
     const colors = [
-      '#6366f1', '#8b5cf6', '#ec4899', '#f43f5e', 
-      '#f59e0b', '#10b981', '#06b6d4', '#3b82f6'
+      '#06b6d4', '#3b82f6', '#8b5cf6', '#ec4899',
+      '#f43f5e', '#f59e0b', '#10b981', '#6366f1'
     ];
     const index = (firstname?.charCodeAt(0) || 0) % colors.length;
     return colors[index];
   };
 
-  // Get VTiger CRM URL for this lead
-  const getVTigerUrl = () => {
-    if (!vtigerId) return '#';
-    // Extract the numeric ID from vtigerId (e.g., "10x24735" -> "24735")
-    const numericId = vtigerId.split('x')[1] || vtigerId;
-    return `https://crm.hostbreak.com/index.php?module=Leads&view=Detail&record=${numericId}&app=MARKETING`;
-  };
-
-  // Get UChat inbox URL for this lead
+  // Get UChat inbox URL for this chat
   const getUChatUrl = () => {
     if (!userNs) return '#';
     return `https://www.uchat.com.au/inbox/${userNs}`;
@@ -64,29 +52,29 @@ const LeadCard = ({ lead, isExpanded = false, onToggleExpand, onDismiss }) => {
   // Handle dismiss action
   const handleDismiss = () => {
     if (onDismiss) {
-      onDismiss(lead);
+      onDismiss(chat);
     }
   };
 
   return (
-    <div className={`lead-card ${isExpanded ? 'expanded' : ''}`}>
+    <div className={`chat-card ${isExpanded ? 'expanded' : ''}`}>
       {/* Compact View */}
       <div 
-        className="lead-card-compact"
+        className="chat-card-compact"
         onClick={onToggleExpand}
       >
-        <div className="lead-card-avatar" style={{ backgroundColor: getAvatarColor() }}>
+        <div className="chat-card-avatar" style={{ backgroundColor: getAvatarColor() }}>
           {getInitials()}
         </div>
         
-        <div className="lead-card-info">
-          <div className="lead-card-name-row">
-            <h3 className="lead-card-name">{fullName}</h3>
-            <span className="lead-card-badge">{source}</span>
+        <div className="chat-card-info">
+          <div className="chat-card-name-row">
+            <h3 className="chat-card-name">{fullName}</h3>
+            <span className="chat-card-badge">{source}</span>
           </div>
-          <div className="lead-card-preview">
+          <div className="chat-card-preview">
             {email && (
-              <span className="lead-card-email-preview">
+              <span className="chat-card-email-preview">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
                   <polyline points="22,6 12,13 2,6"/>
@@ -95,7 +83,7 @@ const LeadCard = ({ lead, isExpanded = false, onToggleExpand, onDismiss }) => {
               </span>
             )}
             {phone && (
-              <span className="lead-card-phone-preview">
+              <span className="chat-card-phone-preview">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/>
                 </svg>
@@ -105,15 +93,15 @@ const LeadCard = ({ lead, isExpanded = false, onToggleExpand, onDismiss }) => {
           </div>
         </div>
 
-        <div className="lead-card-meta">
-          <span className="lead-card-time">
+        <div className="chat-card-meta">
+          <span className="chat-card-time">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <circle cx="12" cy="12" r="10"/>
               <polyline points="12 6 12 12 16 14"/>
             </svg>
             {relativeTime}
           </span>
-          <button className="lead-card-expand-btn" onClick={(e) => { e.stopPropagation(); onToggleExpand(); }}>
+          <button className="chat-card-expand-btn" onClick={(e) => { e.stopPropagation(); onToggleExpand(); }}>
             <svg 
               width="20" 
               height="20" 
@@ -131,21 +119,21 @@ const LeadCard = ({ lead, isExpanded = false, onToggleExpand, onDismiss }) => {
 
       {/* Expanded View */}
       {isExpanded && (
-        <div className="lead-card-details">
-          <div className="lead-card-divider"></div>
+        <div className="chat-card-details">
+          <div className="chat-card-divider"></div>
           
-          <div className="lead-card-details-grid">
+          <div className="chat-card-details-grid">
             {email && (
-              <div className="lead-detail-item">
-                <div className="lead-detail-icon email-icon">
+              <div className="chat-detail-item">
+                <div className="chat-detail-icon email-icon">
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
                     <polyline points="22,6 12,13 2,6"/>
                   </svg>
                 </div>
-                <div className="lead-detail-content">
-                  <span className="lead-detail-label">Email Address</span>
-                  <a href={`mailto:${email}`} className="lead-detail-value email-link" onClick={(e) => e.stopPropagation()}>
+                <div className="chat-detail-content">
+                  <span className="chat-detail-label">Email Address</span>
+                  <a href={`mailto:${email}`} className="chat-detail-value email-link" onClick={(e) => e.stopPropagation()}>
                     {email}
                   </a>
                 </div>
@@ -153,15 +141,15 @@ const LeadCard = ({ lead, isExpanded = false, onToggleExpand, onDismiss }) => {
             )}
 
             {phone && (
-              <div className="lead-detail-item">
-                <div className="lead-detail-icon phone-icon">
+              <div className="chat-detail-item">
+                <div className="chat-detail-icon phone-icon">
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/>
                   </svg>
                 </div>
-                <div className="lead-detail-content">
-                  <span className="lead-detail-label">Phone Number</span>
-                  <a href={`tel:${phone}`} className="lead-detail-value phone-link" onClick={(e) => e.stopPropagation()}>
+                <div className="chat-detail-content">
+                  <span className="chat-detail-label">Phone Number</span>
+                  <a href={`tel:${phone}`} className="chat-detail-value phone-link" onClick={(e) => e.stopPropagation()}>
                     {phone}
                   </a>
                 </div>
@@ -169,37 +157,34 @@ const LeadCard = ({ lead, isExpanded = false, onToggleExpand, onDismiss }) => {
             )}
 
             {messageText && (
-              <div className="lead-detail-item full-width">
-                <div className="lead-detail-icon description-icon">
+              <div className="chat-detail-item full-width">
+                <div className="chat-detail-icon description-icon">
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                    <polyline points="14 2 14 8 20 8"/>
-                    <line x1="16" y1="13" x2="8" y2="13"/>
-                    <line x1="16" y1="17" x2="8" y2="17"/>
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
                   </svg>
                 </div>
-                <div className="lead-detail-content">
-                  <span className="lead-detail-label">Message</span>
-                  <p className="lead-detail-value description-text">
+                <div className="chat-detail-content">
+                  <span className="chat-detail-label">Message</span>
+                  <p className="chat-detail-value description-text">
                     {messageText}
                   </p>
                 </div>
               </div>
             )}
 
-            <div className="lead-detail-item">
-              <div className="lead-detail-icon time-icon">
+            <div className="chat-detail-item">
+              <div className="chat-detail-icon time-icon">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <circle cx="12" cy="12" r="10"/>
                   <polyline points="12 6 12 12 16 14"/>
                 </svg>
               </div>
-              <div className="lead-detail-content">
-                <span className="lead-detail-label">Created</span>
-                <span className="lead-detail-value">
+              <div className="chat-detail-content">
+                <span className="chat-detail-label">Received</span>
+                <span className="chat-detail-value">
                   {relativeTime}
-                  <span className="lead-detail-subtext">
-                    {new Date(timestamp).toLocaleString()}
+                  <span className="chat-detail-subtext">
+                    {new Date(createdAt).toLocaleString()}
                   </span>
                 </span>
               </div>
@@ -207,27 +192,13 @@ const LeadCard = ({ lead, isExpanded = false, onToggleExpand, onDismiss }) => {
           </div>
 
           {/* Action Buttons */}
-          <div className="lead-card-actions">
-            <a 
-              href={getVTigerUrl()} 
-              target="_blank" 
-              rel="noopener noreferrer"
-              className="lead-action-btn primary" 
-              onClick={(e) => e.stopPropagation()}
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
-                <polyline points="15 3 21 3 21 9"/>
-                <line x1="10" y1="14" x2="21" y2="3"/>
-              </svg>
-              View Lead
-            </a>
+          <div className="chat-card-actions">
             {userNs && (
               <a 
                 href={getUChatUrl()} 
                 target="_blank" 
                 rel="noopener noreferrer"
-                className="lead-action-btn secondary" 
+                className="chat-action-btn primary" 
                 onClick={(e) => e.stopPropagation()}
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -239,7 +210,7 @@ const LeadCard = ({ lead, isExpanded = false, onToggleExpand, onDismiss }) => {
               </a>
             )}
             <button 
-              className="lead-action-btn danger" 
+              className="chat-action-btn danger" 
               onClick={(e) => { e.stopPropagation(); handleDismiss(); }}
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -257,4 +228,4 @@ const LeadCard = ({ lead, isExpanded = false, onToggleExpand, onDismiss }) => {
   );
 };
 
-export default LeadCard;
+export default ChatCard;

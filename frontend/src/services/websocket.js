@@ -86,6 +86,19 @@ class WebSocketService {
           this.triggerEvent('new_lead', leadData);
         });
 
+        // Listen for new_chat events
+        this.socket.on('new_chat', (payload) => {
+          console.log('💬 WebSocket: new_chat event received');
+          console.log('📦 Raw payload:', JSON.stringify(payload, null, 2));
+          
+          // Extract chat data from payload (backend sends { type, data, timestamp })
+          const chatData = payload.data || payload;
+          console.log('📋 Extracted chat data:', JSON.stringify(chatData, null, 2));
+          console.log('🎯 Triggering new_chat event to', this.eventHandlers.get('new_chat')?.length || 0, 'handlers');
+          
+          this.triggerEvent('new_chat', chatData);
+        });
+
         // Generic error handler
         this.socket.on('error', (error) => {
           console.error('WebSocket error:', error);

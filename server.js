@@ -68,7 +68,16 @@ async function startServer() {
     
     // Initialize WebSocket server
     const corsOrigin = process.env.CORS_ORIGIN || 'http://localhost:5173';
-    initializeWebSocket(httpServer, { corsOrigin });
+    
+    // Support multiple origins for WebSocket
+    const wsOrigins = corsOrigin.includes(',') 
+      ? corsOrigin.split(',').map(origin => origin.trim())
+      : [corsOrigin];
+    
+    // Add ngrok support
+    wsOrigins.push('https://granularly-meticulous-sarahi.ngrok-free.dev');
+    
+    initializeWebSocket(httpServer, { corsOrigin: wsOrigins });
     
     // Schedule automatic lead cleanup (delete leads older than 24 hours)
     if (cfg.USE_MONGODB) {

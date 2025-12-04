@@ -33,7 +33,25 @@ const useLeads = () => {
         return dateB - dateA; // Descending order
       });
 
-      setLeads(sortedLeads);
+      // Merge with existing leads to avoid losing WebSocket updates during load
+      setLeads((prevLeads) => {
+        if (prevLeads.length === 0) {
+          // First load, just set the fetched leads
+          return sortedLeads;
+        }
+        
+        // Merge: keep leads from WebSocket that aren't in fetched data
+        const fetchedIds = new Set(sortedLeads.map(l => l.id || l._id));
+        const newLeadsFromWS = prevLeads.filter(l => !fetchedIds.has(l.id || l._id));
+        
+        // Combine and sort
+        const combined = [...newLeadsFromWS, ...sortedLeads];
+        return combined.sort((a, b) => {
+          const dateA = new Date(a.createdAt || a.created_time);
+          const dateB = new Date(b.createdAt || b.created_time);
+          return dateB - dateA;
+        });
+      });
     } catch (err) {
       console.error('Failed to load leads:', err);
       setError(err.message || 'Failed to load leads');
@@ -54,12 +72,23 @@ const useLeads = () => {
     setLeads((prevLeads) => {
       console.log('📊 Current leads count:', prevLeads.length);
       
-      // Check if lead already exists by ID
+      // Check if lead already exists by ID, vtigerId, or email
       const existingLeadIndex = prevLeads.findIndex((lead) => {
         const leadId = lead.id || lead._id;
         const newLeadId = newLead.id || newLead._id;
         
+        // Match by MongoDB ID
         if (leadId && newLeadId && leadId === newLeadId) {
+          return true;
+        }
+        
+        // Match by VTiger ID
+        if (lead.vtigerId && newLead.vtigerId && lead.vtigerId === newLead.vtigerId) {
+          return true;
+        }
+        
+        // Match by email (as fallback)
+        if (lead.email && newLead.email && lead.email === newLead.email) {
           return true;
         }
         
@@ -69,6 +98,8 @@ const useLeads = () => {
       if (existingLeadIndex !== -1) {
         // Lead exists - update it
         console.log('🔄 Lead already exists, updating:', prevLeads[existingLeadIndex].id);
+        console.log('📝 Old lead data:', prevLeads[existingLeadIndex]);
+        console.log('📝 New lead data:', newLead);
         
         const updatedLeads = [...prevLeads];
         updatedLeads[existingLeadIndex] = {
@@ -78,6 +109,7 @@ const useLeads = () => {
           createdAt: newLead.createdAt || updatedLeads[existingLeadIndex].createdAt
         };
         
+        console.log('📝 Updated lead data:', updatedLeads[existingLeadIndex]);
         console.log('✅ Lead updated successfully');
         return updatedLeads;
       }

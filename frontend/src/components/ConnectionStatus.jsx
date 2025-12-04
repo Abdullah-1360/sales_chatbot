@@ -1,8 +1,12 @@
+import { useState } from 'react';
 import useWebSocket from '../hooks/useWebSocket';
+import useNotifications from '../hooks/useNotifications';
 import '../styles/ConnectionStatus.css';
 
 function ConnectionStatus() {
   const { isConnected, reconnectAttempts, connectionStatus } = useWebSocket();
+  const { playSound } = useNotifications();
+  const [showSoundTest, setShowSoundTest] = useState(false);
 
   const getStatusDisplay = () => {
     switch (connectionStatus) {
@@ -38,12 +42,38 @@ function ConnectionStatus() {
 
   const status = getStatusDisplay();
 
+  const handleTestSound = async (soundType) => {
+    console.log(`Testing ${soundType} sound...`);
+    await playSound(soundType);
+  };
+
   return (
-    <div className={`connection-status ${status.className}`}>
-      <span className="status-icon" aria-hidden="true">
-        {status.icon}
-      </span>
-      <span className="status-text">{status.text}</span>
+    <div className="connection-status-wrapper">
+      <div className={`connection-status ${status.className}`}>
+        <span className="status-icon" aria-hidden="true">
+          {status.icon}
+        </span>
+        <span className="status-text">{status.text}</span>
+      </div>
+      
+      <button 
+        className="sound-test-toggle"
+        onClick={() => setShowSoundTest(!showSoundTest)}
+        title="Test notification sounds"
+      >
+        🔊
+      </button>
+      
+      {showSoundTest && (
+        <div className="sound-test-panel">
+          <button onClick={() => handleTestSound('new-lead')}>
+            Test Lead Sound
+          </button>
+          <button onClick={() => handleTestSound('new-chat')}>
+            Test Chat Sound
+          </button>
+        </div>
+      )}
     </div>
   );
 }

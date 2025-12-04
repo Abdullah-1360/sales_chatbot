@@ -2,3 +2,7 @@ shop,store,commerce,->Ecommerce
 Personal,catalogue,normal web,->wordpress 
 corporate, application , SaaS->Business 
 certificate ,secure-> SSL
+
+
+seperate the WIndows plans 
+write examples such as 10 gb 

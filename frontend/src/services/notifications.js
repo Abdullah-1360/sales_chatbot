@@ -91,32 +91,44 @@ class NotificationService {
    */
   async playSound(soundType = 'new-lead') {
     try {
+      console.log(`🔊 Attempting to play sound: ${soundType}`);
+      
       let audio = this.audioCache.get(soundType);
 
       if (!audio) {
+        console.log(`📥 Loading sound file: ${soundType}`);
         const soundPath = `/sounds/${soundType}.mp3`;
         audio = new Audio(soundPath);
         audio.preload = 'auto';
         audio.volume = 0.7; // Set volume to 70%
         this.audioCache.set(soundType, audio);
+        
+        // Wait a bit for the audio to load
+        await new Promise(resolve => setTimeout(resolve, 100));
       }
 
       // Reset audio to beginning if already playing
       audio.currentTime = 0;
+      audio.volume = 0.7; // Ensure volume is set
+      
+      console.log(`▶️ Playing ${soundType} sound...`);
       
       // Try to play the audio
       const playPromise = audio.play();
       
       if (playPromise !== undefined) {
         await playPromise;
-        console.log(`${soundType} sound played successfully`);
+        console.log(`✅ ${soundType} sound played successfully`);
       }
     } catch (error) {
       // Handle permission denied or audio playback errors gracefully
       if (error.name === 'NotAllowedError') {
-        console.warn(`Audio playback blocked by browser. User interaction required first.`);
+        console.warn(`⚠️ Audio playback blocked by browser. User interaction required first.`);
+        console.warn(`💡 Tip: Click anywhere on the page to enable audio`);
+      } else if (error.name === 'NotSupportedError') {
+        console.warn(`⚠️ Audio format not supported: ${soundType}`);
       } else {
-        console.warn(`Could not play ${soundType} sound:`, error.message);
+        console.warn(`⚠️ Could not play ${soundType} sound:`, error.name, error.message);
       }
     }
   }
@@ -169,18 +181,32 @@ class NotificationService {
    * @returns {Promise<void>}
    */
   async notifyIncomingChat(chat) {
-    const title = 'New Chat Message';
-    const body = chat.message || 'You have a new chat message';
+    console.log('notifyIncomingChat called with:', chat);
+    
+    const title = '💬 New Chat Message!';
+    const name = `${chat.firstname || ''} ${chat.lastname || ''}`.trim() || 'Unknown';
+    const body = `${name}\n${chat.email || 'No email provided'}`;
+
+    console.log('Chat notification details:', { title, body, permission: this.permission });
 
     // Show visual notification
-    this.showNotification({
+    const notification = this.showNotification({
       title,
       body,
       tag: `chat-${chat.id || Date.now()}`,
     });
 
+    if (!notification) {
+      console.warn('Chat notification not shown. Permission:', this.permission);
+    }
+
     // Play audio notification with different sound
-    await this.playSound('new-chat');
+    try {
+      await this.playSound('new-chat');
+      console.log('Chat sound played successfully');
+    } catch (error) {
+      console.error('Failed to play chat sound:', error);
+    }
   }
 
   /**
@@ -215,10 +241,26 @@ class NotificationService {
           audio.preload = 'auto';
           audio.volume = 0.7;
           this.audioCache.set(soundType, audio);
+          
+          // Try to play and immediately pause to unlock autoplay
+          // This is a common technique to enable audio in browsers
+          try {
+            audio.volume = 0; // Mute for the unlock attempt
+            const playPromise = audio.play();
+            if (playPromise !== undefined) {
+              await playPromise;
+              audio.pause();
+              audio.currentTime = 0;
+              audio.volume = 0.7; // Restore volume
+            }
+          } catch (unlockError) {
+            // Ignore errors during unlock attempt
+            console.log(`Audio unlock attempt for ${soundType}:`, unlockError.message);
+          }
         }
       }
       
-      console.log('Sounds preloaded successfully');
+      console.log('🔊 Sounds preloaded and unlocked successfully');
     } catch (error) {
       console.warn('Failed to preload sounds:', error);
     }

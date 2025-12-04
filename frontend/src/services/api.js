@@ -111,8 +111,70 @@ export const deleteLead = async (leadId) => {
   }
 };
 
+/**
+ * Fetch chats from the backend API
+ * @param {Object} options - Query options
+ * @param {number} options.limit - Maximum number of chats to fetch
+ * @param {number} options.offset - Number of chats to skip
+ * @param {string} options.sort - Sort order (e.g., '-createdAt' for descending)
+ * @returns {Promise<Object>} Response with chats array and total count
+ */
+export const fetchChats = async ({ limit = 50, offset = 0, sort = '-createdAt' } = {}) => {
+  try {
+    const response = await apiClient.get('/api/chats', {
+      params: { limit, offset, sort },
+    });
+
+    if (!response.data) {
+      throw new Error('Invalid response format: missing data');
+    }
+
+    if (!response.data.success) {
+      throw new Error(response.data.message || 'Failed to fetch chats');
+    }
+
+    if (!Array.isArray(response.data.chats)) {
+      throw new Error('Invalid response format: chats must be an array');
+    }
+
+    return {
+      chats: response.data.chats,
+      total: response.data.total || response.data.chats.length,
+    };
+  } catch (error) {
+    console.error('Error fetching chats:', error);
+    throw error;
+  }
+};
+
+/**
+ * Delete a chat by ID
+ * @param {string} chatId - Chat ID to delete
+ * @returns {Promise<Object>} Deletion result
+ */
+export const deleteChat = async (chatId) => {
+  try {
+    const response = await apiClient.delete(`/api/chats/${chatId}`);
+    
+    if (!response.data) {
+      throw new Error('Invalid response format: missing data');
+    }
+
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Failed to delete chat');
+    }
+
+    return response.data;
+  } catch (error) {
+    console.error('Error deleting chat:', error);
+    throw error;
+  }
+};
+
 export default {
   fetchLeads,
   createLead,
   deleteLead,
+  fetchChats,
+  deleteChat,
 };

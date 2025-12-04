@@ -140,68 +140,53 @@ async function searchExistingLead(sessionName, email, phone) {
 }
 
 /**
- * Update existing lead with new description
+ * Add a comment to a lead using VTiger Comments API
  * @param {string} sessionName - VTiger session name
- * @param {Object} existingLead - Existing lead data
- * @param {string} newDescription - New description to append
- * @returns {Promise<Object>} Update result
+ * @param {string} userId - User ID
+ * @param {string} leadId - Lead ID (e.g., "10x24778")
+ * @param {string} commentText - Comment text to add
+ * @returns {Promise<Object>} Comment creation result
  */
-async function updateLeadDescription(sessionName, existingLead, newDescription) {
+async function addComment(sessionName, userId, leadId, commentText) {
   try {
-    const oldDescription = existingLead.description || '';
-    const timestamp = new Date().toLocaleString();
-    
-    // Append new description with timestamp
-    const updatedDescription = oldDescription 
-      ? `${oldDescription}\n\n--- Update (${timestamp}) ---\n${newDescription}`
-      : newDescription;
-    
-    // VTiger requires ALL mandatory fields when updating
-    // Include all existing fields plus the updated description
     const element = {
-      id: existingLead.id,
-      firstname: existingLead.firstname,
-      lastname: existingLead.lastname,
-      email: existingLead.email,
-      mobile: existingLead.mobile || '',
-      company: existingLead.company || 'Individual',
-      assigned_user_id: existingLead.assigned_user_id,
-      leadsource: existingLead.leadsource || 'Chatbot',
-      leadstatus: existingLead.leadstatus || 'Contacted',
-      description: updatedDescription
+      commentcontent: commentText,
+      related_to: leadId,
+      assigned_user_id: userId
     };
     
-    logger.info('Updating existing lead', { 
-      leadId: existingLead.id,
-      email: existingLead.email 
+    logger.info('Adding comment to lead', { 
+      leadId,
+      commentLength: commentText.length 
     });
     
     const res = await axios.post(
       cfg.VTIGER_URL,
       new URLSearchParams({
-        operation: 'update',
+        operation: 'create',
         sessionName,
+        elementType: 'ModComments',
         element: JSON.stringify(element)
       })
     );
     
     if (res.data.success) {
-      logger.info('Lead updated successfully', { 
-        leadId: existingLead.id,
-        email: existingLead.email 
+      logger.info('Comment added successfully', { 
+        leadId,
+        commentId: res.data.result.id 
       });
     } else {
-      logger.error('Lead update failed', { 
+      logger.error('Comment creation failed', { 
         error: res.data.error,
-        leadId: existingLead.id 
+        leadId 
       });
     }
     
     return res.data;
   } catch (error) {
-    logger.error('Error updating lead', { 
+    logger.error('Error adding comment', { 
       error: error.message,
-      leadId: existingLead.id 
+      leadId 
     });
     throw error;
   }
@@ -223,7 +208,7 @@ async function createLead(sessionName, userId, leadInfo) {
     
     logger.info('Creating lead', { 
       email: leadInfo.email, 
-      name: `${leadInfo.firstname} ${leadInfo.lastname}` 
+      name: `${leadInfo.firstname} ${leadInfo.lastname}`
     });
     
     const res = await axios.post(
@@ -241,6 +226,11 @@ async function createLead(sessionName, userId, leadInfo) {
         leadId: res.data.result.id,
         email: leadInfo.email 
       });
+      
+      // Add initial comment if provided
+      if (leadInfo.comment) {
+        await addComment(sessionName, userId, res.data.result.id, leadInfo.comment);
+      }
     } else {
       logger.error('Lead creation failed', { 
         error: res.data.error,
@@ -259,20 +249,90 @@ async function createLead(sessionName, userId, leadInfo) {
 }
 
 /**
+ * Update existing lead with new email
+ * @param {string} sessionName - VTiger session name
+ * @param {string} userId - User ID
+ * @param {Object} existingLead - Existing lead data
+ * @param {string} newEmail - New email to update
+ * @param {string} newComment - New comment to add (optional)
+ * @returns {Promise<Object>} Update result
+ */
+async function updateLeadEmail(sessionName, userId, existingLead, newEmail, newComment) {
+  try {
+    // VTiger requires ALL mandatory fields when updating
+    const element = {
+      id: existingLead.id,
+      firstname: existingLead.firstname,
+      lastname: existingLead.lastname,
+      email: newEmail, // Update with new email
+      mobile: existingLead.mobile || '',
+      company: existingLead.company || 'Individual',
+      assigned_user_id: existingLead.assigned_user_id,
+      leadsource: existingLead.leadsource || 'Chatbot',
+      leadstatus: existingLead.leadstatus || 'Contacted',
+      description: existingLead.description || ''
+    };
+    
+    logger.info('Updating lead email', { 
+      leadId: existingLead.id,
+      oldEmail: existingLead.email,
+      newEmail,
+      hasNewComment: !!newComment
+    });
+    
+    const res = await axios.post(
+      cfg.VTIGER_URL,
+      new URLSearchParams({
+        operation: 'update',
+        sessionName,
+        element: JSON.stringify(element)
+      })
+    );
+    
+    if (res.data.success) {
+      logger.info('Lead email updated successfully', { 
+        leadId: existingLead.id,
+        newEmail 
+      });
+      
+      // Add comment if provided
+      if (newComment) {
+        await addComment(sessionName, userId, existingLead.id, newComment);
+      }
+    } else {
+      logger.error('Lead email update failed', { 
+        error: res.data.error,
+        leadId: existingLead.id 
+      });
+    }
+    
+    return res.data;
+  } catch (error) {
+    logger.error('Error updating lead email', { 
+      error: error.message,
+      leadId: existingLead.id 
+    });
+    throw error;
+  }
+}
+
+/**
  * Main function to create a lead (handles full flow)
  * Checks for existing lead by email/phone and updates if found
+ * Handles email upgrade from generated to real email
  * @param {Object} leadData - Lead data
  * @param {string} leadData.username - Full name
  * @param {string} leadData.email - Email address
  * @param {string} leadData.phone - Phone number (optional)
  * @param {string} leadData.description - Lead description (optional)
+ * @param {string} leadData.User_Ns - UChat User Namespace ID (optional)
  * @returns {Promise<Object>} Result with success status and lead info
  */
 async function createLeadFlow(leadData) {
   const startTime = Date.now();
   
   try {
-    const { username, email, phone, description } = leadData;
+    const { username, email, phone, description, User_Ns } = leadData;
     
     // Validate required fields
     if (!username || !email) {
@@ -288,23 +348,101 @@ async function createLeadFlow(leadData) {
     // Login
     const { sessionName, userId } = await login(token);
     
-    // Check if lead already exists
-    const existingLead = await searchExistingLead(sessionName, email, phone);
+    // Check if this is a real email or generated email
+    const isGeneratedEmail = email.endsWith('@uchat.generated');
+    const isRealEmail = !isGeneratedEmail;
     
+    let existingLead = null;
     let response;
     
+    // If real email provided and User_Ns exists, check BOTH emails
+    if (isRealEmail && User_Ns) {
+      // Generate what the old email would have been
+      const generatedEmail = `${User_Ns.toLowerCase().replace(/[^a-z0-9]/g, '_')}@uchat.generated`;
+      
+      logger.info('Checking for lead with both generated and real email', { 
+        generatedEmail,
+        realEmail: email 
+      });
+      
+      // First, check for lead with generated email
+      existingLead = await searchExistingLead(sessionName, generatedEmail, phone);
+      
+      if (existingLead) {
+        // Found lead with generated email - upgrade to real email
+        logger.info('Found lead with generated email, upgrading to real email', { 
+          leadId: existingLead.id,
+          oldEmail: generatedEmail,
+          newEmail: email 
+        });
+        
+        response = await updateLeadEmail(sessionName, userId, existingLead, email, description);
+        
+        response.isUpdate = true;
+        response.isEmailUpgrade = true;
+        response.existingLeadId = existingLead.id;
+        response.oldEmail = generatedEmail;
+        
+        const duration = Date.now() - startTime;
+        logger.info('Lead email upgraded successfully', { 
+          duration: `${duration}ms`,
+          leadId: existingLead.id,
+          oldEmail: generatedEmail,
+          newEmail: email 
+        });
+        
+        return response;
+      }
+      
+      // If not found with generated email, check with real email
+      logger.info('No lead found with generated email, checking real email', { 
+        realEmail: email 
+      });
+    }
+    
+    // Check if lead already exists with current email (real or generated)
+    existingLead = await searchExistingLead(sessionName, email, phone);
+    
     if (existingLead && description) {
-      // Lead exists - update description
-      logger.info('Lead already exists, updating description', { 
+      // Lead exists - add comment instead of updating
+      logger.info('Lead already exists, adding comment', { 
         leadId: existingLead.id,
         email 
       });
       
-      response = await updateLeadDescription(sessionName, existingLead, description);
+      response = await addComment(sessionName, userId, existingLead.id, description);
       
-      // Add flag to indicate this was an update
+      // Add flag to indicate this was an update and include the lead data
       response.isUpdate = true;
+      response.isEmailUpgrade = false;
       response.existingLeadId = existingLead.id;
+      // Include the existing lead data with the new description/comment
+      response.result = {
+        id: existingLead.id,
+        firstname: existingLead.firstname,
+        lastname: existingLead.lastname,
+        email: existingLead.email,
+        mobile: existingLead.mobile,
+        description: description, // New comment/description
+        company: existingLead.company,
+        assigned_user_id: existingLead.assigned_user_id,
+        leadsource: existingLead.leadsource,
+        leadstatus: existingLead.leadstatus
+      };
+    } else if (existingLead) {
+      // Lead exists but no description - just return success
+      logger.info('Lead already exists, no new comment to add', { 
+        leadId: existingLead.id,
+        email 
+      });
+      
+      response = {
+        success: true,
+        result: existingLead,
+        isUpdate: true,
+        isEmailUpgrade: false,
+        existingLeadId: existingLead.id
+      };
     } else {
       // Lead doesn't exist - create new one
       logger.info('Creating new lead', { email });
@@ -314,10 +452,12 @@ async function createLeadFlow(leadData) {
         lastname,
         email,
         phone,
-        description
+        description,
+        comment: description // Use description as comment
       });
       
       response.isUpdate = false;
+      response.isEmailUpgrade = false;
     }
     
     const duration = Date.now() - startTime;
@@ -343,7 +483,8 @@ module.exports = {
   login,
   splitName,
   searchExistingLead,
-  updateLeadDescription,
+  addComment,
+  updateLeadEmail,
   createLead,
   createLeadFlow
 };

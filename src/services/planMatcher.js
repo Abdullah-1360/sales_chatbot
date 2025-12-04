@@ -20,7 +20,7 @@ const KEYWORD_MAPPINGS = {
  * @returns {Object} { gid, minTier, reasoning } - Matched group ID, minimum tier, and reasoning
  */
 module.exports = function planMatcher(answers) {
-  const { purpose, websites_count, needs_reseller, needs_ssl, storage_needed_gb } = answers;
+  const { purpose, websites_count, needs_reseller, needs_ssl, needs_windows, storage_needed_gb } = answers;
 
   // 1. Normalize and analyze inputs
   const cleanCount = normaliseCount(websites_count);
@@ -34,7 +34,16 @@ module.exports = function planMatcher(answers) {
 
   // 2. Priority-based routing (order matters!)
   
-  // PRIORITY 1: SSL Certificates (if specifically requested or detected)
+  // PRIORITY 1: Windows Hosting (must check first - dedicated Windows Hosting GID 28)
+  if (needs_windows === true) {
+    return { 
+      gid: 28, 
+      minTier, 
+      reasoning: 'Windows hosting requested - routing to Windows Hosting (GID 28)' 
+    };
+  }
+  
+  // PRIORITY 2: SSL Certificates (if specifically requested or detected)
   if (needs_ssl === true || detectedIntent === 'ssl') {
     return { 
       gid: 6, 
@@ -43,7 +52,7 @@ module.exports = function planMatcher(answers) {
     };
   }
   
-  // PRIORITY 2: Reseller Hosting (for managing multiple client sites)
+  // PRIORITY 3: Reseller Hosting (for managing multiple client sites)
   if (needs_reseller) {
     return { 
       gid: 2, 
@@ -52,7 +61,7 @@ module.exports = function planMatcher(answers) {
     };
   }
   
-  // PRIORITY 3: Keyword-based intelligent routing
+  // PRIORITY 4: Keyword-based intelligent routing
   // Detects intent from natural language input
   
   // E-commerce keywords → WooCommerce Hosting (GID 21)
@@ -86,7 +95,7 @@ module.exports = function planMatcher(answers) {
     };
   }
   
-  // PRIORITY 4: Intelligent fallback based on scale
+  // PRIORITY 5: Intelligent fallback based on scale
   
   // High volume sites (10+ websites) → Business Hosting (GID 25)
   if (isHighVolume) {
@@ -126,7 +135,7 @@ module.exports = function planMatcher(answers) {
     };
   }
   
-  // PRIORITY 5: Default fallback → cPanel Hosting (GID 1)
+  // PRIORITY 6: Default fallback → cPanel Hosting (GID 1)
   // General purpose hosting for simple sites or unspecified needs
   return { 
     gid: 1, 
