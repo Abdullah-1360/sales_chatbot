@@ -1,9 +1,11 @@
 const express = require('express');
 const helmet = require('helmet');
 const compression = require('compression');
+require('dotenv').config();
 const cors = require('cors');
 const router = require('./routes');
 const { requestLogger, errorLogger } = require('./middleware/requestLogger');
+const { sendWhmcsError } = require('./middleware/errorHandler');
 
 const app = express();
 
@@ -46,6 +48,8 @@ app.use(express.json());
 // Request/Response logging middleware
 app.use(requestLogger);
 
+// Mount routes at both root and /api for backward compatibility
+app.use('/', router);
 app.use('/api', router);
 
 // Error logging middleware

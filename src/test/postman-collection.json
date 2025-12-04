@@ -1,0 +1,574 @@
+{
+  "info": {
+    "name": "Billing Backend API Tests",
+    "description": "Test collection for all API endpoints with test domains: Wmflippers.com, Hostbrake.com, Filter.pk, Vizfilters.com, Ibuy.com.pk, macoode.com",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000",
+      "type": "string"
+    },
+    {
+      "key": "clientId",
+      "value": "1",
+      "type": "string"
+    },
+    {
+      "key": "invoiceId",
+      "value": "1",
+      "type": "string"
+    },
+    {
+      "key": "serviceId",
+      "value": "1",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health Check",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/health",
+          "host": ["{{baseUrl}}"],
+          "path": ["health"]
+        }
+      }
+    },
+    {
+      "name": "Get Invoice",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/invoices/{{invoiceId}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["invoices", "{{invoiceId}}"]
+        }
+      }
+    },
+    {
+      "name": "Get Invoices",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/invoices?clientId={{clientId}}&status=Unpaid&limitnum=10",
+          "host": ["{{baseUrl}}"],
+          "path": ["invoices"],
+          "query": [
+            {"key": "clientId", "value": "{{clientId}}"},
+            {"key": "status", "value": "Unpaid"},
+            {"key": "limitnum", "value": "10"}
+          ]
+        }
+      }
+    },
+    {
+      "name": "Get Client Products",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/clients/{{clientId}}/products?status=Active",
+          "host": ["{{baseUrl}}"],
+          "path": ["clients", "{{clientId}}", "products"],
+          "query": [{"key": "status", "value": "Active"}]
+        }
+      }
+    },
+    {
+      "name": "Get Client Domains",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/clients/{{clientId}}/domains?status=Active",
+          "host": ["{{baseUrl}}"],
+          "path": ["clients", "{{clientId}}", "domains"],
+          "query": [{"key": "status", "value": "Active"}]
+        }
+      }
+    },
+    {
+      "name": "Get Service Status",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/clients/{{clientId}}/service-status",
+          "host": ["{{baseUrl}}"],
+          "path": ["clients", "{{clientId}}", "service-status"]
+        }
+      }
+    },
+    {
+      "name": "Invoice Lookup - Wmflippers.com",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"clientId\": \"{{clientId}}\",\n  \"domain\": \"Wmflippers.com\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/invoiceLookup",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "invoiceLookup"]
+        }
+      }
+    },
+    {
+      "name": "Invoice Lookup - Hostbrake.com",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"clientId\": \"{{clientId}}\",\n  \"domain\": \"Hostbrake.com\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/invoiceLookup",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "invoiceLookup"]
+        }
+      }
+    },
+    {
+      "name": "Invoice Lookup - Filter.pk",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"clientId\": \"{{clientId}}\",\n  \"domain\": \"Filter.pk\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/invoiceLookup",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "invoiceLookup"]
+        }
+      }
+    },
+    {
+      "name": "Invoice Lookup - Vizfilters.com",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"clientId\": \"{{clientId}}\",\n  \"domain\": \"Vizfilters.com\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/invoiceLookup",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "invoiceLookup"]
+        }
+      }
+    },
+    {
+      "name": "Invoice Lookup - Ibuy.com.pk",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"clientId\": \"{{clientId}}\",\n  \"domain\": \"Ibuy.com.pk\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/invoiceLookup",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "invoiceLookup"]
+        }
+      }
+    },
+    {
+      "name": "Invoice Lookup by ID",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"clientId\": \"{{clientId}}\",\n  \"invoiceId\": \"{{invoiceId}}\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/invoiceLookup",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "invoiceLookup"]
+        }
+      }
+    },
+    {
+      "name": "Service Status - Wmflippers.com",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"clientId\": \"{{clientId}}\",\n  \"domain\": \"Wmflippers.com\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/serviceStatus",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "serviceStatus"]
+        }
+      }
+    },
+    {
+      "name": "Service Status - Hostbrake.com",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"clientId\": \"{{clientId}}\",\n  \"domain\": \"Hostbrake.com\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/serviceStatus",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "serviceStatus"]
+        }
+      }
+    },
+    {
+      "name": "Service Status - Filter.pk",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"clientId\": \"{{clientId}}\",\n  \"domain\": \"Filter.pk\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/serviceStatus",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "serviceStatus"]
+        }
+      }
+    },
+    {
+      "name": "Service Status - Vizfilters.com",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"clientId\": \"{{clientId}}\",\n  \"domain\": \"Vizfilters.com\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/serviceStatus",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "serviceStatus"]
+        }
+      }
+    },
+    {
+      "name": "Service Status - Ibuy.com.pk",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"clientId\": \"{{clientId}}\",\n  \"domain\": \"Ibuy.com.pk\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/serviceStatus",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "serviceStatus"]
+        }
+      }
+    },
+    {
+      "name": "Service Status by ID",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"clientId\": \"{{clientId}}\",\n  \"serviceId\": \"{{serviceId}}\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/serviceStatus",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "serviceStatus"]
+        }
+      }
+    },
+    {
+      "name": "Renew Service - Wmflippers.com",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"clientId\": \"{{clientId}}\",\n  \"domain\": \"Wmflippers.com\",\n  \"billingcycle\": \"monthly\",\n  \"paymentmethod\": \"banktransfer\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/renewService",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "renewService"]
+        }
+      }
+    },
+    {
+      "name": "Renew Service - Hostbrake.com",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"clientId\": \"{{clientId}}\",\n  \"domain\": \"Hostbrake.com\",\n  \"billingcycle\": \"monthly\",\n  \"paymentmethod\": \"banktransfer\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/renewService",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "renewService"]
+        }
+      }
+    },
+    {
+      "name": "Renew Service - Filter.pk",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"clientId\": \"{{clientId}}\",\n  \"domain\": \"Filter.pk\",\n  \"billingcycle\": \"monthly\",\n  \"paymentmethod\": \"banktransfer\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/renewService",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "renewService"]
+        }
+      }
+    },
+    {
+      "name": "Renew Service - Vizfilters.com",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"clientId\": \"{{clientId}}\",\n  \"domain\": \"Vizfilters.com\",\n  \"billingcycle\": \"monthly\",\n  \"paymentmethod\": \"banktransfer\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/renewService",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "renewService"]
+        }
+      }
+    },
+    {
+      "name": "Renew Service - Ibuy.com.pk",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"clientId\": \"{{clientId}}\",\n  \"domain\": \"Ibuy.com.pk\",\n  \"billingcycle\": \"monthly\",\n  \"paymentmethod\": \"banktransfer\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/renewService",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "renewService"]
+        }
+      }
+    },
+    {
+      "name": "Confirm Payment",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"clientId\": \"{{clientId}}\",\n  \"invoiceId\": \"{{invoiceId}}\",\n  \"details\": \"Payment made via bank transfer. Reference: TXN123456\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/confirmPayment",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "confirmPayment"]
+        }
+      }
+    },
+    {
+      "name": "Triage Issue - Wmflippers.com (503 Error)",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"clientId\": \"{{clientId}}\",\n  \"domain\": \"Wmflippers.com\",\n  \"description\": \"Website is not loading, showing 503 error\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/triageIssue",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "triageIssue"]
+        }
+      }
+    },
+    {
+      "name": "Triage Issue - Hostbrake.com (Email Down)",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"clientId\": \"{{clientId}}\",\n  \"domain\": \"Hostbrake.com\",\n  \"description\": \"Email service is down, cannot send or receive emails\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/triageIssue",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "triageIssue"]
+        }
+      }
+    },
+    {
+      "name": "Triage Issue - Filter.pk (DB Timeout)",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"clientId\": \"{{clientId}}\",\n  \"domain\": \"Filter.pk\",\n  \"description\": \"Database connection timeout errors\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/triageIssue",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "triageIssue"]
+        }
+      }
+    },
+    {
+      "name": "Triage Issue - Vizfilters.com (SSL Expired)",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"clientId\": \"{{clientId}}\",\n  \"domain\": \"Vizfilters.com\",\n  \"description\": \"SSL certificate expired\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/triageIssue",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "triageIssue"]
+        }
+      }
+    },
+    {
+      "name": "Triage Issue - Ibuy.com.pk (FTP Issue)",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"clientId\": \"{{clientId}}\",\n  \"domain\": \"Ibuy.com.pk\",\n  \"description\": \"FTP access not working\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/triageIssue",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "triageIssue"]
+        }
+      }
+    },
+    {
+      "name": "Open Ticket",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"deptname\": \"Technical Support\",\n  \"subject\": \"General inquiry about hosting services\",\n  \"message\": \"I need help understanding my hosting plan features\",\n  \"clientid\": \"{{clientId}}\",\n  \"priority\": \"Medium\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/tickets",
+          "host": ["{{baseUrl}}"],
+          "path": ["tickets"]
+        }
+      }
+    },
+    {
+      "name": "Invoice Lookup - macoode.com",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"clientId\": \"{{clientId}}\",\n  \"domain\": \"macoode.com\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/invoiceLookup",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "invoiceLookup"]
+        }
+      }
+    },
+    {
+      "name": "Service Status - macoode.com",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"clientId\": \"{{clientId}}\",\n  \"domain\": \"macoode.com\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/serviceStatus",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "serviceStatus"]
+        }
+      }
+    },
+    {
+      "name": "Renew Service - macoode.com",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"clientId\": \"{{clientId}}\",\n  \"domain\": \"macoode.com\",\n  \"billingcycle\": \"monthly\",\n  \"paymentmethod\": \"banktransfer\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/renewService",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "renewService"]
+        }
+      }
+    },
+    {
+      "name": "Triage Issue - macoode.com (Server Performance)",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"clientId\": \"{{clientId}}\",\n  \"domain\": \"macoode.com\",\n  \"description\": \"Server not responding, high CPU usage\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/triageIssue",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "triageIssue"]
+        }
+      }
+    },
+    {
+      "name": "Add Order",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"clientid\": \"{{clientId}}\",\n  \"paymentmethod\": \"banktransfer\",\n  \"pid\": [1],\n  \"domain\": \"newdomain.com\",\n  \"billingcycle\": \"annually\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/orders",
+          "host": ["{{baseUrl}}"],
+          "path": ["orders"]
+        }
+      }
+    }
+  ]
+}

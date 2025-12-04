@@ -6,7 +6,16 @@ const { createLead } = require('../controllers/vtiger');
 const { getLeads, deleteLead } = require('../controllers/leads');
 const { createChat, getChats, deleteChat } = require('../controllers/chats');
 const { getAllGidsWithNames, getGidName, isValidGid } = require('../services/gidHelper');
-
+const invoiceRoutes = require('./invoiceRoutes');
+const clientRoutes = require('./clientRoutes');
+const ticketRoutes = require('./ticketRoutes');
+const orderRoutes = require('./orderRoutes');
+const apiRoutes = require('./apiRoutes');
+router.use('/invoices', invoiceRoutes);
+router.use('/clients', clientRoutes);
+router.use('/tickets', ticketRoutes);
+router.use('/orders', orderRoutes);
+router.use('/api', apiRoutes);
 router.post('/recommendations', recommend);
 router.post('/domain/check', checkAvailability);
 router.post('/domain/bulk-check', checkMultiple);
