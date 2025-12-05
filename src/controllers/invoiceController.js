@@ -8,11 +8,80 @@ exports.getInvoiceById = async (req, res, next) => {
   console.log(`[GET /invoices/${req.params.invoiceId}]`);
   try {
     const data = await getInvoice(req.params.invoiceId);
-    const response = { ok: true, invoice: data, summary: summarizeInvoice(data) };
-    console.log('→ Invoice:', data.invoiceid, 'Status:', data.status);
+    
+    if (!data || !data.invoiceid) {
+      console.log('✗ Invoice not found');
+      return res.status(404).json({ 
+        success: false, 
+        error: "I couldn't find an invoice with that number. Please check the ID." 
+      });
+    }
+    
+    const status = toMessageStatus(data.status);
+    const balance = data.balance || '0.00';
+    const total = data.total || balance;
+    const dueDate = data.duedate || null;
+    const paidDate = data.datepaid || data.date_paid || null;
+    const invoiceId = data.invoiceid || data.id;
+    const items = data.items?.item || [];
+    const notes = data.notes || '';
+    
+    // Check if invoice is overdue
+    let isOverdue = false;
+    if (dueDate && status !== 'Paid' && status !== 'Cancelled' && status !== 'Refunded') {
+      const dueDateObj = new Date(dueDate);
+      const now = new Date();
+      dueDateObj.setHours(0, 0, 0, 0);
+      now.setHours(0, 0, 0, 0);
+      isOverdue = dueDateObj < now;
+    }
+    
+    // Build user-friendly message based on status
+    let message;
+    if (status === 'Paid') {
+      message = paidDate 
+        ? `Invoice #${invoiceId} was paid on ${paidDate}. Thank you for your payment!` 
+        : `Invoice #${invoiceId} is marked as Paid.`;
+    } else if (status === 'Cancelled') {
+      message = `Invoice #${invoiceId} has been cancelled and is no longer due.`;
+    } else if (status === 'Refunded') {
+      message = `Invoice #${invoiceId} has been refunded. No payment is required.`;
+    } else if (isOverdue) {
+      message = `Invoice #${invoiceId} is overdue. The balance of ${data.currencyprefix || '$'}${balance} was due on ${dueDate}. Please pay as soon as possible to avoid service interruption.`;
+    } else {
+      message = `Invoice #${invoiceId} is ${status}. Balance due: ${data.currencyprefix || '$'}${balance}${dueDate ? ' by ' + dueDate : ''}.`;
+    }
+    
+    const response = { 
+      success: true,
+      invoiceId: invoiceId,
+      status: status,
+      balance: balance,
+      dueDate: dueDate,
+      message: message
+    };
+    
+    if (status === 'Paid' && paidDate) {
+      response.paidDate = paidDate;
+    }
+    if (isOverdue) {
+      response.isOverdue = true;
+    }
+    if (notes) {
+      response.notes = notes;
+    }
+    
+    console.log('→ Invoice:', invoiceId, 'Status:', status, isOverdue ? '(OVERDUE)' : '', 'Balance:', balance);
     res.json(response);
   } catch (err) {
     console.log('✗ Error:', err.message);
+    // Don't reveal if invoice exists for security - just say not found
+    if (err.message.includes('not found') || err.message.includes('Invalid')) {
+      return res.status(404).json({ 
+        success: false, 
+        error: "I couldn't find an invoice with that number. Please check the ID." 
+      });
+    }
     next(err);
   }
 };

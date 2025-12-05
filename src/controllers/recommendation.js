@@ -116,29 +116,48 @@ exports.recommend = async (req, res, next) => {
     logger.debug(`Fetching products for GID ${gid}`);
     let allPlans = await whmcs.getProductsByGid(gid);
     
-    // Filter out hidden plans (PID 238, 250)
-    const hiddenPids = [238, 250];
-    allPlans = allPlans.filter(p => !hiddenPids.includes(parseInt(p.pid)));
-    
-    // Filter Windows plans based on needs_windows parameter
+    // Filter based on Windows requirement
     if (answers.needs_windows === true) {
-      // User wants ONLY Windows plans (should already be routed to GID 25)
-      const windowsPlans = allPlans.filter(p => 
-        p.name && p.name.toLowerCase().includes('windows')
-      );
+      // User wants ONLY Windows plans (plans with "windows" in the name)
+      const windowsPlans = allPlans.filter(p => {
+        if (!p.name) return false;
+        return p.name.toLowerCase().includes('windows');
+      });
       
       if (windowsPlans.length > 0) {
         allPlans = windowsPlans;
-        logger.info(`Filtered for Windows plans only: ${allPlans.length} plans found in GID ${gid}`);
+        logger.info(`Filtered for Windows plans: ${allPlans.length} plans found in GID ${gid}`);
       } else {
-        logger.warn(`Windows plans requested but none found in GID ${gid}`);
-        return res.json([]);
+        // No Windows plans in purpose-determined GID, search ALL hosting GIDs
+        logger.warn(`No Windows plans in GID ${gid}, searching all hosting GIDs`);
+        const hostingGids = [1, 20, 21, 25, 28]; // All hosting GIDs
+        
+        // Fetch plans from all hosting GIDs
+        const allGidPlans = await Promise.all(
+          hostingGids.map(gidNum => whmcs.getProductsByGid(gidNum))
+        );
+        
+        // Flatten and filter for plans with "windows" in name
+        const allWindowsPlans = allGidPlans.flat().filter(p => {
+          if (!p.name) return false;
+          return p.name.toLowerCase().includes('windows');
+        });
+        
+        if (allWindowsPlans.length > 0) {
+          allPlans = allWindowsPlans;
+          logger.info(`Found ${allWindowsPlans.length} Windows plans across all hosting GIDs`);
+        } else {
+          logger.warn('No Windows plans found in any hosting GID');
+          return res.json([]);
+        }
       }
     } else {
       // User wants NON-Windows plans (default behavior)
-      const nonWindowsPlans = allPlans.filter(p => 
-        !p.name || !p.name.toLowerCase().includes('windows')
-      );
+      // Filter out plans with "windows" in name
+      const nonWindowsPlans = allPlans.filter(p => {
+        if (!p.name) return true;
+        return !p.name.toLowerCase().includes('windows');
+      });
       
       if (nonWindowsPlans.length > 0) {
         allPlans = nonWindowsPlans;
@@ -148,6 +167,10 @@ exports.recommend = async (req, res, next) => {
         // Keep all plans as fallback
       }
     }
+    
+    // Filter out hidden plans (PID 238, 250)
+    const hiddenPids = [238, 250];
+    allPlans = allPlans.filter(p => !hiddenPids.includes(parseInt(p.pid)));
     
     if (!allPlans.length) {
       logger.warn(`No plans found for GID ${gid}`);

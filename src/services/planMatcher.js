@@ -34,16 +34,8 @@ module.exports = function planMatcher(answers) {
 
   // 2. Priority-based routing (order matters!)
   
-  // PRIORITY 1: Windows Hosting (must check first - dedicated Windows Hosting GID 28)
-  if (needs_windows === true) {
-    return { 
-      gid: 28, 
-      minTier, 
-      reasoning: 'Windows hosting requested - routing to Windows Hosting (GID 28)' 
-    };
-  }
-  
-  // PRIORITY 2: SSL Certificates (if specifically requested or detected)
+  // PRIORITY 1: SSL Certificates (if specifically requested or detected)
+  // Note: Windows filtering is handled in the controller, not here
   if (needs_ssl === true || detectedIntent === 'ssl') {
     return { 
       gid: 6, 
