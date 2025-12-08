@@ -47,9 +47,9 @@ exports.getInvoiceById = async (req, res, next) => {
     } else if (status === 'Refunded') {
       message = `Invoice #${invoiceId} has been refunded. No payment is required.`;
     } else if (isOverdue) {
-      message = `Invoice #${invoiceId} is overdue. The balance of ${data.currencyprefix || '$'}${balance} was due on ${dueDate}. Please pay as soon as possible to avoid service interruption.`;
+      message = `Invoice #${invoiceId} is overdue. The balance of ${data.currencyprefix || 'PKR '}${balance} was due on ${dueDate}. Please pay as soon as possible to avoid service interruption.`;
     } else {
-      message = `Invoice #${invoiceId} is ${status}. Balance due: ${data.currencyprefix || '$'}${balance}${dueDate ? ' by ' + dueDate : ''}.`;
+      message = `Invoice #${invoiceId} is ${status}. Balance due: ${data.currencyprefix || 'PKR '}${balance}${dueDate ? ' by ' + dueDate : ''}.`;
     }
     
     const response = { 
@@ -88,16 +88,47 @@ exports.getInvoiceById = async (req, res, next) => {
 
 /**
  * Get list of invoices with filters
+ * Supports both clientId and email parameters
  */
 exports.getInvoicesList = async (req, res, next) => {
   console.log('[GET /invoices]', req.query);
   try {
-    const { clientId, status, limitstart, limitnum } = req.query;
+    const { clientId, email, status, limitstart, limitnum } = req.query;
+    
+    let resolvedClientId = clientId;
+    
+    // If email provided instead of clientId, resolve it
+    if (!resolvedClientId && email) {
+      console.log('→ Resolving clientId from email:', email);
+      try {
+        const { getClientsDetails } = require('../services/whmcsService');
+        const clientData = await getClientsDetails({ email });
+        
+        if (clientData && clientData.userid) {
+          resolvedClientId = String(clientData.userid);
+          console.log('→ Resolved clientId:', resolvedClientId);
+        } else {
+          return res.status(404).json({
+            success: false,
+            error: 'No client found with that email address'
+          });
+        }
+      } catch (err) {
+        console.log('✗ Email resolution failed:', err.message);
+        return res.status(404).json({
+          success: false,
+          error: 'No client found with that email address'
+        });
+      }
+    }
+    
+    // Build WHMCS API parameters
     const params = {};
-    if (clientId) params.userid = clientId;
+    if (resolvedClientId) params.userid = resolvedClientId;
     if (status) params.status = status;
     if (limitstart) params.limitstart = limitstart;
     if (limitnum) params.limitnum = limitnum;
+    
     const data = await getInvoices(params);
     console.log('→ Found:', data.totalresults || 0, 'invoices');
     res.json({ ok: true, ...data });
@@ -133,13 +164,33 @@ exports.invoiceLookup = async (req, res, next) => {
     
     let invoice;
     if (targetInvoiceId) {
-      invoice = await getInvoice(targetInvoiceId);
+      try {
+        invoice = await getInvoice(targetInvoiceId);
+        console.log('→ Invoice fetched:', invoice.invoiceid || invoice.id, 'Owner:', invoice.userid || invoice.clientid);
+      } catch (err) {
+        console.log('✗ Invoice fetch failed:', err.message);
+        return res.status(404).json({ 
+          success: false, 
+          error: 'Invoice not found. Please check the invoice ID.' 
+        });
+      }
     } else if (domain) {
       const found = await findRelatedUnpaidInvoice(clientId, { domain });
       if (found) invoice = found;
     }
     
     if (!invoice) {
+      // No invoice found - provide helpful response
+      if (domain) {
+        return res.json({ 
+          success: false, 
+          error: 'No unpaid invoice found for this service.',
+          domain: domain,
+          message: 'There are currently no unpaid invoices for this service. WHMCS will automatically generate a renewal invoice when the service is due (typically 7-14 days before the due date).',
+          
+        });
+      }
+      
       return res.status(404).json({ 
         success: false, 
         error: 'Invoice not found or does not belong to this account.' 
@@ -147,12 +198,17 @@ exports.invoiceLookup = async (req, res, next) => {
     }
     
     const ownerId = String(invoice.userid || invoice.user_id || invoice.clientid);
+    console.log('→ Validating ownership - Invoice owner:', ownerId, 'Requested by:', clientId);
+    
     if (String(ownerId) !== String(clientId)) {
+      console.log('✗ Ownership validation failed');
       return res.status(404).json({ 
         success: false, 
         error: 'Invoice not found or does not belong to this account.' 
       });
     }
+    
+    console.log('✓ Ownership validated');
     
     const status = toMessageStatus(invoice.status);
     const amount = amountFromInvoice(invoice);

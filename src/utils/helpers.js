@@ -96,24 +96,53 @@ function amountFromInvoice(inv) {
 }
 
 /**
- * Find related unpaid invoice for a service
+ * Find related unpaid invoice for a service or domain
+ * Properly parses invoice items and matches by relid (related ID)
  */
-async function findRelatedUnpaidInvoice(clientId, { domain, serviceId }) {
+async function findRelatedUnpaidInvoice(clientId, { domain, serviceId, domainId }) {
   const list = await getInvoices({ userid: clientId, status: 'Unpaid', limitnum: 50 });
   const arr = (list.invoices && (list.invoices.invoice || list.invoices.invoices)) || [];
+  
   for (const inv of arr) {
-    const id = inv.id || inv.invoiceid || inv.invoicenum || inv.invoiceid;
+    const id = inv.id || inv.invoiceid || inv.invoicenum;
     if (!id) continue;
+    
     try {
       const detail = await getInvoice(id);
-      const blob = JSON.stringify(detail).toLowerCase();
-      const needleDomain = domain ? String(domain).toLowerCase() : null;
-      const needleService = serviceId ? String(serviceId).toLowerCase() : null;
-      if ((needleDomain && blob.includes(needleDomain)) || (needleService && blob.includes(needleService))) {
-        return detail;
+      
+      // Parse invoice items
+      const items = detail.items?.item || [];
+      const itemArray = Array.isArray(items) ? items : (items ? [items] : []);
+      
+      // Check each item for a match
+      for (const item of itemArray) {
+        const itemRelId = String(item.relid || '');
+        const itemType = String(item.type || '').toLowerCase();
+        const itemDescription = String(item.description || '').toLowerCase();
+        
+        // Match by service ID (for hosting/services)
+        if (serviceId && itemRelId === String(serviceId)) {
+          console.log(`→ Found invoice #${id} with matching service ID ${serviceId} (type: ${itemType})`);
+          return detail;
+        }
+        
+        // Match by domain ID (for domain registrations)
+        if (domainId && itemRelId === String(domainId)) {
+          console.log(`→ Found invoice #${id} with matching domain ID ${domainId} (type: ${itemType})`);
+          return detail;
+        }
+        
+        // Fallback: Match by domain name in description
+        if (domain && itemDescription.includes(String(domain).toLowerCase())) {
+          console.log(`→ Found invoice #${id} with domain "${domain}" in description`);
+          return detail;
+        }
       }
-    } catch {}
+    } catch (err) {
+      console.log(`→ Error checking invoice ${id}:`, err.message);
+    }
   }
+  
   return null;
 }
 

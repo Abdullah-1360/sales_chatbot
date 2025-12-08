@@ -429,12 +429,65 @@ async function getDomainAvailability(domain, phoneNumber = null) {
         getPricingForTld(tld, currency)
       ]);
       console.log(`✅  ${domain} is available!`);
+      
+      // Generate alternative suggestions even for available domains
+      const originalTld = await extractTld(domain);
+      const name = originalTld ? domain.slice(0, -(originalTld.length)) : domain;
+      
+      // Get name variations with same TLD
+      const sameTldSuggestions = [];
+      if (originalTld) {
+        const nameVariations = generateNameVariations(name).slice(0, 5); // Limit to 5 variations
+        nameVariations.forEach(variation => {
+          sameTldSuggestions.push(`${variation}${originalTld}`);
+        });
+      }
+      
+      // Get suggestions from WHMCS for other TLDs
+      const whmcsSuggestions = await getDomainSuggestions(name, undefined, 10);
+      
+      // Combine suggestions
+      const allSuggestions = [...sameTldSuggestions, ...whmcsSuggestions];
+      const suggestions = [...new Set(allSuggestions)].slice(0, 10); // Limit to 10 total
+      
+      // Check suggestions in parallel
+      const checked = await checkMultipleDomains(suggestions, 10);
+      const available = checked.filter(r => r.available).map(r => r.domain);
+      
+      // Get pricing for available suggestions
+      const uniqueTlds = [...new Set(await Promise.all(available.map(d => extractTld(d))))];
+      const pricingDocs = await Promise.all(uniqueTlds.map(t => getPricingForTld(t, currency)));
+      const tldToPricing = new Map();
+      uniqueTlds.forEach((tld, i) => { if (pricingDocs[i]) tldToPricing.set(pricingDocs[i].tld, pricingDocs[i]); });
+      
+      const pricedSuggestions = await Promise.all(available.map(async d => {
+        const tldWithDot = await extractTld(d);
+        const t = tldWithDot ? tldWithDot.slice(1) : null;
+        const p = tldToPricing.get(t);
+        return {
+          domain: d,
+          tld: t,
+          pricing: p ? {
+            register: p.register,
+            renew: p.renew,
+            transfer: p.transfer,
+            grace_period: p.grace_period,
+            redemption_period: p.redemption_period,
+            currency: p.currency_code || 'PKR'
+          } : null
+        };
+      }));
+      
+      console.log(`📊  Generated ${available.length} alternative suggestions`);
+      
       return {
         success: true,
         domain,
         available: true,
         message: 'Domain is available for registration!',
-        suggestions: [],
+        suggestions: available,
+        suggestionsCount: available.length,
+        pricedSuggestions,
         source: primary.source,
         pricing: pricingDoc ? {
           tld: pricingDoc.tld,

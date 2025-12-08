@@ -91,14 +91,30 @@ exports.createLead = async (req, res, next) => {
             email: leadData.email 
           });
           
+          // First, get the existing lead to append messages
+          const existingLead = await Lead.findOne({ vtigerId: leadData.vtigerId });
+          
+          // Append new message to existing messages with timestamp separator
+          const timestamp = new Date().toLocaleString();
+          const separator = '\n\n---\n';
+          const newMessageWithTimestamp = `[${timestamp}]\n${leadData.description}`;
+          
+          const updatedDescription = existingLead && existingLead.description 
+            ? `${existingLead.description}${separator}${newMessageWithTimestamp}`
+            : leadData.description;
+            
+          const updatedComment = existingLead && existingLead.comment
+            ? `${existingLead.comment}${separator}${newMessageWithTimestamp}`
+            : leadData.comment;
+          
           savedLead = await Lead.findOneAndUpdate(
             { vtigerId: leadData.vtigerId },
             { 
               firstname: leadData.firstname, // Update firstname
               lastname: leadData.lastname, // Update lastname
               email: leadData.email, // Update email
-              description: leadData.description, // Update description
-              comment: leadData.comment, // Update comment
+              description: updatedDescription, // Append to description
+              comment: updatedComment, // Append to comment
               phone: leadData.phone, // Update phone if changed
               userNs: leadData.userNs // Update userNs if provided
             },

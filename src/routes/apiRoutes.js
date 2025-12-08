@@ -1,21 +1,31 @@
 const express = require('express');
 const router = express.Router();
 const resolveClientId = require('../middleware/resolveClientId');
+const validatePhoneNumber = require('../middleware/validatePhoneNumber');
 const invoiceController = require('../controllers/invoiceController');
 const serviceStatusController = require('../controllers/serviceStatusController');
 const billingController = require('../controllers/billingController');
 
-// POST /api/invoiceLookup
-router.post('/invoiceLookup', resolveClientId, invoiceController.invoiceLookup);
+// POST /api/invoiceLookup - with phone validation
+router.post('/invoiceLookup', resolveClientId, validatePhoneNumber, invoiceController.invoiceLookup);
 
-// POST /api/serviceStatus
-router.post('/serviceStatus', resolveClientId, serviceStatusController.checkServiceStatus);
+// POST /api/serviceStatus - with phone validation
+router.post('/serviceStatus', resolveClientId, validatePhoneNumber, serviceStatusController.checkServiceStatus);
+
+// POST /api/myServices - Get all services for a client (email only)
+router.post('/myServices', resolveClientId, serviceStatusController.getMyServices);
+
+// POST /api/myDomains - Get all domains for a client (email only)
+router.post('/myDomains', resolveClientId, serviceStatusController.getMyDomains);
+
+// POST /api/myAccount - Get complete account overview (email only)
+router.post('/myAccount', resolveClientId, serviceStatusController.getMyAccount);
 
 // POST /api/renewService
 router.post('/renewService', resolveClientId, billingController.renewService);
 
-// POST /api/confirmPayment
-router.post('/confirmPayment', resolveClientId, billingController.confirmPayment);
+// POST /api/confirmPayment - with phone validation
+router.post('/confirmPayment', resolveClientId, validatePhoneNumber, billingController.confirmPayment);
 
 // POST /api/triageIssue
 router.post('/triageIssue', resolveClientId, billingController.triageIssue);

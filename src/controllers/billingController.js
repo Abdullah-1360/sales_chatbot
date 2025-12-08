@@ -1,7 +1,9 @@
 const { 
-  addOrder, 
-  getInvoice, 
-  openTicket 
+  genInvoices,
+  getInvoice,
+  getInvoices,
+  openTicket,
+  addOrder 
 } = require('../services/whmcsService');
 
 const { 
@@ -13,6 +15,24 @@ const {
 
 /**
  * Renew a service or domain
+ * 
+ * IMPORTANT: WHMCS API Limitations
+ * 
+ * SERVICE RENEWALS:
+ * - WHMCS does not support service renewals via AddOrder API
+ * - Manual invoice creation (CreateInvoice) doesn't properly link to services or trigger automation
+ * - Services are renewed automatically by WHMCS when due (7-14 days before due date)
+ * - For immediate renewal: Admin must manually create invoice in WHMCS admin panel
+ * 
+ * DOMAIN RENEWALS:
+ * - Domain renewals work via AddOrder API (if permissions are enabled)
+ * - Use domain parameter to renew domains
+ * 
+ * RECOMMENDED FLOW:
+ * 1. Check for existing unpaid invoices first (may already exist)
+ * 2. For services: Wait for WHMCS automatic invoice generation
+ * 3. For domains: Use this endpoint
+ * 4. For immediate service renewal: Contact support
  */
 exports.renewService = async (req, res, next) => {
   console.log('[POST /api/renewService]', { 
@@ -35,59 +55,264 @@ exports.renewService = async (req, res, next) => {
     let svc = null;
     let dom = null;
     
-    if (domain) dom = await getDomainForClient({ clientId, domain });
-    if (serviceId || !dom) svc = await getServiceForClient({ clientId, domain, serviceId });
-    
-    if (!svc && !dom) {
-      return res.status(404).json({ success: false, error: 'Service not found' });
+    // Lookup domain and service in parallel for faster response
+    if (domain && !serviceId) {
+      // If only domain provided, check both in parallel
+      const [domainResult, serviceResult] = await Promise.allSettled([
+        getDomainForClient({ clientId, domain }),
+        getServiceForClient({ clientId, domain })
+      ]);
+      
+      dom = domainResult.status === 'fulfilled' ? domainResult.value : null;
+      svc = serviceResult.status === 'fulfilled' ? serviceResult.value : null;
+      
+      console.log('→ Domain found:', dom ? dom.id : 'not found');
+      console.log('→ Service found:', svc ? svc.id : 'not found');
+    } else if (serviceId) {
+      // If serviceId provided, only lookup service
+      try {
+        svc = await getServiceForClient({ clientId, domain, serviceId });
+        console.log('→ Service found:', svc ? svc.id : 'not found');
+      } catch (err) {
+        console.log('→ Service lookup failed:', err.message);
+      }
+    } else if (domain) {
+      // Fallback: domain only
+      try {
+        dom = await getDomainForClient({ clientId, domain });
+        console.log('→ Domain found:', dom ? dom.id : 'not found');
+      } catch (err) {
+        console.log('→ Domain lookup failed:', err.message);
+      }
     }
     
+    if (!svc && !dom) {
+      console.log('✗ Neither service nor domain found for client:', clientId, 'domain:', domain);
+      return res.status(404).json({ 
+        success: false, 
+        error: `No service or domain found for ${domain || 'serviceId ' + serviceId}. Please check if this service belongs to your account.` 
+      });
+    }
+    
+    // Check for existing unpaid invoice
     const existing = await findRelatedUnpaidInvoice(clientId, { 
       domain: domain || (svc && svc.domain), 
-      serviceId: svc ? svc.id : null 
+      serviceId: svc ? svc.id : null,
+      domainId: dom ? dom.id : null
     });
     
     if (existing) {
       const amount = amountFromInvoice(existing);
-      console.log('→ Existing invoice found:', existing.invoiceid || existing.id);
+      const invoiceId = existing.invoiceid || existing.id;
+      const dueDate = existing.duedate;
+      
+      console.log('→ Existing invoice found:', invoiceId, 'Due:', dueDate, 'Amount:', amount);
+      
+      // Check if invoice is overdue
+      const now = new Date();
+      const due = new Date(dueDate);
+      const isOverdue = due < now;
+      
+      let message;
+      if (isOverdue) {
+        const daysOverdue = Math.ceil((now - due) / (1000 * 60 * 60 * 24));
+        message = `Invoice #${invoiceId} for renewal is overdue by ${daysOverdue} day(s) (due: ${dueDate}). Please pay ${amount} to reactivate your service.`;
+      } else {
+        message = `An invoice for renewal already exists: Invoice #${invoiceId} for ${amount} due on ${dueDate}. Please pay this invoice to renew your service.`;
+      }
+      
       return res.json({ 
         success: true, 
         existingInvoice: true, 
-        invoiceId: existing.invoiceid || existing.id, 
-        amount, 
-        message: `You already have an open renewal invoice (#${existing.invoiceid || existing.id}). Please pay this to renew.` 
+        invoiceId: invoiceId, 
+        amount: amount,
+        dueDate: dueDate,
+        isOverdue: isOverdue,
+        message: message
       });
     }
     
-    let payload;
-    if (dom) {
-      payload = { 
-        clientid: clientId, 
-        domainrenewals: [{ domainid: dom.id, renewalperiod: period || 1 }], 
-        paymentmethod 
-      };
-    } else {
-      payload = { 
-        clientid: clientId, 
-        servicerenewals: [{ serviceid: svc.id, billingcycle: billingcycle || 'monthly' }], 
-        paymentmethod 
-      };
+    // Use provided payment method or default to bank transfer
+    const defaultPaymentMethod = process.env.DEFAULT_PAYMENT_METHOD || 'hostbreakbanktransfer';
+    const selectedPaymentMethod = paymentmethod || defaultPaymentMethod;
+    
+    // Validate service status
+    if (svc && svc.id) {
+      console.log('→ Service details:', { 
+        id: svc.id, 
+        status: svc.status, 
+        domain: svc.domain, 
+        nextduedate: svc.nextduedate,
+        billingcycle: svc.billingcycle 
+      });
+      
+      // Check if service can be renewed
+      const nonRenewableStatuses = ['Cancelled', 'Terminated', 'Fraud'];
+      if (nonRenewableStatuses.includes(svc.status)) {
+        console.log('✗ Service cannot be renewed, status:', svc.status);
+        return res.status(400).json({ 
+          success: false, 
+          error: `Service cannot be renewed because it is ${svc.status}. Please contact support.` 
+        });
+      }
+      
+      // Check if service is Active
+      if (svc.status !== 'Active') {
+        console.log('✗ Service is not active, status:', svc.status);
+        return res.status(400).json({ 
+          success: false, 
+          error: `Service status is ${svc.status}. Only Active services can be renewed.`,
+          serviceId: svc.id,
+          status: svc.status
+        });
+      }
     }
     
-    const order = await addOrder(payload);
-    const inv = await getInvoice(order.invoiceid);
-    const amount = amountFromInvoice(inv);
-    const dueDate = inv.duedate || null;
+    // Use GenInvoices to generate renewal invoice
+    console.log('→ Calling GenInvoices for service:', svc ? svc.id : 'N/A', 'domain:', dom ? dom.id : 'N/A');
     
-    console.log('→ New invoice created:', order.invoiceid, 'Amount:', amount);
-    res.json({ 
-      success: true, 
-      existingInvoice: false, 
-      invoiceId: order.invoiceid, 
-      amount, 
-      dueDate, 
-      message: `Renewal invoice #${order.invoiceid} has been generated (${amount}). Please pay to complete renewal.` 
-    });
+    if (svc && svc.id) {
+      // Generate invoice for service
+      await genInvoices({ 
+        serviceids: String(svc.id)
+      });
+      
+      console.log('→ GenInvoices called, checking for invoice...');
+      
+      // Wait briefly for WHMCS to generate the invoice
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      // Fetch recent unpaid invoices
+      const invoices = await getInvoices({ 
+        userid: clientId, 
+        status: 'Unpaid',
+        limitnum: 10,
+        orderby: 'date',
+        order: 'DESC'
+      });
+      
+      const invoiceList = invoices.invoices?.invoice || [];
+      const invoiceArray = Array.isArray(invoiceList) ? invoiceList : (invoiceList ? [invoiceList] : []);
+      
+      // Find invoice for this service
+      let serviceInvoice = null;
+      for (const inv of invoiceArray) {
+        const items = inv.items?.item || [];
+        const itemArray = Array.isArray(items) ? items : (items ? [items] : []);
+        
+        for (const item of itemArray) {
+          if (String(item.relid) === String(svc.id)) {
+            serviceInvoice = inv;
+            break;
+          }
+        }
+        if (serviceInvoice) break;
+      }
+      
+      if (serviceInvoice) {
+        const amount = amountFromInvoice(serviceInvoice);
+        const invoiceId = serviceInvoice.invoiceid || serviceInvoice.id;
+        
+        console.log('→ Renewal invoice generated:', invoiceId);
+        
+        return res.json({ 
+          success: true, 
+          existingInvoice: false, 
+          invoiceId: invoiceId, 
+          amount, 
+          dueDate: serviceInvoice.duedate,
+          message: `Renewal invoice #${invoiceId} has been generated (${amount}). Service will be automatically extended upon payment.` 
+        });
+      }
+      
+      // No invoice generated - not within renewal window
+      console.log('→ No invoice generated (not within renewal window)');
+      
+      const daysUntilDue = svc.nextduedate && svc.nextduedate !== '0000-00-00' 
+        ? Math.ceil((new Date(svc.nextduedate) - new Date()) / (1000 * 60 * 60 * 24))
+        : null;
+      
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Service is not within the renewal window.',
+        serviceId: svc.id,
+        serviceName: svc.name || svc.productname,
+        domain: svc.domain,
+        nextDueDate: svc.nextduedate,
+        daysUntilDue: daysUntilDue,
+        message: `System will automatically generate the renewal invoice when the service is within the renewal window (typically 7-14 days before ${svc.nextduedate}).`
+      });
+    } else if (dom && dom.id) {
+      // For domains, GenInvoices also works
+      await genInvoices({ 
+        domainids: String(dom.id)
+      });
+      
+      console.log('→ GenInvoices called for domain, checking for invoice...');
+      
+      // Wait briefly for WHMCS to generate the invoice
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      // Fetch recent unpaid invoices
+      const invoices = await getInvoices({ 
+        userid: clientId, 
+        status: 'Unpaid',
+        limitnum: 10,
+        orderby: 'date',
+        order: 'DESC'
+      });
+      
+      const invoiceList = invoices.invoices?.invoice || [];
+      const invoiceArray = Array.isArray(invoiceList) ? invoiceList : (invoiceList ? [invoiceList] : []);
+      
+      // Find invoice for this domain
+      let domainInvoice = null;
+      for (const inv of invoiceArray) {
+        const items = inv.items?.item || [];
+        const itemArray = Array.isArray(items) ? items : (items ? [items] : []);
+        
+        for (const item of itemArray) {
+          if (String(item.relid) === String(dom.id) && item.type === 'Domain') {
+            domainInvoice = inv;
+            break;
+          }
+        }
+        if (domainInvoice) break;
+      }
+      
+      if (domainInvoice) {
+        const amount = amountFromInvoice(domainInvoice);
+        const invoiceId = domainInvoice.invoiceid || domainInvoice.id;
+        
+        console.log('→ Domain renewal invoice generated:', invoiceId);
+        
+        return res.json({ 
+          success: true, 
+          existingInvoice: false, 
+          invoiceId: invoiceId, 
+          amount, 
+          dueDate: domainInvoice.duedate,
+          message: `Domain renewal invoice #${invoiceId} has been generated (${amount}). Please pay to complete renewal.` 
+        });
+      }
+      
+      // No invoice generated
+      console.log('→ No invoice generated for domain');
+      
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Domain is not within the renewal window.',
+        domainId: dom.id,
+        domain: dom.domain || dom.domainname,
+        message: 'System will automatically generate the renewal invoice when the domain is within the renewal window.'
+      });
+    } else {
+      console.log('✗ No valid service or domain ID found');
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Unable to create renewal invoice. Service or domain ID is missing.' 
+      });
+    }
   } catch (err) {
     console.log('✗ Error:', err.message);
     next(err);
@@ -100,11 +325,12 @@ exports.renewService = async (req, res, next) => {
 exports.confirmPayment = async (req, res, next) => {
   console.log('[POST /api/confirmPayment]', { 
     clientId: req.body.clientId, 
-    invoiceId: req.body.invoiceId 
+    invoiceId: req.body.invoiceId,
+    hasImage: !!req.body.image_url
   });
   
   try {
-    const { clientId, invoiceId, details } = req.body || {};
+    const { clientId, invoiceId, details, domain, image_url, image_base64, image_filename } = req.body || {};
     
     if (!clientId || !invoiceId) {
       console.log('✗ Missing required parameters');
@@ -137,27 +363,52 @@ exports.confirmPayment = async (req, res, next) => {
     }
     
     const deptid = process.env.BILLING_DEPTID;
-    const deptname = process.env.BILLING_DEPTNAME || 'Billing';
-    const subject = `Payment clarification for Invoice #${invoiceId}`;
-    const message = details ? String(details) : 'Payment submitted but invoice shows unpaid';
+    // Only use deptname if deptid is not provided (deptid takes priority)
+    const deptname = deptid ? undefined : (process.env.BILLING_DEPTNAME || 'Billing');
+    
+    // Add domain to subject if provided in request
+    const subject = domain 
+      ? `Payment clarification for Invoice #${invoiceId} - ${domain}`
+      : `Payment clarification for Invoice #${invoiceId}`;
+    
+    // Build detailed message with invoice information
+    let ticketMessage = `=== PAYMENT CONFIRMATION ===\n`;
+    ticketMessage += `Invoice ID: ${invoiceId}\n`;
+    ticketMessage += `Invoice Total: ${inv.total}\n`;
+    ticketMessage += `Invoice Balance: ${inv.balance}\n`;
+    ticketMessage += `Due Date: ${inv.duedate}\n`;
+    if (domain) {
+      ticketMessage += `Domain: ${domain}\n`;
+    }
+    
+    // Only add payment details section if user provided details
+    if (details) {
+      ticketMessage += `\n=== PAYMENT DETAILS ===\n`;
+      ticketMessage += String(details);
+    }
+    
+    // Note: Image parameters (image_base64, image_url, image_filename) are accepted but not used
+    // They are kept for API compatibility but no image processing is performed
     
     const t = await openTicket({ 
       deptid, 
       deptname, 
       subject, 
-      message, 
+      message: ticketMessage, 
       clientid: clientId, 
-      priority: 'Medium' 
+      priority: 'Medium',
+      invoiceid: invoiceId
     });
     
     const ticketId = t.tid || t.ticketid || t.id;
-    console.log('→ Billing ticket created:', ticketId);
+    console.log('→ Billing ticket created:', ticketId, 'for invoice:', invoiceId);
     
     res.json({ 
       success: true, 
       paid: false, 
-      ticketId: ticketId, 
-      message: `I've opened a support ticket (#${ticketId}) for our billing team to verify your payment.` 
+      ticketId: ticketId,
+      invoiceId: invoiceId,
+      message: `I've opened a support ticket (#${ticketId}) for our billing team to verify your payment for Invoice #${invoiceId}.` 
     });
   } catch (err) {
     console.log('✗ Error:', err.message);
@@ -244,7 +495,8 @@ Status: ${status}`;
     ticketMessage += '\n\nPlease investigate this issue urgently.';
     
     const deptid = process.env.TECHSUPPORT_DEPTID;
-    const deptname = process.env.TECHSUPPORT_DEPTNAME || 'Technical Support';
+    // Only use deptname if deptid is not provided (deptid takes priority)
+    const deptname = deptid ? undefined : (process.env.TECHSUPPORT_DEPTNAME || 'Technical Support');
     
     const t = await openTicket({ 
       deptid, 
@@ -270,6 +522,8 @@ Status: ${status}`;
     next(err);
   }
 };
+
+
 
 /**
  * Create an order

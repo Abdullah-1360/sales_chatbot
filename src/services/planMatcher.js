@@ -8,7 +8,8 @@ const KEYWORD_MAPPINGS = {
   ecommerce: ['shop', 'store', 'commerce', 'ecommerce', 'e-commerce', 'woocommerce', 'shopping', 'cart', 'payment', 'checkout', 'product'],
   wordpress: ['personal', 'catalogue', 'catalog', 'normal', 'blog', 'content', 'article', 'post', 'news', 'magazine'],
   business: ['business', 'corporate', 'application', 'app', 'saas', 'software', 'enterprise', 'professional', 'company'],
-  ssl: ['certificate', 'cert', 'secure', 'ssl', 'https', 'security', 'encryption', 'tls']
+  ssl: ['certificate', 'cert', 'secure', 'ssl', 'https', 'security', 'encryption', 'tls'],
+  windows: ['asp.net', 'asp', '.net', 'dotnet', '.net core', 'aspnet', 'c#', 'csharp', 'mssql', 'ms sql', 'iis', 'windows']
 };
 
 /**
@@ -20,7 +21,7 @@ const KEYWORD_MAPPINGS = {
  * @returns {Object} { gid, minTier, reasoning } - Matched group ID, minimum tier, and reasoning
  */
 module.exports = function planMatcher(answers) {
-  const { purpose, websites_count, needs_reseller, needs_ssl, needs_windows, storage_needed_gb } = answers;
+  let { purpose, websites_count, needs_reseller, needs_ssl, needs_windows, storage_needed_gb } = answers;
 
   // 1. Normalize and analyze inputs
   const cleanCount = normaliseCount(websites_count);
@@ -31,11 +32,19 @@ module.exports = function planMatcher(answers) {
   
   // Detect keywords in purpose field for intelligent routing
   const detectedIntent = detectKeywords(purpose);
+  
+  // Auto-detect Windows requirement from keywords
+  // If ASP.NET, .NET, .NET Core, C#, MSSQL, IIS detected → set needs_windows = true
+  if (detectedIntent === 'windows') {
+    needs_windows = true;
+    // Update answers object to reflect auto-detection
+    answers.needs_windows = true;
+  }
 
   // 2. Priority-based routing (order matters!)
   
   // PRIORITY 1: SSL Certificates (if specifically requested or detected)
-  // Note: Windows filtering is handled in the controller, not here
+  // Note: Windows filtering is handled in the controller
   if (needs_ssl === true || detectedIntent === 'ssl') {
     return { 
       gid: 6, 
@@ -194,7 +203,7 @@ function getStorageTier(storageGb) {
  * Analyzes text for keywords and returns the detected intent
  * 
  * @param {string} text - Text to analyze (purpose, description, etc.)
- * @returns {string|null} - Detected intent ('ecommerce', 'wordpress', 'business', 'ssl') or null
+ * @returns {string|null} - Detected intent ('ecommerce', 'wordpress', 'business', 'ssl', 'windows') or null
  */
 function detectKeywords(text) {
   if (!text || typeof text !== 'string') return null;
@@ -202,9 +211,15 @@ function detectKeywords(text) {
   const normalized = text.toLowerCase().trim();
   
   // Check each keyword category
-  // Priority order: ssl > ecommerce > business > wordpress
+  // Priority order: windows > ssl > ecommerce > business > wordpress
   
-  // SSL keywords (highest priority for security needs)
+  // Windows keywords (highest priority - requires specific hosting)
+  // ASP.NET, .NET, .NET Core, C#, MSSQL, IIS
+  if (KEYWORD_MAPPINGS.windows.some(keyword => normalized.includes(keyword))) {
+    return 'windows';
+  }
+  
+  // SSL keywords (high priority for security needs)
   if (KEYWORD_MAPPINGS.ssl.some(keyword => normalized.includes(keyword))) {
     return 'ssl';
   }
