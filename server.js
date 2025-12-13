@@ -25,6 +25,17 @@ async function startServer() {
     if (cfg.USE_MONGODB) {
       await connectDB();
       
+      // Initialize server cache on startup
+      console.log('🔄 Initializing server cache from WHMCS...');
+      try {
+        const { refreshServerDataCache } = require('./src/services/mongoServerService');
+        const serverData = await refreshServerDataCache();
+        console.log(`✅ Server cache initialized: ${serverData.serverIPs.length} IPs, ${serverData.nameservers.length} nameservers`);
+      } catch (error) {
+        console.warn(`⚠️  Server cache initialization failed: ${error.message}`);
+        console.warn('⚠️  DNS checking may use fallback data');
+      }
+      
       // Auto-sync on startup if enabled
       if (cfg.AUTO_SYNC_ON_STARTUP) {
         console.log('\n🔄 Auto-sync enabled, fetching products and TLD pricing from WHMCS...\n');

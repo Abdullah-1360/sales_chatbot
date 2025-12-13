@@ -6,6 +6,91 @@ const {
 } = require('../utils/helpers');
 
 const { getInvoice } = require('./whmcsService');
+const { getDNSStatus, performComprehensiveDNSLookup } = require('../utils/dnsChecker');
+
+/**
+ * Perform comprehensive DNS analysis for service status with workflow-based recommendations
+ * @param {string} serviceName - Domain name
+ * @param {Array} whmcsNameservers - WHMCS nameservers if available
+ * @returns {Object} Enhanced DNS status with comprehensive records and workflow recommendations
+ */
+async function getComprehensiveDNSStatus(serviceName, whmcsNameservers = null) {
+  try {
+    // Get basic DNS status first
+    const basicDNSStatus = await getDNSStatus(serviceName, whmcsNameservers);
+    
+    // If basic DNS lookup was successful, get comprehensive records with workflow
+    if (basicDNSStatus.propagated && basicDNSStatus.dataSource === 'dns_lookup') {
+      const comprehensiveDNS = await performComprehensiveDNSLookup(serviceName);
+      
+      return {
+        ...basicDNSStatus,
+        comprehensiveDNS: comprehensiveDNS,
+        workflow: comprehensiveDNS.workflow, // Include workflow recommendations
+        serverAnalysis: {
+          websitePointsToOurServers: comprehensiveDNS.serverMatches.aRecordsMatchOurServers,
+          emailPointsToOurServers: comprehensiveDNS.serverMatches.mxRecordsMatchOurServers,
+          dnsPointsToOurServers: comprehensiveDNS.serverMatches.nsRecordsMatchOurServers,
+          matchingARecords: comprehensiveDNS.serverMatches.matchingARecords,
+          matchingMXRecords: comprehensiveDNS.serverMatches.matchingMXRecords,
+          matchingNSRecords: comprehensiveDNS.serverMatches.matchingNSRecords
+        }
+      };
+    }
+    
+    // Return basic status if comprehensive lookup not possible
+    return basicDNSStatus;
+    
+  } catch (error) {
+    console.log('⚠️ Comprehensive DNS analysis failed:', error.message);
+    // Fallback to basic DNS status
+    return await getDNSStatus(serviceName, whmcsNameservers);
+  }
+}
+
+/**
+ * Helper function to add server, domain, and DNS zone information to response objects
+ */
+function addServerAndDomainInfo(response, domainStatus, hostingStatus, dnsZoneAnalysis = null) {
+  // Add server information if available from hosting status
+  if (hostingStatus) {
+    if (hostingStatus.serverId) response.serverId = hostingStatus.serverId;
+    if (hostingStatus.serverName) response.serverName = hostingStatus.serverName;
+    if (hostingStatus.serverIP) response.serverIP = hostingStatus.serverIP;
+    if (hostingStatus.serverHostname) response.serverHostname = hostingStatus.serverHostname;
+    if (hostingStatus.productId) response.hostingProductId = hostingStatus.productId;
+    if (hostingStatus.totalProducts > 1) response.hostingProducts = hostingStatus.totalProducts;
+  }
+  
+  // Add domain information if available
+  if (domainStatus) {
+    if (domainStatus.nextDueDate) response.domainNextDue = domainStatus.nextDueDate;
+    if (domainStatus.expiryDate) response.domainExpiry = domainStatus.expiryDate;
+    if (domainStatus.nameservers && domainStatus.nameservers.length > 0) response.domainNameservers = domainStatus.nameservers;
+    if (domainStatus.duplicateCount > 1) response.domainDuplicates = domainStatus.duplicateCount;
+  }
+  
+  // Add DNS zone analysis if available
+  if (dnsZoneAnalysis) {
+    response.dnsZoneAnalysis = {
+      expectedServerIP: dnsZoneAnalysis.expectedServerIP,
+      currentARecords: dnsZoneAnalysis.currentARecords,
+      aRecordMatchesServer: dnsZoneAnalysis.aRecordMatchesServer,
+      zoneARecordIP: dnsZoneAnalysis.zoneARecordIP,
+      zoneMatchesServer: dnsZoneAnalysis.zoneMatchesServer,
+      dnsConsistent: dnsZoneAnalysis.dnsConsistent,
+      issue: dnsZoneAnalysis.issue,
+      recommendation: dnsZoneAnalysis.recommendation
+    };
+    
+    // Add error information if DNS analysis failed
+    if (dnsZoneAnalysis.error) {
+      response.dnsZoneAnalysis.error = dnsZoneAnalysis.error;
+    }
+  }
+  
+  return response;
+}
 
 /**
  * Main handler for service status logic
@@ -18,6 +103,7 @@ async function handleServiceStatus(params) {
     suspensionReason,
     domainStatus,
     hostingStatus,
+    dnsZoneAnalysis,
     svc,
     clientId,
     domain,
@@ -26,7 +112,7 @@ async function handleServiceStatus(params) {
 
   // CASE 1: ACTIVE SERVICE
   if (status === 'Active') {
-    return handleActiveService(params);
+    return await handleActiveService(params);
   }
 
   // CASE 2: CHECK FOR DOMAIN AND HOSTING STATUS COMBINATIONS
@@ -37,7 +123,8 @@ async function handleServiceStatus(params) {
 
   // CASE 3: ONLY DOMAIN EXISTS (no hosting)
   if (domainStatus && !hostingStatus) {
-    return handleDomainOnly(params);
+    const result = await handleDomainOnly(params);
+    if (result) return result;
   }
 
   // CASE 4: ONLY HOSTING EXISTS (no domain registration)
@@ -67,8 +154,8 @@ async function handleServiceStatus(params) {
 /**
  * Handle active service status
  */
-function handleActiveService(params) {
-  const { serviceName, nextDueDate, domainStatus, hostingStatus } = params;
+async function handleActiveService(params) {
+  const { serviceName, nextDueDate, domainStatus, hostingStatus, dnsZoneAnalysis } = params;
   
   let message = '';
   let combinedStatus = 'Active';
@@ -121,7 +208,7 @@ function handleActiveService(params) {
       : `Your service ${serviceName} is Active and fully operational.`;
   }
   
-  return {
+  let response = {
     success: true,
     status: combinedStatus,
     service: serviceName,
@@ -132,13 +219,93 @@ function handleActiveService(params) {
     actionRequired: null,
     message: message
   };
+  
+  // Add server, domain, and DNS zone information
+  response = addServerAndDomainInfo(response, domainStatus, hostingStatus, dnsZoneAnalysis);
+  
+  // Add comprehensive DNS analysis for active services (helps with "site down" issues)
+  if (serviceName && serviceName.includes('.')) {
+    try {
+      // Use WHMCS nameservers if available from domainStatus
+      const whmcsNameservers = (domainStatus && domainStatus.nameservers) ? domainStatus.nameservers : null;
+      const dnsStatus = await getComprehensiveDNSStatus(serviceName, whmcsNameservers);
+      
+      response.dnsStatus = {
+        propagated: dnsStatus.propagated,
+        usesOurNameservers: dnsStatus.usesOurNameservers,
+        isExternalDNS: dnsStatus.isExternalDNS,
+        diagnosis: dnsStatus.diagnosis,
+        dataSource: dnsStatus.dataSource
+      };
+      
+      // Add comprehensive DNS analysis if available
+      if (dnsStatus.serverAnalysis) {
+        response.dnsStatus.serverAnalysis = dnsStatus.serverAnalysis;
+        response.dnsStatus.records = dnsStatus.comprehensiveDNS ? {
+          A: dnsStatus.comprehensiveDNS.records.A,
+          MX: dnsStatus.comprehensiveDNS.records.MX,
+          NS: dnsStatus.comprehensiveDNS.records.NS
+        } : null;
+      }
+      
+      // Add DNS info to message if relevant
+      if (!dnsStatus.propagated) {
+        response.message += ` Note: ${dnsStatus.shortMessage}`;
+      } else if (dnsStatus.isExternalDNS) {
+        response.message += ` DNS Info: ${dnsStatus.shortMessage}`;
+      }
+      
+      // Add workflow-based recommendations to message
+      if (dnsStatus.workflow) {
+        const workflow = dnsStatus.workflow;
+        
+        if (workflow.step === 'nameserver_mismatch_check_mx') {
+          // Case 1: A record matches ✅ but nameserver doesn't ❌
+          response.message += ` ⚠️ DNS CONFIGURATION: ${workflow.message}`;
+          response.actionRequired = workflow.actionRequired;
+          response.dnsIssue = true;
+          response.registrar = workflow.registrar;
+        } else if (workflow.step === 'a_record_mismatch_use_whm') {
+          // Case 2: Nameserver matches ✅ but A record doesn't ❌
+          response.message += ` ⚠️ DNS UPDATE NEEDED: ${workflow.message}`;
+          response.actionRequired = workflow.actionRequired;
+          response.dnsIssue = true;
+        } else if (workflow.step === 'all_configured_correctly') {
+          // Case 3: Both match ✅✅ - Perfect configuration
+          response.message += ` ✅ DNS Configuration: ${workflow.message}`;
+        } else if (workflow.step === 'both_mismatch_update_nameservers') {
+          // Case 4: Both don't match ❌❌ - Update nameservers
+          response.message += ` ℹ️ NAMESERVER UPDATE: ${workflow.message}`;
+          response.actionRequired = workflow.actionRequired;
+          response.registrar = workflow.registrar;
+        }
+      } else if (dnsStatus.serverAnalysis) {
+        // Fallback to old analysis if workflow not available
+        const analysis = dnsStatus.serverAnalysis;
+        if (analysis.websitePointsToOurServers && analysis.emailPointsToOurServers) {
+          response.message += ` Both website and email are configured with our servers.`;
+        } else if (analysis.websitePointsToOurServers && !analysis.emailPointsToOurServers) {
+          response.message += ` Website points to our servers, but email is managed elsewhere.`;
+        } else if (!analysis.websitePointsToOurServers && analysis.emailPointsToOurServers) {
+          response.message += ` Email points to our servers, but website is hosted elsewhere.`;
+        } else if (!analysis.websitePointsToOurServers && !analysis.emailPointsToOurServers) {
+          response.message += ` Neither website nor email are pointing to our servers.`;
+        }
+      }
+    } catch (err) {
+      // DNS check failed, don't break the response
+      console.log('⚠️ DNS check failed for active service:', err.message);
+    }
+  }
+  
+  return response;
 }
 
 /**
  * Handle combined domain and hosting status
  */
 async function handleCombinedStatus(params) {
-  const { serviceName, domainStatus, hostingStatus, clientId } = params;
+  const { serviceName, domainStatus, hostingStatus, dnsZoneAnalysis, clientId } = params;
   
   const domainInactive = ['Suspended', 'Expired', 'Cancelled', 'Terminated', 'Pending'].includes(domainStatus.status);
   const hostingInactive = ['Suspended', 'Expired', 'Cancelled', 'Terminated', 'Pending'].includes(hostingStatus.status);
@@ -153,7 +320,7 @@ async function handleCombinedStatus(params) {
       message += ` Affected products: ${inactiveProducts}.`;
     }
     
-    return {
+    let response = {
       success: true,
       status: 'Inactive',
       service: serviceName,
@@ -163,6 +330,9 @@ async function handleCombinedStatus(params) {
       actionRequired: 'payment',
       message: message
     };
+    
+    // Add server, domain, and DNS zone information
+    return addServerAndDomainInfo(response, domainStatus, hostingStatus, dnsZoneAnalysis);
   }
   
   // ONLY DOMAIN INACTIVE
@@ -175,7 +345,7 @@ async function handleCombinedStatus(params) {
       message += ` Active hosting: ${activeProducts}.`;
     }
     
-    return {
+    const response = {
       success: true,
       status: 'Partial',
       service: serviceName,
@@ -185,6 +355,54 @@ async function handleCombinedStatus(params) {
       actionRequired: 'renew_domain',
       message: message
     };
+    
+    // Add comprehensive DNS check if hosting is active (helps with "site down" issues)
+    if (hostingStatus.status === 'Active' && serviceName && serviceName.includes('.')) {
+      try {
+        // Use WHMCS nameservers if available from domainStatus
+        const whmcsNameservers = (domainStatus && domainStatus.nameservers) ? domainStatus.nameservers : null;
+        const dnsStatus = await getComprehensiveDNSStatus(serviceName, whmcsNameservers);
+        
+        response.dnsStatus = {
+          propagated: dnsStatus.propagated,
+          usesOurNameservers: dnsStatus.usesOurNameservers,
+          isExternalDNS: dnsStatus.isExternalDNS,
+          diagnosis: dnsStatus.diagnosis,
+          dataSource: dnsStatus.dataSource
+        };
+        
+        // Add comprehensive DNS analysis if available
+        if (dnsStatus.serverAnalysis) {
+          response.dnsStatus.serverAnalysis = dnsStatus.serverAnalysis;
+          response.dnsStatus.records = dnsStatus.comprehensiveDNS ? {
+            A: dnsStatus.comprehensiveDNS.records.A,
+            MX: dnsStatus.comprehensiveDNS.records.MX,
+            NS: dnsStatus.comprehensiveDNS.records.NS
+          } : null;
+        }
+        
+        // Add DNS info to message if relevant
+        if (!dnsStatus.propagated) {
+          response.message += ` DNS Note: ${dnsStatus.shortMessage}`;
+        } else if (dnsStatus.isExternalDNS) {
+          response.message += ` DNS Info: ${dnsStatus.shortMessage}`;
+        }
+        
+        // Add server analysis to message
+        if (dnsStatus.serverAnalysis) {
+          const analysis = dnsStatus.serverAnalysis;
+          if (analysis.websitePointsToOurServers) {
+            response.message += ` Website points to our servers.`;
+          } else {
+            response.message += ` Website points elsewhere.`;
+          }
+        }
+      } catch (err) {
+        console.log('⚠️ DNS check failed for partial service:', err.message);
+      }
+    }
+    
+    return response;
   }
   
   // ONLY HOSTING INACTIVE
@@ -215,6 +433,53 @@ async function handleCombinedStatus(params) {
       await addInvoiceDetails(response, clientId, serviceName, hostingStatus);
     }
     
+    // Add comprehensive DNS check if domain is active (helps with "site down" issues)
+    if (domainStatus.status === 'Active' && serviceName && serviceName.includes('.')) {
+      try {
+        // Use WHMCS nameservers from domainStatus
+        const whmcsNameservers = domainStatus.nameservers || null;
+        const dnsStatus = await getComprehensiveDNSStatus(serviceName, whmcsNameservers);
+        
+        response.dnsStatus = {
+          propagated: dnsStatus.propagated,
+          usesOurNameservers: dnsStatus.usesOurNameservers,
+          isExternalDNS: dnsStatus.isExternalDNS,
+          diagnosis: dnsStatus.diagnosis,
+          dataSource: dnsStatus.dataSource
+        };
+        
+        // Add comprehensive DNS analysis if available
+        if (dnsStatus.serverAnalysis) {
+          response.dnsStatus.serverAnalysis = dnsStatus.serverAnalysis;
+          response.dnsStatus.records = dnsStatus.comprehensiveDNS ? {
+            A: dnsStatus.comprehensiveDNS.records.A,
+            MX: dnsStatus.comprehensiveDNS.records.MX,
+            NS: dnsStatus.comprehensiveDNS.records.NS
+          } : null;
+        }
+        
+        // Add DNS info to message if relevant
+        if (!dnsStatus.propagated) {
+          response.message += ` DNS Note: ${dnsStatus.shortMessage}`;
+        } else if (dnsStatus.isExternalDNS) {
+          response.message += ` DNS Info: ${dnsStatus.shortMessage}`;
+        }
+        
+        // Add server analysis to message
+        if (dnsStatus.serverAnalysis) {
+          const analysis = dnsStatus.serverAnalysis;
+          if (analysis.websitePointsToOurServers) {
+            response.message += ` Website points to our servers.`;
+          }
+          if (analysis.emailPointsToOurServers) {
+            response.message += ` Email is configured with our servers.`;
+          }
+        }
+      } catch (err) {
+        console.log('⚠️ DNS check failed for partial service:', err.message);
+      }
+    }
+    
     return response;
   }
   
@@ -224,14 +489,79 @@ async function handleCombinedStatus(params) {
 /**
  * Handle domain-only status
  */
-function handleDomainOnly(params) {
-  const { serviceName, domainStatus } = params;
+async function handleDomainOnly(params) {
+  const { serviceName, domainStatus, clientId } = params;
   
   const domainInactive = ['Suspended', 'Expired', 'Cancelled', 'Terminated'].includes(domainStatus.status);
   
+  // Handle active domain-only case with DNS checking
+  if (!domainInactive && domainStatus.status === 'Active') {
+    const response = {
+      success: true,
+      status: 'Active',
+      service: serviceName,
+      domainStatus: domainStatus.status,
+      hostingStatus: null,
+      billingIssue: false,
+      actionRequired: null,
+      message: `Your domain ${serviceName} is Active. Next renewal is due on ${domainStatus.nextDueDate}.`
+    };
+    
+    // Add comprehensive DNS check for active domain (helps with "site down" issues)
+    if (serviceName && serviceName.includes('.')) {
+      try {
+        // Use WHMCS nameservers from domainStatus
+        const whmcsNameservers = domainStatus.nameservers || null;
+        const dnsStatus = await getComprehensiveDNSStatus(serviceName, whmcsNameservers);
+        
+        response.dnsStatus = {
+          propagated: dnsStatus.propagated,
+          usesOurNameservers: dnsStatus.usesOurNameservers,
+          isExternalDNS: dnsStatus.isExternalDNS,
+          diagnosis: dnsStatus.diagnosis,
+          dataSource: dnsStatus.dataSource
+        };
+        
+        // Add comprehensive DNS analysis if available
+        if (dnsStatus.serverAnalysis) {
+          response.dnsStatus.serverAnalysis = dnsStatus.serverAnalysis;
+          response.dnsStatus.records = dnsStatus.comprehensiveDNS ? {
+            A: dnsStatus.comprehensiveDNS.records.A,
+            MX: dnsStatus.comprehensiveDNS.records.MX,
+            NS: dnsStatus.comprehensiveDNS.records.NS
+          } : null;
+        }
+        
+        // Add DNS info to message if relevant
+        if (!dnsStatus.propagated) {
+          response.message += ` Note: ${dnsStatus.shortMessage}`;
+        } else if (dnsStatus.isExternalDNS) {
+          response.message += ` DNS Info: ${dnsStatus.shortMessage}`;
+        }
+        
+        // Add server analysis to message
+        if (dnsStatus.serverAnalysis) {
+          const analysis = dnsStatus.serverAnalysis;
+          if (analysis.websitePointsToOurServers && analysis.emailPointsToOurServers) {
+            response.message += ` Both website and email point to our servers.`;
+          } else if (analysis.websitePointsToOurServers) {
+            response.message += ` Website points to our servers.`;
+          } else if (analysis.emailPointsToOurServers) {
+            response.message += ` Email points to our servers.`;
+          }
+        }
+      } catch (err) {
+        console.log('⚠️ DNS check failed for active domain:', err.message);
+      }
+    }
+    
+    return response;
+  }
+  
   if (domainInactive) {
-    const message = `Your domain ${serviceName} is ${domainStatus.status}. Please renew your domain to keep it active.`;
-    return {
+    let message = `Your domain ${serviceName} is ${domainStatus.status}. Please renew your domain to keep it active.`;
+    
+    const response = {
       success: true,
       status: domainStatus.status,
       service: serviceName,
@@ -241,6 +571,30 @@ function handleDomainOnly(params) {
       actionRequired: 'renew_domain',
       message: message
     };
+    
+    // ✅ ADD: Look for renewal invoice for expired domains
+    if (domainStatus.status === 'Expired') {
+      try {
+        const unpaidInvoice = await findRelatedUnpaidInvoice(clientId, { 
+          domain: serviceName 
+        });
+        
+        if (unpaidInvoice) {
+          const invoiceId = unpaidInvoice.invoiceid || unpaidInvoice.id;
+          const amountDue = amountFromInvoice(unpaidInvoice);
+          const amountDueNum = amountDue ? Number(amountDue) : 0;
+          
+          response.invoiceId = invoiceId;
+          response.amountDue = amountDueNum;
+          response.dueDate = unpaidInvoice.duedate;
+          response.message = `Your domain ${serviceName} is Expired. Please pay renewal invoice #${invoiceId} for ${amountDue} to renew your domain.`;
+        }
+      } catch (err) {
+        console.log('⚠️ Could not find renewal invoice for expired domain:', err.message);
+      }
+    }
+    
+    return response;
   }
   
   return null;
@@ -250,7 +604,7 @@ function handleDomainOnly(params) {
  * Handle hosting-only status
  */
 async function handleHostingOnly(params) {
-  const { serviceName, hostingStatus, clientId } = params;
+  const { serviceName, hostingStatus, dnsZoneAnalysis, clientId } = params;
   
   const hostingInactive = ['Suspended', 'Expired', 'Cancelled', 'Terminated', 'Pending'].includes(hostingStatus.status);
   
@@ -263,7 +617,7 @@ async function handleHostingOnly(params) {
       message += ` Product: ${productName}.`;
     }
     
-    const response = {
+    let response = {
       success: true,
       status: hostingStatus.status,
       service: serviceName,
@@ -273,6 +627,9 @@ async function handleHostingOnly(params) {
       actionRequired: 'renew_hosting',
       message: message
     };
+    
+    // Add server, domain, and DNS zone information
+    response = addServerAndDomainInfo(response, null, hostingStatus, dnsZoneAnalysis);
     
     // If suspended, check for invoice details
     if (hostingStatus.status === 'Suspended') {

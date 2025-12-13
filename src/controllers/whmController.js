@@ -1,0 +1,530 @@
+/**
+ * WHM Controller
+ * Handles WHM-related API endpoints
+ */
+
+const whmService = require('../services/whmService');
+const { getServiceForClient } = require('../utils/helpers');
+
+/**
+ * Get server status and information from all servers
+ */
+exports.getServerStatus = async (req, res, next) => {
+  console.log('[GET /whm/server/status]');
+  
+  try {
+    // Get status from all servers
+    const serverInfo = await whmService.getAllServerInfo();
+    
+    const response = {
+      success: true,
+      servers: serverInfo.results,
+      errors: serverInfo.errors,
+      summary: {
+        totalServers: serverInfo.totalServers,
+        successfulServers: serverInfo.successCount,
+        failedServers: serverInfo.errorCount,
+        successRate: `${Math.round((serverInfo.successCount / serverInfo.totalServers) * 100)}%`
+      },
+      timestamp: new Date().toISOString()
+    };
+    
+    console.log(`✅ Server status retrieved from ${serverInfo.successCount}/${serverInfo.totalServers} servers`);
+    res.json(response);
+    
+  } catch (error) {
+    console.error('❌ Error getting server status:', error.message);
+    next(error);
+  }
+};
+
+/**
+ * Get list of available servers
+ */
+exports.getAvailableServers = async (req, res, next) => {
+  console.log('[GET /whm/servers]');
+  
+  try {
+    const servers = whmService.getAvailableServers();
+    
+    const serverList = servers.map(serverName => ({
+      name: serverName,
+      hostname: whmService.getServerHostname(serverName),
+      url: `https://${whmService.getServerHostname(serverName)}:2087`
+    }));
+    
+    const response = {
+      success: true,
+      totalServers: servers.length,
+      servers: serverList,
+      timestamp: new Date().toISOString()
+    };
+    
+    console.log(`✅ Listed ${servers.length} available servers`);
+    res.json(response);
+    
+  } catch (error) {
+    console.error('❌ Error getting server list:', error.message);
+    next(error);
+  }
+};
+
+/**
+ * Get account information by domain
+ */
+exports.getAccountByDomain = async (req, res, next) => {
+  console.log('[POST /whm/account/domain]', { domain: req.body.domain });
+  
+  try {
+    const { domain } = req.body;
+    
+    if (!domain) {
+      return res.status(400).json({
+        success: false,
+        error: 'Domain is required'
+      });
+    }
+    
+    const account = await whmService.getAccountByDomain(domain);
+    
+    if (!account) {
+      return res.status(404).json({
+        success: false,
+        error: 'Account not found for this domain'
+      });
+    }
+    
+    // Format account data for response
+    const accountData = {
+      username: account.user,
+      domain: account.domain,
+      email: account.email,
+      package: account.plan,
+      diskUsed: account.diskused,
+      diskLimit: account.disklimit,
+      suspended: account.suspended === '1',
+      suspendReason: account.suspendreason || null,
+      created: account.startdate,
+      ip: account.ip,
+      partition: account.partition
+    };
+    
+    console.log('✅ Account found:', account.user);
+    res.json({
+      success: true,
+      account: accountData
+    });
+    
+  } catch (error) {
+    console.error('❌ Error getting account by domain:', error.message);
+    next(error);
+  }
+};
+
+/**
+ * Get account status and details
+ */
+exports.getAccountStatus = async (req, res, next) => {
+  console.log('[POST /whm/account/status]', { 
+    username: req.body.username,
+    domain: req.body.domain 
+  });
+  
+  try {
+    const { username, domain } = req.body;
+    
+    if (!username && !domain) {
+      return res.status(400).json({
+        success: false,
+        error: 'Username or domain is required'
+      });
+    }
+    
+    let account;
+    if (username) {
+      account = await whmService.getAccountByUsername(username);
+    } else {
+      account = await whmService.getAccountByDomain(domain);
+    }
+    
+    if (!account) {
+      return res.status(404).json({
+        success: false,
+        error: 'Account not found'
+      });
+    }
+    
+    // Get additional account details
+    const [usage, sslCerts] = await Promise.all([
+      whmService.getAccountUsage(account.user).catch(() => null),
+      whmService.listSSLCertificates(account.user).catch(() => [])
+    ]);
+    
+    const status = account.suspended === '1' ? 'Suspended' : 'Active';
+    
+    const response = {
+      success: true,
+      account: {
+        username: account.user,
+        domain: account.domain,
+        status: status,
+        suspended: account.suspended === '1',
+        suspendReason: account.suspendreason || null,
+        email: account.email,
+        package: account.plan,
+        created: account.startdate,
+        ip: account.ip,
+        diskUsed: account.diskused,
+        diskLimit: account.disklimit,
+        usage: usage?.data || null,
+        sslCertificates: sslCerts.length || 0,
+        hasSSL: sslCerts.length > 0
+      }
+    };
+    
+    console.log('✅ Account status retrieved:', account.user, status);
+    res.json(response);
+    
+  } catch (error) {
+    console.error('❌ Error getting account status:', error.message);
+    next(error);
+  }
+};
+
+/**
+ * Suspend account
+ */
+exports.suspendAccount = async (req, res, next) => {
+  console.log('[POST /whm/account/suspend]', { 
+    username: req.body.username,
+    reason: req.body.reason 
+  });
+  
+  try {
+    const { username, reason = 'Administrative suspension' } = req.body;
+    
+    if (!username) {
+      return res.status(400).json({
+        success: false,
+        error: 'Username is required'
+      });
+    }
+    
+    // Check if account exists
+    const accountExists = await whmService.accountExists(username);
+    if (!accountExists) {
+      return res.status(404).json({
+        success: false,
+        error: 'Account not found'
+      });
+    }
+    
+    const result = await whmService.suspendAccount(username, reason);
+    
+    console.log('✅ Account suspended:', username);
+    res.json({
+      success: true,
+      message: `Account ${username} has been suspended`,
+      reason: reason,
+      result: result
+    });
+    
+  } catch (error) {
+    console.error('❌ Error suspending account:', error.message);
+    next(error);
+  }
+};
+
+/**
+ * Unsuspend account
+ */
+exports.unsuspendAccount = async (req, res, next) => {
+  console.log('[POST /whm/account/unsuspend]', { username: req.body.username });
+  
+  try {
+    const { username } = req.body;
+    
+    if (!username) {
+      return res.status(400).json({
+        success: false,
+        error: 'Username is required'
+      });
+    }
+    
+    // Check if account exists
+    const accountExists = await whmService.accountExists(username);
+    if (!accountExists) {
+      return res.status(404).json({
+        success: false,
+        error: 'Account not found'
+      });
+    }
+    
+    const result = await whmService.unsuspendAccount(username);
+    
+    console.log('✅ Account unsuspended:', username);
+    res.json({
+      success: true,
+      message: `Account ${username} has been unsuspended`,
+      result: result
+    });
+    
+  } catch (error) {
+    console.error('❌ Error unsuspending account:', error.message);
+    next(error);
+  }
+};
+
+/**
+ * Create new cPanel account
+ */
+exports.createAccount = async (req, res, next) => {
+  console.log('[POST /whm/account/create]', { 
+    username: req.body.username,
+    domain: req.body.domain 
+  });
+  
+  try {
+    const {
+      username,
+      domain,
+      password,
+      email,
+      package: packageName = 'default',
+      quota = 'unlimited'
+    } = req.body;
+    
+    // Validate required fields
+    if (!username || !domain || !password || !email) {
+      return res.status(400).json({
+        success: false,
+        error: 'Username, domain, password, and email are required'
+      });
+    }
+    
+    // Check if account already exists
+    const accountExists = await whmService.accountExists(username);
+    if (accountExists) {
+      return res.status(409).json({
+        success: false,
+        error: 'Account already exists'
+      });
+    }
+    
+    const accountData = {
+      username,
+      domain,
+      password,
+      email,
+      package: packageName,
+      quota
+    };
+    
+    const result = await whmService.createAccount(accountData);
+    
+    console.log('✅ Account created:', username);
+    res.json({
+      success: true,
+      message: `Account ${username} has been created`,
+      account: {
+        username,
+        domain,
+        email,
+        package: packageName
+      },
+      result: result
+    });
+    
+  } catch (error) {
+    console.error('❌ Error creating account:', error.message);
+    next(error);
+  }
+};
+
+/**
+ * Get hosting packages
+ */
+exports.getPackages = async (req, res, next) => {
+  console.log('[GET /whm/packages]');
+  
+  try {
+    const packages = await whmService.listPackages();
+    
+    const formattedPackages = packages.map(pkg => ({
+      name: pkg.name,
+      diskSpace: pkg.QUOTA,
+      bandwidth: pkg.BWLIMIT,
+      maxDomains: pkg.MAXADDON,
+      maxSubdomains: pkg.MAXSUB,
+      maxEmailAccounts: pkg.MAXPOP,
+      maxDatabases: pkg.MAXSQL,
+      features: {
+        cgi: pkg.CGI === '1',
+        php: pkg.PHP === '1',
+        ssl: pkg.HASSHELL === '1',
+        frontpage: pkg.FRONTPAGE === '1'
+      }
+    }));
+    
+    console.log(`✅ Retrieved ${packages.length} packages`);
+    res.json({
+      success: true,
+      packages: formattedPackages,
+      count: packages.length
+    });
+    
+  } catch (error) {
+    console.error('❌ Error getting packages:', error.message);
+    next(error);
+  }
+};
+
+/**
+ * Get account resource usage
+ */
+exports.getAccountUsage = async (req, res, next) => {
+  console.log('[POST /whm/account/usage]', { username: req.body.username });
+  
+  try {
+    const { username } = req.body;
+    
+    if (!username) {
+      return res.status(400).json({
+        success: false,
+        error: 'Username is required'
+      });
+    }
+    
+    const [usage, bandwidth] = await Promise.all([
+      whmService.getAccountUsage(username),
+      whmService.getBandwidthUsage(username).catch(() => null)
+    ]);
+    
+    console.log('✅ Account usage retrieved:', username);
+    res.json({
+      success: true,
+      username: username,
+      usage: usage.data || null,
+      bandwidth: bandwidth?.data || null
+    });
+    
+  } catch (error) {
+    console.error('❌ Error getting account usage:', error.message);
+    next(error);
+  }
+};
+
+/**
+ * Test WHM connection
+ */
+exports.testConnection = async (req, res, next) => {
+  console.log('[GET /whm/test]');
+  
+  try {
+    const isConnected = await whmService.testConnection();
+    const version = isConnected ? await whmService.getVersion() : null;
+    
+    res.json({
+      success: isConnected,
+      connected: isConnected,
+      version: version,
+      timestamp: new Date().toISOString(),
+      message: isConnected ? 'WHM connection successful' : 'WHM connection failed'
+    });
+    
+  } catch (error) {
+    console.error('❌ Error testing WHM connection:', error.message);
+    res.json({
+      success: false,
+      connected: false,
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+};
+
+/**
+ * Sync WHMCS service with WHM account
+ * This endpoint links WHMCS hosting services with their corresponding WHM accounts
+ */
+exports.syncServiceWithWHM = async (req, res, next) => {
+  console.log('[POST /whm/sync/service]', { 
+    clientId: req.body.clientId,
+    domain: req.body.domain,
+    serviceId: req.body.serviceId 
+  });
+  
+  try {
+    const { clientId, domain, serviceId } = req.body;
+    
+    if (!clientId || (!domain && !serviceId)) {
+      return res.status(400).json({
+        success: false,
+        error: 'clientId and (domain or serviceId) are required'
+      });
+    }
+    
+    // Get WHMCS service details
+    const whmcsService = await getServiceForClient({ clientId, domain, serviceId });
+    
+    if (!whmcsService) {
+      return res.status(404).json({
+        success: false,
+        error: 'WHMCS service not found'
+      });
+    }
+    
+    const serviceDomain = whmcsService.domain || domain;
+    
+    // Get WHM account details
+    const whmAccount = await whmService.getAccountByDomain(serviceDomain);
+    
+    if (!whmAccount) {
+      return res.status(404).json({
+        success: false,
+        error: 'WHM account not found for this domain'
+      });
+    }
+    
+    // Compare statuses
+    const whmcsStatus = whmcsService.status;
+    const whmStatus = whmAccount.suspended === '1' ? 'Suspended' : 'Active';
+    const statusMatch = (
+      (whmcsStatus === 'Active' && whmStatus === 'Active') ||
+      (whmcsStatus === 'Suspended' && whmStatus === 'Suspended')
+    );
+    
+    const response = {
+      success: true,
+      sync: {
+        domain: serviceDomain,
+        whmcs: {
+          serviceId: whmcsService.id,
+          status: whmcsStatus,
+          nextDueDate: whmcsService.nextduedate,
+          package: whmcsService.productname || whmcsService.name
+        },
+        whm: {
+          username: whmAccount.user,
+          status: whmStatus,
+          suspended: whmAccount.suspended === '1',
+          suspendReason: whmAccount.suspendreason || null,
+          package: whmAccount.plan,
+          diskUsed: whmAccount.diskused,
+          diskLimit: whmAccount.disklimit
+        },
+        statusMatch: statusMatch,
+        recommendation: statusMatch ? null : `Status mismatch: WHMCS shows ${whmcsStatus}, WHM shows ${whmStatus}`
+      }
+    };
+    
+    console.log('✅ Service sync completed:', serviceDomain, { statusMatch });
+    res.json(response);
+    
+  } catch (error) {
+    console.error('❌ Error syncing service with WHM:', error.message);
+    next(error);
+  }
+};
+
+module.exports = exports;

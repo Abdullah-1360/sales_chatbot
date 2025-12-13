@@ -11,14 +11,27 @@ const clientRoutes = require('./clientRoutes');
 const ticketRoutes = require('./ticketRoutes');
 const orderRoutes = require('./orderRoutes');
 const apiRoutes = require('./apiRoutes');
+const whmRoutes = require('./whmRoutes');
+const serverRoutes = require('./serverRoutes');
+const serverCacheRoutes = require('./serverCacheRoutes');
+const { checkDNS, getDNSStatus, comprehensiveDNSLookup } = require('../controllers/dnsController');
+
 router.use('/invoices', invoiceRoutes);
 router.use('/clients', clientRoutes);
 router.use('/tickets', ticketRoutes);
 router.use('/orders', orderRoutes);
 router.use('/api', apiRoutes);
+router.use('/whm', whmRoutes);
+router.use('/servers', serverRoutes);
+router.use('/server-cache', serverCacheRoutes);
 router.post('/recommendations', recommend);
 router.post('/domain/check', checkAvailability);
 router.post('/domain/bulk-check', checkMultiple);
+
+// DNS propagation and nameserver checking endpoints
+router.post('/dns/check', checkDNS);
+router.post('/dns/status', getDNSStatus);
+router.post('/dns/comprehensive', comprehensiveDNSLookup);
 
 // Plan search endpoint
 router.get('/plans/search', searchPlans);

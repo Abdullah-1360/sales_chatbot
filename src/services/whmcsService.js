@@ -228,6 +228,23 @@ async function getClientsDetails(params = {}) {
   return cached('GetClientsDetails', params, () => callApi('GetClientsDetails', params));
 }
 
+async function getServers(params = {}) {
+  // Add pagination parameters to ensure we get all servers
+  const defaultParams = {
+    limitstart: 0,
+    limitnum: 999, // Get up to 999 servers (should be enough for most cases)
+    ...params
+  };
+  
+  console.log('🖥️ Calling WHMCS GetServers with params:', defaultParams);
+  
+  const result = await cached('GetServers', defaultParams, () => callApi('GetServers', defaultParams));
+  
+  console.log(`→ WHMCS GetServers returned ${result.totalresults || 0} total servers`);
+  
+  return result;
+}
+
 function summarizeInvoice(data) {
   const status = data.status;
   const total = data.total || data.amount || data.subtotal;
@@ -242,6 +259,7 @@ module.exports = {
   getClientsProducts,
   getClientsDomains,
   getClientsDetails,
+  getServers,
   getSupportDepartments,
   resolveDepartmentId,
   openTicket,

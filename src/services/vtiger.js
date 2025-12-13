@@ -203,7 +203,8 @@ async function createLead(sessionName, userId, leadInfo) {
       assigned_user_id: userId,
       leadsource: 'Chatbot',
       leadstatus: 'Contacted',
-      description: leadInfo.description || ''
+      description: leadInfo.description || '',
+      cf_879: cfg.VTIGER_DEFAULT_TYPE || 'Not Set' // Type field - mandatory custom field
     };
     
     logger.info('Creating lead', { 
@@ -270,7 +271,8 @@ async function updateLeadEmail(sessionName, userId, existingLead, newEmail, newC
       assigned_user_id: existingLead.assigned_user_id,
       leadsource: existingLead.leadsource || 'Chatbot',
       leadstatus: existingLead.leadstatus || 'Contacted',
-      description: existingLead.description || ''
+      description: existingLead.description || '',
+      cf_879: existingLead.cf_879 || cfg.VTIGER_DEFAULT_TYPE || 'Not Set' // Type field - mandatory custom field
     };
     
     logger.info('Updating lead email', { 
