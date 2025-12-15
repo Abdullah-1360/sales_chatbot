@@ -194,7 +194,7 @@ class DNSResolutionService {
     const aMatch = initialDiagnosis.diagnosis.serverMatches.aRecordsMatchOurServers;
     const nsMatch = initialDiagnosis.diagnosis.serverMatches.nsRecordsMatchOurServers;
     
-    console.log(`→ Current A Records: ${aRecords.join(', ')}`);
+    console.log(`→ Current A Records: ${aRecords.join(', ') || 'None'}`);
     console.log(`→ Points to Our Servers: ${aMatch ? '✅' : '❌'}`);
     
     let analysis = {
@@ -205,7 +205,22 @@ class DNSResolutionService {
       autoFixable: false
     };
     
-    if (!aMatch && nsMatch) {
+    if (aRecords.length === 0) {
+      // No A record exists
+      if (nsMatch) {
+        // We control DNS - can auto-add A record
+        analysis.recommendation = 'add_missing_a_record';
+        analysis.action = 'Automatically add A record to DNS zone';
+        analysis.autoFixable = true;
+        console.log(`→ Recommendation: Auto-add missing A record (we control DNS)`);
+      } else {
+        // External DNS - manual add needed
+        analysis.recommendation = 'manual_add_a_record';
+        analysis.action = 'Manually add A record at external DNS provider';
+        analysis.autoFixable = false;
+        console.log(`→ Recommendation: Manual A record addition at external provider`);
+      }
+    } else if (!aMatch && nsMatch) {
       // A record wrong but we control DNS - can auto-fix
       analysis.recommendation = 'auto_fix_a_record';
       analysis.action = 'Automatically update A record to correct server IP';
@@ -324,6 +339,15 @@ class DNSResolutionService {
       console.log(`→ Auto-fix available: A record update`);
     }
     
+    // Check if A record is missing and we control DNS (can auto-add)
+    if (steps.a_record_check && steps.a_record_check.recommendation === 'add_missing_a_record') {
+      strategy.autoFixable = true;
+      strategy.priority = 'high';
+      strategy.actions.push('add_missing_a_record');
+      strategy.reasoning.push('Missing A record can be automatically added (we control DNS)');
+      console.log(`→ Auto-fix available: Add missing A record`);
+    }
+    
     // Check if nameservers need manual update
     if (steps.nameserver_check && steps.nameserver_check.recommendation === 'update_nameservers') {
       strategy.requiresManualAction = true;
@@ -406,6 +430,35 @@ class DNSResolutionService {
       }
     }
     
+    if (strategy.actions.includes('add_missing_a_record')) {
+      console.log(`→ Attempting to add missing A record...`);
+      results.attempted.push('add_missing_a_record');
+      
+      try {
+        const addResult = await whmService.autoFixMissingARecord(domain);
+        
+        if (addResult.success) {
+          results.successful.push({
+            action: 'add_missing_a_record',
+            result: addResult
+          });
+          console.log(`✅ Missing A record added successfully: ${domain} → ${addResult.ip}`);
+        } else {
+          results.failed.push({
+            action: 'add_missing_a_record',
+            error: addResult.error
+          });
+          console.log(`❌ Failed to add missing A record: ${addResult.error}`);
+        }
+      } catch (error) {
+        results.failed.push({
+          action: 'add_missing_a_record',
+          error: error.message
+        });
+        console.log(`❌ Add missing A record error: ${error.message}`);
+      }
+    }
+    
     return results;
   }
 
@@ -464,6 +517,28 @@ class DNSResolutionService {
       });
       
       console.log(`→ Generated A record update instructions`);
+    }
+    
+    if (strategy.actions.includes('manual_add_a_record')) {
+      const nsCheck = steps.nameserver_check;
+      
+      instructions.actions.push({
+        type: 'manual_add_a_record',
+        priority: 'high',
+        title: 'Add A Record at External DNS Provider',
+        description: `Your domain is missing an A record and needs one added at your external DNS provider.`,
+        steps: [
+          `Log in to your DNS provider (${nsCheck.externalProvider || 'your DNS provider'})`,
+          'Navigate to DNS record management',
+          `Add a new A record for ${domain}`,
+          'Set the record name to @ or leave blank for root domain',
+          'Set the IP address to our server IP (contact support for correct IP)',
+          'Set TTL to 14400 (4 hours) or use default',
+          'Save changes and wait for propagation (usually 1-4 hours)'
+        ]
+      });
+      
+      console.log(`→ Generated A record addition instructions`);
     }
     
     if (strategy.actions.includes('wait_propagation')) {

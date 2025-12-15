@@ -46,6 +46,19 @@ router.post('/account/suspend', whmController.suspendAccount);
 router.post('/account/unsuspend', whmController.unsuspendAccount);
 
 // ========================================
+// DNS MANAGEMENT
+// ========================================
+
+// POST /whm/dns/add-a-record - Add missing A record to DNS zone file
+router.post('/dns/add-a-record', whmController.addMissingARecord);
+
+// POST /whm/dns/auto-fix-a-record - Auto-fix missing A record (find server automatically)
+router.post('/dns/auto-fix-a-record', whmController.autoFixMissingARecord);
+
+// POST /whm/dns/remove-duplicate-a-records - Remove duplicate A records from zone file
+router.post('/dns/remove-duplicate-a-records', whmController.removeDuplicateARecords);
+
+// ========================================
 // INTEGRATION & SYNC
 // ========================================
 

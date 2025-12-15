@@ -682,6 +682,343 @@ class WHMService {
     return response.data?.pop || [];
   }
 
+  /**
+   * Add missing A record to DNS zone file
+   * @param {string} serverName - Server name
+   * @param {string} domain - Domain name
+   * @param {string} targetIP - IP address to add
+   * @returns {Promise<Object>} - Result object with success status and details
+   */
+  async addMissingARecord(serverName, domain, targetIP) {
+    console.log(`🔧 Adding missing A record for ${domain} on ${serverName.toUpperCase()} → ${targetIP}`);
+    
+    try {
+      // Step 1: Verify the A record is actually missing
+      console.log(`→ Step 1: Verifying A record is missing...`);
+      const dnsRecords = await this.getDNSZone(serverName, domain);
+      
+      if (!dnsRecords || dnsRecords.length === 0) {
+        console.log(`⚠️ Could not retrieve DNS zone records`);
+        return { success: false, error: 'Could not retrieve DNS zone records', domain };
+      }
+      
+      // Check for existing main domain A records
+      const mainDomainARecords = dnsRecords.filter(record => {
+        if (record.type !== 'A') return false;
+        const recordName = (record.name || record.dname || '').toLowerCase();
+        const domainName = domain.toLowerCase();
+        
+        return (
+          recordName === domainName ||
+          recordName === `${domainName}.` ||
+          recordName === '' ||
+          recordName === '@'
+        );
+      });
+      
+      if (mainDomainARecords.length > 0) {
+        console.log(`⚠️ A record already exists for ${domain}`);
+        const existingIPs = mainDomainARecords.map(r => r.address);
+        
+        if (existingIPs.includes(targetIP)) {
+          return {
+            success: true,
+            method: 'already_exists_correct',
+            domain,
+            ip: targetIP,
+            message: 'A record already exists with correct IP'
+          };
+        } else {
+          return {
+            success: false,
+            error: `A record exists but points to wrong IP: ${existingIPs.join(', ')} (expected: ${targetIP})`,
+            domain,
+            method: 'exists_wrong_ip',
+            currentIPs: existingIPs,
+            expectedIP: targetIP
+          };
+        }
+      }
+      
+      console.log(`✅ Confirmed: No A record exists for ${domain}`);
+      
+      // Step 2: Add the A record
+      console.log(`→ Step 2: Adding A record to zone file...`);
+      
+      const addResponse = await this.callServerAPI(serverName, 'addzonerecord', {
+        domain: domain,
+        name: `${domain}.`,  // Domain with trailing dot for root record
+        type: 'A',
+        address: targetIP,
+        ttl: 14400
+      });
+      
+      if (addResponse.metadata && addResponse.metadata.result === 1) {
+        console.log(`✅ Successfully added A record: ${domain} → ${targetIP}`);
+        
+        // Step 3: Verify the addition
+        console.log(`→ Step 3: Verifying A record was added...`);
+        await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second for zone update
+        
+        const verifyRecords = await this.getDNSZone(serverName, domain);
+        const hasCorrectIP = verifyRecords.some(r => 
+          r.type === 'A' && 
+          r.address === targetIP && 
+          ((r.name || '').toLowerCase() === `${domain.toLowerCase()}.` || 
+           (r.name || '').toLowerCase() === domain.toLowerCase() ||
+           (r.name || '') === '' ||
+           (r.name || '') === '@')
+        );
+        
+        if (hasCorrectIP) {
+          console.log(`✅ VERIFIED: A record addition successful`);
+          
+          // Step 4: Sync A record changes across nameservers
+          console.log(`→ Step 4: Syncing A record across nameservers...`);
+          const syncResult = await this.syncARecord(serverName, domain, targetIP);
+          
+          return { 
+            success: true, 
+            method: 'addzonerecord', 
+            domain, 
+            ip: targetIP,
+            message: `Successfully added A record for ${domain} pointing to ${targetIP}`,
+            synced: syncResult.success,
+            syncMethod: syncResult.method,
+            syncError: syncResult.success ? null : syncResult.error
+          };
+        } else {
+          console.log(`⚠️ WARNING: API reported success but A record not found in zone`);
+          return { 
+            success: false, 
+            error: 'A record addition reported success but not verified in zone file', 
+            domain,
+            method: 'addzonerecord_unverified'
+          };
+        }
+      } else {
+        const errorMsg = addResponse.metadata?.reason || 'Failed to add A record';
+        console.log(`❌ Failed to add A record: ${errorMsg}`);
+        return { success: false, error: errorMsg, domain, method: 'api_failed' };
+      }
+      
+    } catch (error) {
+      console.error(`❌ Error adding A record for ${domain}:`, error.message);
+      return { success: false, error: error.message, domain, method: 'exception' };
+    }
+  }
+
+  /**
+   * Remove duplicate A records from DNS zone file
+   * @param {string} serverName - Server name
+   * @param {string} domain - Domain name
+   * @param {string} correctIP - The correct IP address to keep
+   * @returns {Promise<Object>} - Result object with success status and details
+   */
+  async removeDuplicateARecords(serverName, domain, correctIP) {
+    console.log(`🔧 Removing duplicate A records for ${domain} on ${serverName.toUpperCase()}, keeping IP: ${correctIP}`);
+    
+    try {
+      // Step 1: Get current DNS zone records
+      console.log(`→ Step 1: Getting current DNS zone records...`);
+      const dnsRecords = await this.getDNSZone(serverName, domain);
+      
+      if (!dnsRecords || dnsRecords.length === 0) {
+        console.log(`⚠️ Could not retrieve DNS zone records`);
+        return { success: false, error: 'Could not retrieve DNS zone records', domain };
+      }
+      
+      // Step 2: Find all main domain A records
+      console.log(`→ Step 2: Finding main domain A records...`);
+      const mainDomainARecords = [];
+      
+      for (let i = 0; i < dnsRecords.length; i++) {
+        const record = dnsRecords[i];
+        if (record.type === 'A') {
+          const recordName = (record.name || record.dname || '').toLowerCase();
+          const domainName = domain.toLowerCase();
+          
+          const isMainDomainRecord = (
+            recordName === domainName ||
+            recordName === `${domainName}.` ||
+            recordName === '' ||
+            recordName === '@'
+          );
+          
+          if (isMainDomainRecord) {
+            const lineNumber = record.Line || record.line || i;
+            mainDomainARecords.push({
+              record: record,
+              lineNumber: lineNumber,
+              isCorrect: record.address === correctIP,
+              hostname: recordName || `${domainName}.`
+            });
+            
+            console.log(`→ Found A record at line ${lineNumber}: "${recordName}" → ${record.address} ${record.address === correctIP ? '✅' : '❌'}`);
+          }
+        }
+      }
+      
+      console.log(`→ Found ${mainDomainARecords.length} main domain A records`);
+      
+      if (mainDomainARecords.length <= 1) {
+        return {
+          success: true,
+          method: 'no_duplicates',
+          domain,
+          message: 'No duplicate A records found',
+          duplicatesRemoved: 0
+        };
+      }
+      
+      // Step 3: Separate correct and incorrect records
+      const correctRecords = mainDomainARecords.filter(r => r.isCorrect);
+      const incorrectRecords = mainDomainARecords.filter(r => !r.isCorrect);
+      
+      console.log(`→ Correct records: ${correctRecords.length}, Incorrect records: ${incorrectRecords.length}`);
+      
+      if (incorrectRecords.length === 0) {
+        return {
+          success: true,
+          method: 'no_incorrect_duplicates',
+          domain,
+          message: 'No incorrect duplicate A records found',
+          duplicatesRemoved: 0
+        };
+      }
+      
+      // Step 4: Remove incorrect records (sort by line number descending to avoid shifting)
+      console.log(`→ Step 3: Removing ${incorrectRecords.length} incorrect A records...`);
+      const sortedForRemoval = incorrectRecords.sort((a, b) => b.lineNumber - a.lineNumber);
+      let removedCount = 0;
+      const removalErrors = [];
+      
+      for (const record of sortedForRemoval) {
+        try {
+          console.log(`🔧 Removing duplicate line ${record.lineNumber}: ${record.hostname} → ${record.record.address}`);
+          
+          const removeResponse = await this.callServerAPI(serverName, 'removezonerecord', {
+            domain: domain,
+            line: record.lineNumber
+          });
+          
+          if (removeResponse && removeResponse.metadata && removeResponse.metadata.result === 1) {
+            console.log(`✅ Removed duplicate line ${record.lineNumber}`);
+            removedCount++;
+          } else {
+            const error = removeResponse?.metadata?.reason || 'Unknown reason';
+            console.log(`⚠️ Failed to remove line ${record.lineNumber}: ${error}`);
+            removalErrors.push(`Line ${record.lineNumber}: ${error}`);
+          }
+        } catch (removeError) {
+          console.log(`❌ Failed to remove line ${record.lineNumber}: ${removeError.message}`);
+          removalErrors.push(`Line ${record.lineNumber}: ${removeError.message}`);
+        }
+      }
+      
+      // Step 5: Verify final state
+      console.log(`→ Step 4: Verifying duplicate removal...`);
+      const finalRecords = await this.getDNSZone(serverName, domain);
+      const finalMainRecords = finalRecords.filter(record => {
+        if (record.type !== 'A') return false;
+        const recordName = (record.name || '').toLowerCase();
+        const domainName = domain.toLowerCase();
+        return recordName === `${domainName}.` || recordName === domainName;
+      });
+      
+      const finalCorrectRecords = finalMainRecords.filter(r => r.address === correctIP);
+      const finalIncorrectRecords = finalMainRecords.filter(r => r.address !== correctIP);
+      
+      console.log(`→ Final state: ${finalCorrectRecords.length} correct, ${finalIncorrectRecords.length} incorrect`);
+      
+      // Step 6: Sync changes across nameservers
+      if (removedCount > 0) {
+        console.log(`\n🔄 Syncing A record changes across nameservers...`);
+        const syncResult = await this.syncARecord(serverName, domain, correctIP);
+        
+        return {
+          success: true,
+          method: 'removezonerecord_duplicates',
+          domain,
+          ip: correctIP,
+          duplicatesRemoved: removedCount,
+          finalRecordCount: finalMainRecords.length,
+          hasRemainingIncorrectRecords: finalIncorrectRecords.length > 0,
+          removalErrors: removalErrors,
+          synced: syncResult.success,
+          syncMethod: syncResult.method,
+          syncError: syncResult.success ? null : syncResult.error,
+          message: `Successfully removed ${removedCount} duplicate A records${removalErrors.length > 0 ? ` (${removalErrors.length} failed)` : ''}`
+        };
+      } else {
+        return {
+          success: false,
+          error: `Failed to remove any duplicate A records${removalErrors.length > 0 ? `: ${removalErrors.join(', ')}` : ''}`,
+          domain,
+          method: 'removal_failed',
+          removalErrors: removalErrors
+        };
+      }
+      
+    } catch (error) {
+      console.error(`❌ Error removing duplicate A records for ${domain}:`, error.message);
+      return { success: false, error: error.message, domain, method: 'exception' };
+    }
+  }
+
+  /**
+   * Auto-fix missing A record (wrapper function for easier calling)
+   * @param {string} domain - Domain name
+   * @param {string} whmcsHint - Optional WHMCS server hint
+   * @returns {Promise<Object>} - Result object with success status and details
+   */
+  async autoFixMissingARecord(domain, whmcsHint = null) {
+    console.log(`🔧 Auto-fixing missing A record for: ${domain}`);
+    
+    try {
+      // Step 1: Find which server hosts the domain
+      const serverName = await this.findDomainServerByAccounts(domain, whmcsHint);
+      
+      if (!serverName) {
+        return {
+          success: false,
+          error: 'Domain not found on any of our servers',
+          domain,
+          method: 'domain_not_found'
+        };
+      }
+      
+      console.log(`→ Domain found on server: ${serverName.toUpperCase()}`);
+      
+      // Step 2: Get the correct IP for this server
+      const serverIP = await this.getServerIPFromCache(serverName);
+      
+      if (!serverIP) {
+        return {
+          success: false,
+          error: `Could not determine IP address for server ${serverName.toUpperCase()}`,
+          domain,
+          server: serverName,
+          method: 'server_ip_not_found'
+        };
+      }
+      
+      console.log(`→ Server IP: ${serverIP}`);
+      
+      // Step 3: Add the missing A record
+      return await this.addMissingARecord(serverName, domain, serverIP);
+      
+    } catch (error) {
+      console.error(`❌ Auto-fix failed for ${domain}:`, error.message);
+      return {
+        success: false,
+        error: error.message,
+        domain,
+        method: 'auto_fix_exception'
+      };
+    }
+  }
+
   // ========================================
   // UTILITY METHODS
   // ========================================

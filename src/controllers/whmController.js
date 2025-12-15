@@ -527,4 +527,260 @@ exports.syncServiceWithWHM = async (req, res, next) => {
   }
 };
 
+/**
+ * Add missing A record to DNS zone file
+ */
+exports.addMissingARecord = async (req, res, next) => {
+  console.log('[POST /whm/dns/add-a-record]', { 
+    domain: req.body.domain,
+    serverName: req.body.serverName,
+    targetIP: req.body.targetIP
+  });
+  
+  try {
+    const { domain, serverName, targetIP } = req.body || {};
+    
+    if (!domain) {
+      console.log('✗ Missing domain parameter');
+      return res.status(400).json({ 
+        success: false, 
+        error: 'domain parameter required' 
+      });
+    }
+    
+    // Validate domain format
+    const domainRegex = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,61}[a-zA-Z0-9]?\.[a-zA-Z]{2,}$/;
+    if (!domainRegex.test(domain)) {
+      console.log('✗ Invalid domain format');
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Invalid domain format' 
+      });
+    }
+    
+    let result;
+    
+    if (serverName && targetIP) {
+      // Manual mode: specific server and IP provided
+      console.log(`→ Manual mode: Adding A record for ${domain} on ${serverName} → ${targetIP}`);
+      
+      // Validate IP format
+      const ipRegex = /^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
+      if (!ipRegex.test(targetIP)) {
+        console.log('✗ Invalid IP address format');
+        return res.status(400).json({ 
+          success: false, 
+          error: 'Invalid IP address format' 
+        });
+      }
+      
+      result = await whmService.addMissingARecord(serverName, domain, targetIP);
+    } else {
+      // Auto mode: find server and IP automatically
+      console.log(`→ Auto mode: Finding server and adding A record for ${domain}`);
+      
+      result = await whmService.autoFixMissingARecord(domain);
+    }
+    
+    if (result.success) {
+      console.log(`✅ A record added successfully for ${domain}`);
+      return res.json({
+        success: true,
+        domain: domain,
+        message: result.message || `A record added successfully for ${domain}`,
+        details: {
+          method: result.method,
+          server: result.server || serverName,
+          ip: result.ip,
+          synced: result.synced,
+          syncMethod: result.syncMethod
+        }
+      });
+    } else {
+      console.log(`❌ Failed to add A record for ${domain}: ${result.error}`);
+      return res.status(400).json({
+        success: false,
+        domain: domain,
+        error: result.error,
+        details: {
+          method: result.method,
+          server: result.server || serverName,
+          currentIPs: result.currentIPs,
+          expectedIP: result.expectedIP
+        }
+      });
+    }
+    
+  } catch (error) {
+    console.error('❌ Error adding A record:', error.message);
+    next(error);
+  }
+};
+
+/**
+ * Remove duplicate A records from DNS zone file
+ */
+exports.removeDuplicateARecords = async (req, res, next) => {
+  console.log('[POST /whm/dns/remove-duplicate-a-records]', { 
+    domain: req.body.domain,
+    serverName: req.body.serverName,
+    correctIP: req.body.correctIP
+  });
+  
+  try {
+    const { domain, serverName, correctIP } = req.body || {};
+    
+    if (!domain) {
+      console.log('✗ Missing domain parameter');
+      return res.status(400).json({ 
+        success: false, 
+        error: 'domain parameter required' 
+      });
+    }
+    
+    // Validate domain format
+    const domainRegex = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,61}[a-zA-Z0-9]?\.[a-zA-Z]{2,}$/;
+    if (!domainRegex.test(domain)) {
+      console.log('✗ Invalid domain format');
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Invalid domain format' 
+      });
+    }
+    
+    if (!serverName || !correctIP) {
+      console.log('✗ Missing serverName or correctIP parameter');
+      return res.status(400).json({ 
+        success: false, 
+        error: 'serverName and correctIP parameters required' 
+      });
+    }
+    
+    // Validate IP format
+    const ipRegex = /^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
+    if (!ipRegex.test(correctIP)) {
+      console.log('✗ Invalid IP address format');
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Invalid IP address format' 
+      });
+    }
+    
+    console.log(`→ Removing duplicate A records for ${domain} on ${serverName}, keeping IP: ${correctIP}`);
+    
+    const result = await whmService.removeDuplicateARecords(serverName, domain, correctIP);
+    
+    if (result.success) {
+      console.log(`✅ Duplicate A records removed successfully for ${domain}`);
+      return res.json({
+        success: true,
+        domain: domain,
+        message: result.message || `Duplicate A records removed successfully for ${domain}`,
+        details: {
+          method: result.method,
+          server: serverName,
+          correctIP: correctIP,
+          duplicatesRemoved: result.duplicatesRemoved,
+          finalRecordCount: result.finalRecordCount,
+          hasRemainingIncorrectRecords: result.hasRemainingIncorrectRecords,
+          synced: result.synced,
+          syncMethod: result.syncMethod,
+          removalErrors: result.removalErrors
+        }
+      });
+    } else {
+      console.log(`❌ Failed to remove duplicate A records for ${domain}: ${result.error}`);
+      return res.status(400).json({
+        success: false,
+        domain: domain,
+        error: result.error,
+        details: {
+          method: result.method,
+          server: serverName,
+          removalErrors: result.removalErrors
+        }
+      });
+    }
+    
+  } catch (error) {
+    console.error('❌ Error removing duplicate A records:', error.message);
+    next(error);
+  }
+};
+
+/**
+ * Auto-fix missing A record (simplified endpoint)
+ */
+exports.autoFixMissingARecord = async (req, res, next) => {
+  console.log('[POST /whm/dns/auto-fix-a-record]', { 
+    domain: req.body.domain
+  });
+  
+  try {
+    const { domain } = req.body || {};
+    
+    if (!domain) {
+      console.log('✗ Missing domain parameter');
+      return res.status(400).json({ 
+        success: false, 
+        error: 'domain parameter required' 
+      });
+    }
+    
+    // Validate domain format
+    const domainRegex = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,61}[a-zA-Z0-9]?\.[a-zA-Z]{2,}$/;
+    if (!domainRegex.test(domain)) {
+      console.log('✗ Invalid domain format');
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Invalid domain format' 
+      });
+    }
+    
+    console.log(`→ Auto-fixing missing A record for: ${domain}`);
+    
+    const result = await whmService.autoFixMissingARecord(domain);
+    
+    if (result.success) {
+      console.log(`✅ A record auto-fixed successfully for ${domain}`);
+      return res.json({
+        success: true,
+        domain: domain,
+        message: result.message || `A record auto-fixed successfully for ${domain}`,
+        details: {
+          method: result.method,
+          server: result.server,
+          ip: result.ip,
+          synced: result.synced,
+          syncMethod: result.syncMethod
+        }
+      });
+    } else {
+      console.log(`❌ Failed to auto-fix A record for ${domain}: ${result.error}`);
+      
+      // Determine appropriate HTTP status code
+      let statusCode = 400;
+      if (result.method === 'domain_not_found') {
+        statusCode = 404;
+      } else if (result.method === 'server_ip_not_found') {
+        statusCode = 500;
+      }
+      
+      return res.status(statusCode).json({
+        success: false,
+        domain: domain,
+        error: result.error,
+        details: {
+          method: result.method,
+          server: result.server
+        }
+      });
+    }
+    
+  } catch (error) {
+    console.error('❌ Error auto-fixing A record:', error.message);
+    next(error);
+  }
+};
+
 module.exports = exports;

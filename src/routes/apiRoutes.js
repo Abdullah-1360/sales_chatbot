@@ -21,6 +21,9 @@ router.post('/myDomains', resolveClientId, serviceStatusController.getMyDomains)
 // POST /api/myAccount - Get complete account overview (email only)
 router.post('/myAccount', resolveClientId, serviceStatusController.getMyAccount);
 
+// POST /api/test-dns-zone-analysis - Test DNS zone analysis with auto-fix (for testing)
+router.post('/test-dns-zone-analysis', serviceStatusController.testDNSZoneAnalysis);
+
 // POST /api/renewService
 router.post('/renewService', resolveClientId, billingController.renewService);
 

@@ -430,16 +430,185 @@ exports.checkServiceStatus = async (req, res, next) => {
             console.log(`   → Total A records: ${dnsZoneAnalysis.totalARecords}`);
             console.log(`   → Correct records: ${dnsZoneAnalysis.correctARecords} (pointing to ${expectedServerIP})`);
             console.log(`   → Duplicate records: ${dnsZoneAnalysis.incorrectARecords} (pointing to ${dnsZoneAnalysis.duplicateIPs.join(', ')})`);
+            
+            // AUTO-FIX: Automatically remove duplicate A records with wrong IPs
+            console.log(`\n🔧 AUTO-FIX: Attempting to remove duplicate A records with wrong IPs...`);
+            try {
+              const whmService = require('../services/whmService');
+              
+              // Get fresh zone data to find line numbers for incorrect records
+              const freshZoneRecords = await whmService.getDNSZone(domainServer, domain);
+              
+              // Find all main domain A records with their line numbers
+              const allMainDomainARecords = freshZoneRecords.filter(record => {
+                if (record.type !== 'A') return false;
+                const recordName = (record.name || '').toLowerCase();
+                const domainName = domain.toLowerCase();
+                return (
+                  recordName === domainName ||
+                  recordName === `${domainName}.` ||
+                  recordName === '' ||
+                  recordName === '@'
+                );
+              });
+              
+              // Separate correct and incorrect records
+              const correctRecords = allMainDomainARecords.filter(record => 
+                record.address === expectedServerIP
+              );
+              const incorrectRecords = allMainDomainARecords.filter(record => 
+                record.address !== expectedServerIP
+              );
+              
+              console.log(`→ Found ${correctRecords.length} correct A records and ${incorrectRecords.length} incorrect A records`);
+              
+              let removedCount = 0;
+              let removalErrors = [];
+              
+              // Remove incorrect records (sort by line number descending to avoid shifting)
+              const sortedIncorrectRecords = incorrectRecords.sort((a, b) => 
+                (b.Line || b.line || 0) - (a.Line || a.line || 0)
+              );
+              
+              for (const record of sortedIncorrectRecords) {
+                const lineNumber = record.Line || record.line;
+                if (!lineNumber) {
+                  console.log(`⚠️ Skipping record without line number: ${record.name} → ${record.address}`);
+                  continue;
+                }
+                
+                try {
+                  console.log(`🔧 Removing duplicate A record at line ${lineNumber}: ${record.name || domain} → ${record.address}`);
+                  
+                  const removeResult = await whmService.callServerAPI(domainServer, 'removezonerecord', {
+                    domain: domain,
+                    line: lineNumber
+                  });
+                  
+                  if (removeResult && removeResult.metadata && removeResult.metadata.result === 1) {
+                    console.log(`✅ Successfully removed duplicate A record at line ${lineNumber}`);
+                    removedCount++;
+                  } else {
+                    const error = removeResult?.metadata?.reason || 'Unknown error';
+                    console.log(`❌ Failed to remove duplicate A record at line ${lineNumber}: ${error}`);
+                    removalErrors.push(`Line ${lineNumber}: ${error}`);
+                  }
+                } catch (removeError) {
+                  console.log(`❌ Error removing duplicate A record at line ${lineNumber}: ${removeError.message}`);
+                  removalErrors.push(`Line ${lineNumber}: ${removeError.message}`);
+                }
+              }
+              
+              if (removedCount > 0) {
+                console.log(`✅ AUTO-FIX SUCCESS: Removed ${removedCount} duplicate A records`);
+                
+                // Update the analysis to reflect the successful cleanup
+                dnsZoneAnalysis.issue = `Duplicate A records were detected and automatically removed (${removedCount} duplicates removed)`;
+                dnsZoneAnalysis.recommendation = 'Duplicate A records automatically removed from DNS zone';
+                dnsZoneAnalysis.dnsConsistent = true;
+                dnsZoneAnalysis.autoFixed = true;
+                dnsZoneAnalysis.autoFixMethod = 'removezonerecord_duplicates';
+                dnsZoneAnalysis.autoFixMessage = `Automatically removed ${removedCount} duplicate A records with wrong IPs`;
+                dnsZoneAnalysis.duplicatesRemoved = removedCount;
+                
+                if (removalErrors.length > 0) {
+                  dnsZoneAnalysis.autoFixWarnings = removalErrors;
+                  dnsZoneAnalysis.recommendation += ` (${removalErrors.length} records failed to remove)`;
+                }
+                
+                console.log(`→ DNS Zone Analysis Updated: Duplicate A records automatically removed`);
+              } else {
+                console.log(`❌ AUTO-FIX FAILED: No duplicate A records were removed`);
+                dnsZoneAnalysis.autoFixAttempted = true;
+                dnsZoneAnalysis.autoFixError = removalErrors.length > 0 ? 
+                  `Failed to remove duplicates: ${removalErrors.join(', ')}` : 
+                  'No duplicate records could be removed';
+                dnsZoneAnalysis.recommendation = `Failed to automatically remove duplicate A records. Manual removal required.`;
+              }
+              
+            } catch (autoFixError) {
+              console.log(`❌ AUTO-FIX ERROR: ${autoFixError.message}`);
+              dnsZoneAnalysis.autoFixAttempted = true;
+              dnsZoneAnalysis.autoFixError = autoFixError.message;
+              dnsZoneAnalysis.recommendation = `Error during automatic duplicate removal: ${autoFixError.message}. Manual removal required.`;
+            }
           } else if (!zonePointsToServer) {
             dnsZoneAnalysis.dnsConsistent = false;
             if (mainARecord) {
               dnsZoneAnalysis.issue = 'Zone file A record points to wrong IP';
               dnsZoneAnalysis.recommendation = 'Update A record in DNS zone to correct server IP';
               console.log(`❌ DNS Analysis: Zone file A record points to ${mainARecord.address} but should be ${expectedServerIP}`);
+              
+              // AUTO-FIX: Automatically update wrong A record since we control the DNS
+              console.log(`\n🔧 AUTO-FIX: Attempting to update wrong A record...`);
+              try {
+                const whmService = require('../services/whmService');
+                const updateResult = await whmService.updateARecord(domainServer, domain, expectedServerIP);
+                
+                if (updateResult.success) {
+                  console.log(`✅ AUTO-FIX SUCCESS: Updated A record for ${domain}: ${mainARecord.address} → ${expectedServerIP}`);
+                  
+                  // Update the analysis to reflect the successful update
+                  dnsZoneAnalysis.issue = 'A record pointed to wrong IP but has been automatically corrected';
+                  dnsZoneAnalysis.recommendation = 'A record automatically updated in DNS zone';
+                  dnsZoneAnalysis.dnsConsistent = true;
+                  dnsZoneAnalysis.zoneARecordIP = expectedServerIP;
+                  dnsZoneAnalysis.zoneMatchesServer = true;
+                  dnsZoneAnalysis.autoFixed = true;
+                  dnsZoneAnalysis.autoFixMethod = updateResult.method;
+                  dnsZoneAnalysis.autoFixMessage = updateResult.message || `Updated A record from ${mainARecord.address} to ${expectedServerIP}`;
+                  dnsZoneAnalysis.oldIP = mainARecord.address;
+                  
+                  console.log(`→ DNS Zone Analysis Updated: A record automatically corrected and verified`);
+                } else {
+                  console.log(`❌ AUTO-FIX FAILED: ${updateResult.error}`);
+                  dnsZoneAnalysis.autoFixAttempted = true;
+                  dnsZoneAnalysis.autoFixError = updateResult.error;
+                  dnsZoneAnalysis.recommendation = `Failed to automatically update A record: ${updateResult.error}. Manual update required.`;
+                }
+              } catch (autoFixError) {
+                console.log(`❌ AUTO-FIX ERROR: ${autoFixError.message}`);
+                dnsZoneAnalysis.autoFixAttempted = true;
+                dnsZoneAnalysis.autoFixError = autoFixError.message;
+                dnsZoneAnalysis.recommendation = `Error during automatic A record update: ${autoFixError.message}. Manual update required.`;
+              }
             } else {
               dnsZoneAnalysis.issue = 'No A record found in zone file';
               dnsZoneAnalysis.recommendation = 'Add A record to DNS zone pointing to correct server IP';
               console.log(`❌ DNS Analysis: No A record found in zone file, should point to ${expectedServerIP}`);
+              
+              // AUTO-FIX: Automatically add missing A record since we control the DNS
+              console.log(`\n🔧 AUTO-FIX: Attempting to add missing A record...`);
+              try {
+                const whmService = require('../services/whmService');
+                const addResult = await whmService.addMissingARecord(domainServer, domain, expectedServerIP);
+                
+                if (addResult.success) {
+                  console.log(`✅ AUTO-FIX SUCCESS: Added A record for ${domain} → ${expectedServerIP}`);
+                  
+                  // Update the analysis to reflect the successful addition
+                  dnsZoneAnalysis.issue = 'A record was missing but has been automatically added';
+                  dnsZoneAnalysis.recommendation = 'A record automatically added to DNS zone';
+                  dnsZoneAnalysis.dnsConsistent = true;
+                  dnsZoneAnalysis.zoneARecordIP = expectedServerIP;
+                  dnsZoneAnalysis.zoneMatchesServer = true;
+                  dnsZoneAnalysis.autoFixed = true;
+                  dnsZoneAnalysis.autoFixMethod = addResult.method;
+                  dnsZoneAnalysis.autoFixMessage = addResult.message;
+                  
+                  console.log(`→ DNS Zone Analysis Updated: A record automatically added and verified`);
+                } else {
+                  console.log(`❌ AUTO-FIX FAILED: ${addResult.error}`);
+                  dnsZoneAnalysis.autoFixAttempted = true;
+                  dnsZoneAnalysis.autoFixError = addResult.error;
+                  dnsZoneAnalysis.recommendation = `Failed to automatically add A record: ${addResult.error}. Manual addition required.`;
+                }
+              } catch (autoFixError) {
+                console.log(`❌ AUTO-FIX ERROR: ${autoFixError.message}`);
+                dnsZoneAnalysis.autoFixAttempted = true;
+                dnsZoneAnalysis.autoFixError = autoFixError.message;
+                dnsZoneAnalysis.recommendation = `Error during automatic A record addition: ${autoFixError.message}. Manual addition required.`;
+              }
             }
           }
         } else {
@@ -861,6 +1030,182 @@ exports.getMyAccount = async (req, res, next) => {
   } catch (err) {
     console.log('✗ Error:', err.message);
     next(err);
+  }
+};
+
+/**
+ * Test DNS zone analysis with auto-fix (for testing purposes)
+ */
+exports.testDNSZoneAnalysis = async (req, res, next) => {
+  console.log('[POST /api/test-dns-zone-analysis]', { 
+    domain: req.body.domain,
+    serverName: req.body.serverName
+  });
+  
+  try {
+    const { domain, serverName } = req.body || {};
+    
+    if (!domain) {
+      console.log('✗ Missing domain parameter');
+      return res.status(400).json({ 
+        success: false, 
+        error: 'domain parameter required' 
+      });
+    }
+    
+    // Mock hosting status for testing
+    const mockHostingStatus = {
+      serverName: serverName || 'cp1',
+      serverIP: '95.217.204.85',
+      serverId: 6,
+      serverHostname: 'cp1.mywebsitebox.com'
+    };
+    
+    console.log(`→ Testing DNS zone analysis for: ${domain}`);
+    
+    // Perform the same DNS zone analysis as in service status
+    let dnsZoneAnalysis = null;
+    
+    try {
+      const whmService = require('../services/whmService');
+      
+      const whmcsHint = {
+        serverName: mockHostingStatus.serverName,
+        serverIP: mockHostingStatus.serverIP,
+        serverId: mockHostingStatus.serverId,
+        serverHostname: mockHostingStatus.serverHostname
+      };
+      
+      const domainServer = await whmService.findDomainServerByAccounts(domain, whmcsHint);
+      
+      if (domainServer) {
+        console.log(`→ Domain hosted on our server: ${domainServer.toUpperCase()}`);
+        
+        const dnsZoneRecords = await whmService.getDNSZone(domainServer, domain);
+        const expectedServerIP = mockHostingStatus.serverIP;
+        
+        // Find main domain A records
+        const mainDomainARecords = dnsZoneRecords.filter(record => {
+          if (record.type !== 'A') return false;
+          const recordName = (record.name || '').toLowerCase();
+          const domainName = domain.toLowerCase();
+          return (
+            recordName === domainName ||
+            recordName === `${domainName}.` ||
+            recordName === '' ||
+            recordName === '@'
+          );
+        });
+        
+        const mainARecord = mainDomainARecords[0] || null;
+        
+        dnsZoneAnalysis = {
+          domain: domain,
+          expectedServerIP: expectedServerIP,
+          serverName: mockHostingStatus.serverName,
+          domainServer: domainServer,
+          isOurServer: true,
+          dataSource: 'zone_file',
+          mainARecord: mainARecord,
+          zoneARecordIP: mainARecord ? mainARecord.address : null,
+          zoneMatchesServer: mainARecord ? (mainARecord.address === expectedServerIP) : false,
+          dnsConsistent: false,
+          issue: null,
+          recommendation: null
+        };
+        
+        // Apply the same logic as in service status
+        const zonePointsToServer = dnsZoneAnalysis.zoneMatchesServer;
+        
+        if (zonePointsToServer) {
+          dnsZoneAnalysis.dnsConsistent = true;
+          dnsZoneAnalysis.issue = null;
+          dnsZoneAnalysis.recommendation = 'A record is correctly configured in zone file';
+        } else if (!zonePointsToServer) {
+          dnsZoneAnalysis.dnsConsistent = false;
+          if (mainARecord) {
+            dnsZoneAnalysis.issue = 'Zone file A record points to wrong IP';
+            dnsZoneAnalysis.recommendation = 'Update A record in DNS zone to correct server IP';
+            
+            // AUTO-FIX: Update wrong A record
+            console.log(`\n🔧 AUTO-FIX: Attempting to update wrong A record...`);
+            try {
+              const updateResult = await whmService.updateARecord(domainServer, domain, expectedServerIP);
+              
+              if (updateResult.success) {
+                console.log(`✅ AUTO-FIX SUCCESS: Updated A record for ${domain}`);
+                dnsZoneAnalysis.issue = 'A record pointed to wrong IP but has been automatically corrected';
+                dnsZoneAnalysis.recommendation = 'A record automatically updated in DNS zone';
+                dnsZoneAnalysis.dnsConsistent = true;
+                dnsZoneAnalysis.zoneARecordIP = expectedServerIP;
+                dnsZoneAnalysis.zoneMatchesServer = true;
+                dnsZoneAnalysis.autoFixed = true;
+                dnsZoneAnalysis.autoFixMethod = updateResult.method;
+                dnsZoneAnalysis.autoFixMessage = updateResult.message;
+                dnsZoneAnalysis.oldIP = mainARecord.address;
+              } else {
+                dnsZoneAnalysis.autoFixAttempted = true;
+                dnsZoneAnalysis.autoFixError = updateResult.error;
+              }
+            } catch (autoFixError) {
+              dnsZoneAnalysis.autoFixAttempted = true;
+              dnsZoneAnalysis.autoFixError = autoFixError.message;
+            }
+          } else {
+            dnsZoneAnalysis.issue = 'No A record found in zone file';
+            dnsZoneAnalysis.recommendation = 'Add A record to DNS zone pointing to correct server IP';
+            
+            // AUTO-FIX: Add missing A record
+            console.log(`\n🔧 AUTO-FIX: Attempting to add missing A record...`);
+            try {
+              const addResult = await whmService.addMissingARecord(domainServer, domain, expectedServerIP);
+              
+              if (addResult.success) {
+                console.log(`✅ AUTO-FIX SUCCESS: Added A record for ${domain}`);
+                dnsZoneAnalysis.issue = 'A record was missing but has been automatically added';
+                dnsZoneAnalysis.recommendation = 'A record automatically added to DNS zone';
+                dnsZoneAnalysis.dnsConsistent = true;
+                dnsZoneAnalysis.zoneARecordIP = expectedServerIP;
+                dnsZoneAnalysis.zoneMatchesServer = true;
+                dnsZoneAnalysis.autoFixed = true;
+                dnsZoneAnalysis.autoFixMethod = addResult.method;
+                dnsZoneAnalysis.autoFixMessage = addResult.message;
+              } else {
+                dnsZoneAnalysis.autoFixAttempted = true;
+                dnsZoneAnalysis.autoFixError = addResult.error;
+              }
+            } catch (autoFixError) {
+              dnsZoneAnalysis.autoFixAttempted = true;
+              dnsZoneAnalysis.autoFixError = autoFixError.message;
+            }
+          }
+        }
+      } else {
+        return res.status(404).json({
+          success: false,
+          error: 'Domain not found on our servers'
+        });
+      }
+      
+    } catch (error) {
+      console.error('❌ DNS zone analysis error:', error.message);
+      return res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+    
+    console.log(`✅ DNS zone analysis completed for ${domain}`);
+    
+    return res.json({
+      success: true,
+      domain: domain,
+      dnsZoneAnalysis: dnsZoneAnalysis
+    });
+    
+  } catch (error) {
+    console.error('❌ Test DNS zone analysis error:', error.message);
+    next(error);
   }
 };
 

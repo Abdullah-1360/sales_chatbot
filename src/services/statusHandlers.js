@@ -83,6 +83,22 @@ function addServerAndDomainInfo(response, domainStatus, hostingStatus, dnsZoneAn
       recommendation: dnsZoneAnalysis.recommendation
     };
     
+    // Add auto-fix information if available
+    if (dnsZoneAnalysis.autoFixed) {
+      response.dnsZoneAnalysis.autoFixed = true;
+      response.dnsZoneAnalysis.autoFixMethod = dnsZoneAnalysis.autoFixMethod;
+      response.dnsZoneAnalysis.autoFixMessage = dnsZoneAnalysis.autoFixMessage;
+      if (dnsZoneAnalysis.oldIP) {
+        response.dnsZoneAnalysis.oldIP = dnsZoneAnalysis.oldIP;
+      }
+    }
+    
+    // Add auto-fix attempt information if failed
+    if (dnsZoneAnalysis.autoFixAttempted && !dnsZoneAnalysis.autoFixed) {
+      response.dnsZoneAnalysis.autoFixAttempted = true;
+      response.dnsZoneAnalysis.autoFixError = dnsZoneAnalysis.autoFixError;
+    }
+    
     // Add error information if DNS analysis failed
     if (dnsZoneAnalysis.error) {
       response.dnsZoneAnalysis.error = dnsZoneAnalysis.error;
