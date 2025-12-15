@@ -83,6 +83,21 @@ function addServerAndDomainInfo(response, domainStatus, hostingStatus, dnsZoneAn
       recommendation: dnsZoneAnalysis.recommendation
     };
     
+    // Add external DNS information if available
+    if (dnsZoneAnalysis.dnsProvider) {
+      response.dnsZoneAnalysis.dnsProvider = dnsZoneAnalysis.dnsProvider;
+      response.dnsZoneAnalysis.providerName = dnsZoneAnalysis.providerName;
+    }
+    
+    if (dnsZoneAnalysis.instructions) {
+      response.dnsZoneAnalysis.instructions = dnsZoneAnalysis.instructions;
+    }
+    
+    // Add nameserver control information
+    if (dnsZoneAnalysis.usesOurNameservers !== undefined) {
+      response.dnsZoneAnalysis.usesOurNameservers = dnsZoneAnalysis.usesOurNameservers;
+    }
+    
     // Add auto-fix information if available
     if (dnsZoneAnalysis.autoFixed) {
       response.dnsZoneAnalysis.autoFixed = true;

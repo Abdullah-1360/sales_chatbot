@@ -272,71 +272,99 @@ exports.checkServiceStatus = async (req, res, next) => {
         const { performComprehensiveDNSLookup } = require('../utils/dnsChecker');
         const whmService = require('../services/whmService');
         
-        // Step 1: Check if domain is hosted on our servers first
-        console.log(`→ Step 1: Checking if domain is hosted on our servers`);
+        // Step 1: Check if we control the DNS (nameservers) first
+        console.log(`→ Step 1: Checking DNS nameserver control...`);
         
-        // Create WHMCS hint from hosting status
-        const whmcsHint = {
-          serverName: hostingStatus.serverName,
-          serverIP: hostingStatus.serverIP,
-          serverId: hostingStatus.serverId,
-          serverHostname: hostingStatus.serverHostname
-        };
+        const dnsLookup = await performComprehensiveDNSLookup(domain);
+        const usesOurNameservers = dnsLookup.serverMatches.nsRecordsMatchOurServers;
         
-        const domainServer = await whmService.findDomainServerByAccounts(domain, whmcsHint);
+        console.log(`→ Uses our nameservers: ${usesOurNameservers ? '✅' : '❌'}`);
+        console.log(`→ Current nameservers: ${dnsLookup.records.NS.join(', ')}`);
         
         let currentARecords = [];
         let dnsZoneRecords = [];
         let isOurServer = false;
+        let domainServer = null;
         
-        if (domainServer) {
-          // Domain is hosted on our servers - use zone file as authoritative source
-          isOurServer = true;
-          console.log(`→ Domain hosted on our server: ${domainServer.toUpperCase()}`);
-          console.log(`→ Step 2: Getting A records from DNS zone file (authoritative)`);
+        if (usesOurNameservers) {
+          // We control DNS - use zone file as authoritative source
+          console.log(`→ Step 2: We control DNS - checking if domain is hosted on our servers`);
           
-          dnsZoneRecords = await whmService.getDNSZone(domainServer, domain);
+          // Create WHMCS hint from hosting status
+          const whmcsHint = {
+            serverName: hostingStatus.serverName,
+            serverIP: hostingStatus.serverIP,
+            serverId: hostingStatus.serverId,
+            serverHostname: hostingStatus.serverHostname
+          };
           
-          // Extract A records from zone file
-          if (dnsZoneRecords && dnsZoneRecords.length > 0) {
-            const mainDomainARecords = dnsZoneRecords.filter(record => {
-              if (record.type !== 'A') return false;
-              
-              const recordName = (record.name || '').toLowerCase();
-              const domainName = domain.toLowerCase();
-              
-              return (
-                recordName === domainName ||
-                recordName === `${domainName}.` ||
-                recordName === '' ||
-                recordName === '@'
-              );
-            });
+          domainServer = await whmService.findDomainServerByAccounts(domain, whmcsHint);
+          
+          if (domainServer) {
+            isOurServer = true;
+            console.log(`→ Domain hosted on our server: ${domainServer.toUpperCase()}`);
+            console.log(`→ Step 3: Getting A records from DNS zone file (authoritative)`);
             
-            currentARecords = mainDomainARecords.map(r => r.address);
-            console.log(`→ Zone file A records: ${currentARecords.join(', ')}`);
+            dnsZoneRecords = await whmService.getDNSZone(domainServer, domain);
+            
+            // Extract A records from zone file
+            if (dnsZoneRecords && dnsZoneRecords.length > 0) {
+              const mainDomainARecords = dnsZoneRecords.filter(record => {
+                if (record.type !== 'A') return false;
+                
+                const recordName = (record.name || '').toLowerCase();
+                const domainName = domain.toLowerCase();
+                
+                return (
+                  recordName === domainName ||
+                  recordName === `${domainName}.` ||
+                  recordName === '' ||
+                  recordName === '@'
+                );
+              });
+              
+              currentARecords = mainDomainARecords.map(r => r.address);
+              console.log(`→ Zone file A records: ${currentARecords.join(', ')}`);
+            } else {
+              console.log(`→ No A records found in zone file`);
+            }
           } else {
-            console.log(`→ No A records found in zone file`);
+            // We control DNS but domain not hosted on our servers - use DNS lookup
+            console.log(`→ Domain not hosted on our servers but we control DNS`);
+            console.log(`→ Step 3: Getting A records via DNS resolver (external hosting)`);
+            
+            currentARecords = dnsLookup.records.A || [];
+            console.log(`→ DNS resolver A records: ${currentARecords.join(', ')}`);
           }
         } else {
-          // Domain is not hosted on our servers - use DNS resolver
-          console.log(`→ Domain not hosted on our servers`);
-          console.log(`→ Step 2: Getting A records via DNS resolver (external domain)`);
+          // External DNS management - use DNS resolver only, NO zone file checking
+          console.log(`→ Step 2: External DNS management - using DNS resolver only`);
+          console.log(`→ DNS managed externally (e.g., Cloudflare, external registrar)`);
+          console.log(`→ Skipping zone file analysis - not applicable for external DNS`);
           
-          const dnsLookup = await performComprehensiveDNSLookup(domain);
           currentARecords = dnsLookup.records.A || [];
           console.log(`→ DNS resolver A records: ${currentARecords.join(', ')}`);
+          
+          // For external DNS, we don't need to check server hosting details
+          // We only care about the DNS records and providing instructions
+          isOurServer = false;
+          domainServer = null;
         }
         
-        // Step 3: Analyze A records
+        // Step 3: Analyze A records based on DNS control
         const expectedServerIP = hostingStatus.serverIP;
         
         let mainARecord = null;
         let mainDomainARecords = [];
         let correctARecords = [];
+        let incorrectARecords = [];
+        let hasDuplicates = false;
+        let hasIncorrectRecords = false;
         
-        if (isOurServer && dnsZoneRecords.length > 0) {
-          // For our servers, analyze zone file records
+        if (usesOurNameservers && isOurServer && dnsZoneRecords.length > 0) {
+          // We control DNS and host the domain - analyze zone file records
+          console.log(`→ Step 3: Analyzing zone file records (we control DNS)`);
+          
           const zoneARecords = dnsZoneRecords.filter(record => record.type === 'A');
           
           // Find ALL A records for the main domain
@@ -353,8 +381,18 @@ exports.checkServiceStatus = async (req, res, next) => {
           correctARecords = mainDomainARecords.filter(record => 
             (record.address || record.target) === expectedServerIP
           );
-        } else {
-          // For external domains or when zone file is not available, create mock records from DNS lookup
+          
+          incorrectARecords = mainDomainARecords.filter(record => 
+            (record.address || record.target) !== expectedServerIP
+          );
+          
+          hasDuplicates = mainDomainARecords.length > 1;
+          hasIncorrectRecords = incorrectARecords.length > 0;
+          
+        } else if (usesOurNameservers && !isOurServer) {
+          // We control DNS but domain not hosted on our servers - use DNS lookup
+          console.log(`→ Step 3: Analyzing DNS records (we control DNS, external hosting)`);
+          
           if (currentARecords.length > 0) {
             mainDomainARecords = currentARecords.map((ip, index) => ({
               name: domain,
@@ -369,14 +407,43 @@ exports.checkServiceStatus = async (req, res, next) => {
             correctARecords = mainDomainARecords.filter(record => 
               record.address === expectedServerIP
             );
+            
+            incorrectARecords = mainDomainARecords.filter(record => 
+              record.address !== expectedServerIP
+            );
+            
+            hasDuplicates = mainDomainARecords.length > 1;
+            hasIncorrectRecords = incorrectARecords.length > 0;
+          }
+          
+        } else {
+          // External DNS management - only analyze DNS lookup results for suggestions
+          console.log(`→ Step 3: Analyzing DNS records (external DNS management)`);
+          
+          if (currentARecords.length > 0) {
+            // Create simple analysis for external DNS - no zone file operations
+            mainARecord = {
+              name: domain,
+              type: 'A',
+              address: currentARecords[0],
+              source: 'external_dns'
+            };
+            
+            // For external DNS, we don't analyze duplicates or do complex operations
+            // We just check if any A record points to our server
+            const pointsToOurServer = currentARecords.includes(expectedServerIP);
+            
+            if (pointsToOurServer) {
+              correctARecords = [{ address: expectedServerIP }];
+            } else {
+              correctARecords = [];
+            }
+            
+            // For external DNS, we don't manage duplicates
+            hasDuplicates = false;
+            hasIncorrectRecords = false;
           }
         }
-        const incorrectARecords = mainDomainARecords.filter(record => 
-          (record.address || record.target) !== expectedServerIP
-        );
-        
-        const hasDuplicates = mainDomainARecords.length > 1;
-        const hasIncorrectRecords = incorrectARecords.length > 0;
         
         dnsZoneAnalysis = {
           domain: domain,
@@ -388,16 +455,19 @@ exports.checkServiceStatus = async (req, res, next) => {
           currentARecords: currentARecords,
           aRecordMatchesServer: currentARecords.includes(expectedServerIP),
           
-          // DNS Zone Results
+          // DNS Control Information
+          usesOurNameservers: usesOurNameservers,
+          dataSource: usesOurNameservers && isOurServer ? 'zone_file' : 'dns_resolver',
+          
+          // DNS Zone Results (only for internal DNS management)
           domainServer: domainServer,
           isOurServer: isOurServer,
-          dataSource: isOurServer ? 'zone_file' : 'dns_resolver',
-          zoneARecords: isOurServer ? dnsZoneRecords.filter(r => r.type === 'A') : [],
+          zoneARecords: (usesOurNameservers && isOurServer && dnsZoneRecords) ? dnsZoneRecords.filter(r => r.type === 'A') : [],
           mainARecord: mainARecord,
           zoneARecordIP: mainARecord ? (mainARecord.address || mainARecord.target) : null,
           zoneMatchesServer: mainARecord ? (mainARecord.address === expectedServerIP || mainARecord.target === expectedServerIP) : false,
           
-          // Duplicate Analysis
+          // Duplicate Analysis (only for internal DNS management)
           mainDomainARecords: mainDomainARecords,
           totalARecords: mainDomainARecords.length,
           correctARecords: correctARecords.length,
@@ -413,8 +483,8 @@ exports.checkServiceStatus = async (req, res, next) => {
         };
         
         // Determine DNS consistency and issues based on data source
-        if (isOurServer) {
-          // For our servers, zone file is authoritative
+        if (usesOurNameservers && isOurServer) {
+          // We control DNS and host the domain - zone file is authoritative
           const zonePointsToServer = dnsZoneAnalysis.zoneMatchesServer;
           
           if (zonePointsToServer && !dnsZoneAnalysis.hasIncorrectRecords) {
@@ -612,24 +682,79 @@ exports.checkServiceStatus = async (req, res, next) => {
             }
           }
         } else {
-          // For external domains, DNS resolver is the only source
+          // External DNS management - DNS resolver is the only source
           const dnsPointsToServer = dnsZoneAnalysis.aRecordMatchesServer;
+          
+          // Detect DNS provider from nameservers
+          const { detectRegistrar } = require('../utils/dnsChecker');
+          const dnsProvider = detectRegistrar(dnsLookup.records.NS);
+          const providerName = dnsProvider ? dnsProvider.toUpperCase() : 'external DNS provider';
+          
+          dnsZoneAnalysis.dnsProvider = dnsProvider;
+          dnsZoneAnalysis.providerName = providerName;
           
           if (dnsPointsToServer) {
             dnsZoneAnalysis.dnsConsistent = true;
             dnsZoneAnalysis.issue = null;
-            dnsZoneAnalysis.recommendation = 'External domain DNS is correctly configured';
-            console.log(`✅ DNS Analysis: External domain A record correctly points to server IP ${expectedServerIP}`);
+            dnsZoneAnalysis.recommendation = `DNS correctly configured via ${providerName}`;
+            console.log(`✅ DNS Analysis: External DNS (${providerName}) A record correctly points to server IP ${expectedServerIP}`);
           } else {
             dnsZoneAnalysis.dnsConsistent = false;
             if (currentARecords.length > 0) {
-              dnsZoneAnalysis.issue = 'External domain points to different server';
-              dnsZoneAnalysis.recommendation = 'Contact domain owner to update A record to correct server IP';
-              console.log(`❌ DNS Analysis: External domain points to ${currentARecords.join(', ')} but should be ${expectedServerIP}`);
+              dnsZoneAnalysis.issue = `A record points to wrong server (managed by ${providerName})`;
+              dnsZoneAnalysis.recommendation = `Update A record at ${providerName} to point to ${expectedServerIP}`;
+              console.log(`❌ DNS Analysis: External DNS (${providerName}) points to ${currentARecords.join(', ')} but should be ${expectedServerIP}`);
+              
+              // Add specific instructions based on provider
+              if (dnsProvider === 'cloudflare') {
+                dnsZoneAnalysis.instructions = [
+                  'Log in to Cloudflare dashboard',
+                  'Navigate to DNS settings for your domain',
+                  `Update the A record to point to ${expectedServerIP}`,
+                  'Ensure the record is not proxied (gray cloud) for hosting'
+                ];
+              } else if (dnsProvider === 'godaddy') {
+                dnsZoneAnalysis.instructions = [
+                  'Log in to GoDaddy account',
+                  'Go to DNS Management for your domain',
+                  `Update the A record to point to ${expectedServerIP}`,
+                  'Save changes and wait for propagation'
+                ];
+              } else {
+                dnsZoneAnalysis.instructions = [
+                  `Log in to your ${providerName} account`,
+                  'Navigate to DNS management for your domain',
+                  `Update the A record to point to ${expectedServerIP}`,
+                  'Save changes and wait for propagation (usually 1-4 hours)'
+                ];
+              }
             } else {
-              dnsZoneAnalysis.issue = 'External domain has no A record';
-              dnsZoneAnalysis.recommendation = 'Contact domain owner to add A record pointing to correct server IP';
-              console.log(`❌ DNS Analysis: External domain has no A record, should point to ${expectedServerIP}`);
+              dnsZoneAnalysis.issue = `No A record found (managed by ${providerName})`;
+              dnsZoneAnalysis.recommendation = `Add A record at ${providerName} pointing to ${expectedServerIP}`;
+              console.log(`❌ DNS Analysis: External DNS (${providerName}) has no A record, should point to ${expectedServerIP}`);
+              
+              // Add specific instructions for adding A record
+              if (dnsProvider === 'cloudflare') {
+                dnsZoneAnalysis.instructions = [
+                  'Log in to Cloudflare dashboard',
+                  'Navigate to DNS settings for your domain',
+                  'Add a new A record:',
+                  `  - Name: @ (or leave blank for root domain)`,
+                  `  - Content: ${expectedServerIP}`,
+                  '  - Proxy status: DNS only (gray cloud)',
+                  'Save the record'
+                ];
+              } else {
+                dnsZoneAnalysis.instructions = [
+                  `Log in to your ${providerName} account`,
+                  'Navigate to DNS management for your domain',
+                  'Add a new A record:',
+                  `  - Name: @ or root domain`,
+                  `  - Value/Target: ${expectedServerIP}`,
+                  '  - TTL: 3600 (1 hour) or default',
+                  'Save changes'
+                ];
+              }
             }
           }
         }
@@ -637,9 +762,9 @@ exports.checkServiceStatus = async (req, res, next) => {
         // Log detailed analysis
         console.log(`→ DNS Zone Analysis Results:`);
         console.log(`  Expected Server IP: ${expectedServerIP}`);
-        console.log(`  Data Source: ${isOurServer ? 'Zone File (Our Server)' : 'DNS Resolver (External)'}`);
+        console.log(`  Data Source: ${dnsZoneAnalysis.dataSource === 'zone_file' ? 'Zone File (Our Server)' : 'DNS Resolver (External)'}`);
         console.log(`  Current DNS A Records: ${currentARecords.join(', ') || 'None'}`);
-        if (isOurServer) {
+        if (usesOurNameservers && isOurServer) {
           console.log(`  Zone A Record IP: ${dnsZoneAnalysis.zoneARecordIP || 'Not found'}`);
           if (dnsZoneAnalysis.hasDuplicates) {
             console.log(`  Zone A Records Count: ${dnsZoneAnalysis.totalARecords} (${dnsZoneAnalysis.correctARecords} correct, ${dnsZoneAnalysis.incorrectARecords} duplicates)`);
@@ -1054,12 +1179,22 @@ exports.testDNSZoneAnalysis = async (req, res, next) => {
     }
     
     // Mock hosting status for testing
-    const mockHostingStatus = {
-      serverName: serverName || 'cp1',
-      serverIP: '95.217.204.85',
-      serverId: 6,
-      serverHostname: 'cp1.mywebsitebox.com'
-    };
+    let mockHostingStatus;
+    if (serverName === 'pcp3') {
+      mockHostingStatus = {
+        serverName: 'pcp3',
+        serverIP: '135.181.231.205',
+        serverId: 18,
+        serverHostname: 'pcp3.mywebsitebox.com'
+      };
+    } else {
+      mockHostingStatus = {
+        serverName: serverName || 'cp1',
+        serverIP: '95.217.204.85',
+        serverId: 6,
+        serverHostname: 'cp1.mywebsitebox.com'
+      };
+    }
     
     console.log(`→ Testing DNS zone analysis for: ${domain}`);
     
