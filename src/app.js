@@ -19,8 +19,13 @@ const allowedOrigins = corsOrigin.includes(',')
 
 app.use(cors({
   origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps, Postman, curl)
+    // Allow requests with no origin (like mobile apps, Postman, curl, local files)
     if (!origin) return callback(null, true);
+    
+    // TEMPORARY: Allow localhost for AutoSSL testing
+    if (origin.includes('localhost') || origin.includes('127.0.0.1')) {
+      return callback(null, true);
+    }
     
     // Check if origin is in allowed list or matches ngrok pattern
     const isAllowed = allowedOrigins.some(allowed => {

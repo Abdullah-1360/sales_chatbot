@@ -1,0 +1,22 @@
+# Direct test for the working AutoSSL method
+# Based on your results, start_autossl_check_for_one_user exists and requires username parameter
+
+# Test the working method:
+curl -s -X POST "http://localhost:3000/api/test-start-autossl" \
+  -H "Content-Type: application/json" \
+  -d '{"serverName":"pcp3","username":"x98aailqrs"}' | jq '.analysis.test3b'
+
+# Check if it's successful:
+curl -s -X POST "http://localhost:3000/api/test-start-autossl" \
+  -H "Content-Type: application/json" \
+  -d '{"serverName":"pcp3","username":"x98aailqrs"}' | jq '.summary'
+
+# Get the recommendation:
+curl -s -X POST "http://localhost:3000/api/test-start-autossl" \
+  -H "Content-Type: application/json" \
+  -d '{"serverName":"pcp3","username":"x98aailqrs"}' | jq '.recommendation'
+
+# Test with a real domain:
+curl -s -X POST "http://localhost:3000/api/test-start-autossl" \
+  -H "Content-Type: application/json" \
+  -d '{"serverName":"pcp3","username":"x98aailqrs","domain":"uzairfarooq.pk"}' | jq '.analysis.test3b'

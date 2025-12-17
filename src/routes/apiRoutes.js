@@ -24,8 +24,14 @@ router.post('/myAccount', resolveClientId, serviceStatusController.getMyAccount)
 // POST /api/test-dns-zone-analysis - Test DNS zone analysis with auto-fix (for testing)
 router.post('/test-dns-zone-analysis', serviceStatusController.testDNSZoneAnalysis);
 
+// POST /api/test-reachability - Test domain reachability (for testing)
+router.post('/test-reachability', serviceStatusController.testReachability);
+
 // POST /api/renewService
 router.post('/renewService', resolveClientId, billingController.renewService);
+
+// POST /api/renewservice - New endpoint with phone/email resolution and validation
+router.post('/renewservice', resolveClientId, validatePhoneNumber, billingController.renewServiceEndpoint);
 
 // POST /api/confirmPayment - with phone validation
 router.post('/confirmPayment', resolveClientId, validatePhoneNumber, billingController.confirmPayment);

@@ -105,7 +105,7 @@ function transformProduct(whmcsProduct) {
     pricing: whmcsProduct.pricing || {}, // Store complete pricing object (PKR + USD)
     customfields: whmcsProduct.customfields || {},
     configoptions: whmcsProduct.configoptions || {},
-    link: whmcsProduct.orderurl || whmcsProduct.link || `https://portal.hostbreak.com/order/${whmcsProduct.gid}/${whmcsProduct.pid}`
+    link: whmcsProduct.orderurl || whmcsProduct.link || `https://portal.hostbreak.com/cart.php?a=add&pid=${whmcsProduct.pid}&currency=2`
   };
 }
 

@@ -249,8 +249,37 @@ exports.checkServiceStatus = async (req, res, next) => {
             allProducts: allProducts,
             statusCounts: statusCounts,
             isDuplicate: productArray.length > 1,
-            duplicateCount: productArray.length
+            duplicateCount: productArray.length,
+            // Username will be fetched separately for AutoSSL management
+            username: null
           };
+          
+          // Fetch username for AutoSSL management from the specific hosting server
+          if (domain && hostingStatus.serverName) {
+            try {
+              console.log(`→ Fetching username for domain ${domain} from hosting server ${hostingStatus.serverName}...`);
+              const whmService = require('../services/whmService');
+              
+              // Extract server name from hosting status (e.g., "PCP3 (Premium)" -> "pcp3")
+              const serverName = whmService.extractServerNameFromWHMCS(hostingStatus.serverName);
+              
+              if (serverName) {
+                console.log(`→ Using hosting server: ${serverName.toUpperCase()}`);
+                const username = await whmService.getUsernameByDomainOnServer(domain, serverName);
+                
+                if (username) {
+                  hostingStatus.username = username;
+                  console.log(`✅ Username found for ${domain} on ${serverName.toUpperCase()}: ${username}`);
+                } else {
+                  console.log(`⚠️ Username not found for domain ${domain} on server ${serverName.toUpperCase()}`);
+                }
+              } else {
+                console.log(`⚠️ Could not extract server name from: ${hostingStatus.serverName}`);
+              }
+            } catch (usernameError) {
+              console.log(`⚠️ Error fetching username for ${domain}: ${usernameError.message}`);
+            }
+          }
         }
       } catch (err) {
         // No hosting found, that's okay
@@ -790,6 +819,238 @@ exports.checkServiceStatus = async (req, res, next) => {
       }
     }
 
+    // Domain Reachability Check - Only if DNS A record check passes
+    let reachabilityAnalysis = null;
+    if (domain && dnsZoneAnalysis && dnsZoneAnalysis.aRecordMatchesServer) {
+      console.log(`\n🔍 Domain Reachability Check for ${domain}...`);
+      console.log(`→ DNS A record check passed - proceeding with reachability test`);
+      
+      try {
+        const reachabilityService = require('../services/reachabilityService');
+        
+        // Perform comprehensive reachability check
+        const reachabilityResult = await reachabilityService.checkDomainReachability(domain);
+        
+        reachabilityAnalysis = {
+          domain: domain,
+          timestamp: reachabilityResult.timestamp,
+          
+          // Overall reachability status
+          reachable: reachabilityResult.overall.reachable,
+          method: reachabilityResult.overall.method,
+          responseTime: reachabilityResult.overall.responseTime,
+          statusCode: reachabilityResult.overall.statusCode,
+          
+          // Detailed check results
+          ping: {
+            alive: reachabilityResult.ping?.alive || false,
+            responseTime: reachabilityResult.ping?.responseTime || null,
+            error: reachabilityResult.ping?.error || null
+          },
+          ssl: {
+            valid: reachabilityResult.ssl?.valid || false,
+            validFrom: reachabilityResult.ssl?.validFrom || null,
+            validTo: reachabilityResult.ssl?.validTo || null,
+            daysUntilExpiry: reachabilityResult.ssl?.daysUntilExpiry || null,
+            issuer: reachabilityResult.ssl?.issuer || null,
+            warnings: reachabilityResult.ssl?.warnings || [],
+            error: reachabilityResult.ssl?.error || null
+          },
+          http: {
+            reachable: reachabilityResult.http?.reachable || false,
+            statusCode: reachabilityResult.http?.statusCode || null,
+            responseTime: reachabilityResult.http?.responseTime || null,
+            error: reachabilityResult.http?.error || null
+          },
+          https: {
+            reachable: reachabilityResult.https?.reachable || false,
+            statusCode: reachabilityResult.https?.statusCode || null,
+            responseTime: reachabilityResult.https?.responseTime || null,
+            error: reachabilityResult.https?.error || null
+          },
+          
+          // Analysis
+          issue: null,
+          recommendation: null
+        };
+        
+        // Determine issues and recommendations
+        if (reachabilityAnalysis.reachable) {
+          reachabilityAnalysis.issue = null;
+          reachabilityAnalysis.recommendation = `Domain is reachable via ${reachabilityAnalysis.method.toUpperCase()}`;
+          
+          if (reachabilityAnalysis.statusCode) {
+            console.log(`✅ Domain Reachability: ${domain} is reachable via ${reachabilityAnalysis.method.toUpperCase()} (Status: ${reachabilityAnalysis.statusCode}, Response: ${reachabilityAnalysis.responseTime}ms)`);
+          } else {
+            console.log(`✅ Domain Reachability: ${domain} is reachable via ${reachabilityAnalysis.method.toUpperCase()} (Response: ${reachabilityAnalysis.responseTime}ms)`);
+          }
+        } else {
+          reachabilityAnalysis.issue = 'Domain is not reachable';
+          reachabilityAnalysis.recommendation = 'Check server status, firewall settings, and web server configuration';
+          console.log(`❌ Domain Reachability: ${domain} is not reachable via any method (ping, HTTP, HTTPS)`);
+          
+          // Log specific errors for troubleshooting
+          if (reachabilityAnalysis.ping.error) {
+            console.log(`  → Ping error: ${reachabilityAnalysis.ping.error}`);
+          }
+          if (reachabilityAnalysis.http.error) {
+            console.log(`  → HTTP error: ${reachabilityAnalysis.http.error}`);
+          }
+          if (reachabilityAnalysis.https.error) {
+            console.log(`  → HTTPS error: ${reachabilityAnalysis.https.error}`);
+          }
+        }
+        
+        // Log detailed reachability results
+        console.log(`→ Domain Reachability Results:`);
+        console.log(`  Overall Reachable: ${reachabilityAnalysis.reachable ? '✅' : '❌'}`);
+        console.log(`  Best Method: ${reachabilityAnalysis.method || 'None'}`);
+        console.log(`  Response Time: ${reachabilityAnalysis.responseTime || 'N/A'}ms`);
+        console.log(`  Status Code: ${reachabilityAnalysis.statusCode || 'N/A'}`);
+        console.log(`  Ping: ${reachabilityAnalysis.ping.alive ? '✅' : '❌'} (${reachabilityAnalysis.ping.responseTime || 'N/A'}ms)`);
+        console.log(`  SSL: ${reachabilityAnalysis.ssl.valid ? '✅' : '❌'} (${reachabilityAnalysis.ssl.daysUntilExpiry ? `expires in ${reachabilityAnalysis.ssl.daysUntilExpiry} days` : 'invalid'})`);
+        console.log(`  HTTP: ${reachabilityAnalysis.http.reachable ? '✅' : '❌'} (${reachabilityAnalysis.http.statusCode || 'N/A'})`);
+        console.log(`  HTTPS: ${reachabilityAnalysis.https.reachable ? '✅' : '❌'} (${reachabilityAnalysis.https.statusCode || 'N/A'})`);
+        
+        // Log SSL warnings if any
+        if (reachabilityAnalysis.ssl.warnings && reachabilityAnalysis.ssl.warnings.length > 0) {
+          console.log(`  SSL Warnings: ${reachabilityAnalysis.ssl.warnings.join(', ')}`);
+        }
+        
+        // AutoSSL Management - Start AutoSSL check when SSL is invalid
+        if (!reachabilityAnalysis.ssl.valid && hostingStatus && hostingStatus.username && hostingStatus.serverName) {
+          console.log(`\n🔒 SSL Certificate Invalid - Starting Comprehensive AutoSSL Management...`);
+          console.log(`→ Domain: ${domain}`);
+          console.log(`→ Username: ${hostingStatus.username}`);
+          console.log(`→ Server: ${hostingStatus.serverName}`);
+          console.log(`→ SSL Issues: ${reachabilityAnalysis.ssl.warnings.join(', ')}`);
+          
+          try {
+            const whmService = require('../services/whmService');
+            
+            // Extract server name for AutoSSL API call (e.g., "PCP3 (Premium)" -> "pcp3")
+            const serverName = whmService.extractServerNameFromWHMCS(hostingStatus.serverName);
+            
+            if (!serverName) {
+              throw new Error(`Could not extract server name from: ${hostingStatus.serverName}`);
+            }
+            
+            console.log(`→ Using extracted server name for AutoSSL: ${serverName.toUpperCase()}`);
+            
+            const autoSSLResult = await whmService.forceAutoSSLInclusion(
+              serverName, 
+              hostingStatus.username, 
+              domain
+            );
+            
+            if (autoSSLResult.success) {
+              console.log(`✅ AutoSSL Management Completed: ${autoSSLResult.message}`);
+              
+              // Determine the action taken based on the result
+              let actionTaken = 'unknown';
+              let timeline = 'Certificate will be processed automatically';
+              
+              if (autoSSLResult.autoSSLTriggered) {
+                actionTaken = 'active_trigger_success';
+                timeline = autoSSLResult.timeline || 'SSL certificate should be generated within minutes';
+              } else if (autoSSLResult.removedFromExcluded || autoSSLResult.wasExcluded === false) {
+                actionTaken = 'passive_inclusion_success';
+                timeline = autoSSLResult.timeline || 'SSL certificate will be generated in next scheduled AutoSSL run (typically within 4-6 hours)';
+              }
+              
+              // Add comprehensive AutoSSL information to reachability analysis
+              reachabilityAnalysis.autoSSL = {
+                attempted: true,
+                success: true,
+                message: autoSSLResult.message,
+                method: autoSSLResult.method,
+                triggerMethod: autoSSLResult.triggerMethod || null,
+                actionTaken: actionTaken,
+                wasExcluded: autoSSLResult.wasExcluded,
+                autoSSLTriggered: autoSSLResult.autoSSLTriggered,
+                timeline: timeline,
+                serverName: autoSSLResult.serverName,
+                username: autoSSLResult.username,
+                domain: autoSSLResult.domain
+              };
+              
+              // Update recommendation with specific action taken
+              if (autoSSLResult.autoSSLTriggered) {
+                reachabilityAnalysis.recommendation = `SSL certificate issues detected. AutoSSL certificate generation has been actively triggered using ${autoSSLResult.triggerMethod}. ${timeline}. ${reachabilityAnalysis.recommendation}`;
+              } else {
+                reachabilityAnalysis.recommendation = `SSL certificate issues detected. Domain has been included in AutoSSL for automatic certificate generation. ${timeline}. Note: Active AutoSSL triggering is not available via API on this server, which is normal for most cPanel installations. ${reachabilityAnalysis.recommendation}`;
+              }
+              
+            } else {
+              console.log(`❌ AutoSSL Management Failed: ${autoSSLResult.error}`);
+              
+              reachabilityAnalysis.autoSSL = {
+                attempted: true,
+                success: false,
+                error: autoSSLResult.error,
+                message: autoSSLResult.message,
+                method: autoSSLResult.method,
+                triggerError: autoSSLResult.triggerError || null,
+                fallbackInfo: autoSSLResult.fallbackInfo || null,
+                serverName: autoSSLResult.serverName,
+                username: autoSSLResult.username,
+                domain: autoSSLResult.domain
+              };
+              
+              reachabilityAnalysis.recommendation = `SSL certificate issues detected. AutoSSL management failed: ${autoSSLResult.error}. Please contact support for manual SSL certificate installation. ${reachabilityAnalysis.recommendation}`;
+            }
+            
+          } catch (autoSSLError) {
+            console.log(`❌ AutoSSL Management Error: ${autoSSLError.message}`);
+            
+            reachabilityAnalysis.autoSSL = {
+              attempted: true,
+              success: false,
+              error: autoSSLError.message,
+              message: `Error during AutoSSL management: ${autoSSLError.message}`,
+              method: 'force_autossl_inclusion_exception'
+            };
+            
+            reachabilityAnalysis.recommendation = `SSL certificate issues detected. Error during AutoSSL management: ${autoSSLError.message}. Please contact support for manual SSL certificate installation. ${reachabilityAnalysis.recommendation}`;
+          }
+        } else if (!reachabilityAnalysis.ssl.valid) {
+          console.log(`\n⚠️ SSL Certificate Invalid but AutoSSL cannot be managed:`);
+          if (!hostingStatus) {
+            console.log(`→ No hosting status available - domain may not be hosted with us`);
+          } else if (!hostingStatus.username) {
+            console.log(`→ Username not available for domain ${domain} - cannot manage AutoSSL`);
+          } else if (!hostingStatus.serverName) {
+            console.log(`→ Server name not available - cannot determine AutoSSL server`);
+          }
+          
+          // Add AutoSSL unavailable information
+          reachabilityAnalysis.autoSSL = {
+            attempted: false,
+            success: false,
+            error: 'AutoSSL management not available',
+            message: !hostingStatus ? 'Domain not hosted with us' : 
+                    !hostingStatus.username ? 'Username not available' : 
+                    'Server information not available',
+            method: 'not_applicable'
+          };
+        }
+        
+      } catch (reachabilityError) {
+        console.log(`⚠️ Domain reachability check failed: ${reachabilityError.message}`);
+        reachabilityAnalysis = {
+          domain: domain,
+          reachable: false,
+          error: reachabilityError.message,
+          issue: 'Reachability check failed',
+          recommendation: 'Contact support for connectivity troubleshooting'
+        };
+      }
+    } else if (domain && dnsZoneAnalysis && !dnsZoneAnalysis.aRecordMatchesServer) {
+      console.log(`\n⏭️ Skipping reachability check for ${domain}`);
+      console.log(`→ DNS A record check failed - domain does not point to our servers`);
+      console.log(`→ Reachability check not applicable for domains not pointing to our infrastructure`);
+    }
+
     // Import status handlers
     const statusHandlers = require('../services/statusHandlers');
     
@@ -802,6 +1063,7 @@ exports.checkServiceStatus = async (req, res, next) => {
       domainStatus,
       hostingStatus,
       dnsZoneAnalysis,
+      reachabilityAnalysis,
       svc,
       clientId,
       domain,
@@ -1340,6 +1602,53 @@ exports.testDNSZoneAnalysis = async (req, res, next) => {
     
   } catch (error) {
     console.error('❌ Test DNS zone analysis error:', error.message);
+    next(error);
+  }
+};
+
+/**
+ * Test domain reachability (for testing purposes)
+ */
+exports.testReachability = async (req, res, next) => {
+  console.log('[POST /api/test-reachability]', { 
+    domain: req.body.domain
+  });
+  
+  try {
+    const { domain } = req.body || {};
+    
+    if (!domain) {
+      console.log('✗ Missing domain parameter');
+      return res.status(400).json({ 
+        success: false, 
+        error: 'domain parameter required' 
+      });
+    }
+    
+    console.log(`→ Testing reachability for: ${domain}`);
+    
+    const reachabilityService = require('../services/reachabilityService');
+    const result = await reachabilityService.checkDomainReachability(domain);
+    
+    console.log(`✅ Reachability test completed for ${domain}`);
+    
+    return res.json({
+      success: true,
+      domain: domain,
+      reachability: {
+        reachable: result.overall.reachable,
+        method: result.overall.method,
+        responseTime: result.overall.responseTime,
+        statusCode: result.overall.statusCode,
+        ping: result.ping,
+        ssl: result.ssl,
+        http: result.http,
+        https: result.https
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Test reachability error:', error.message);
     next(error);
   }
 };

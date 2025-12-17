@@ -3,7 +3,9 @@ const {
   getInvoice,
   getInvoices,
   openTicket,
-  addOrder 
+  addOrder,
+  getClientsProducts,
+  getClientsDomains
 } = require('../services/whmcsService');
 
 const { 
@@ -232,6 +234,129 @@ exports.renewService = async (req, res, next) => {
         ? Math.ceil((new Date(svc.nextduedate) - new Date()) / (1000 * 60 * 60 * 24))
         : null;
       
+      // If service is overdue or outside renewal window, create a support ticket
+      if (daysUntilDue !== null && (daysUntilDue < 0 || daysUntilDue >= 14)) {
+        const isOverdue = daysUntilDue < 0;
+        const isEarlyRenewal = daysUntilDue >= 14;
+        const daysDifference = Math.abs(daysUntilDue);
+        
+        if (isOverdue) {
+          console.log(`→ Service is overdue by ${daysDifference} days, creating support ticket`);
+        } else {
+          console.log(`→ Service renewal requested ${daysDifference} days early, creating support ticket`);
+        }
+        
+        // Create support ticket for renewal outside normal window
+        const ticketMessage = isOverdue 
+          ? `=== OVERDUE SERVICE RENEWAL REQUEST ===
+Client attempted to renew an overdue service that cannot generate automatic invoices.
+
+=== SERVICE DETAILS ===
+Domain: ${svc.domain}
+Service ID: ${svc.id}
+Status: ${svc.status}
+Product: ${svc.productname || svc.name || 'N/A'}
+Next Due Date: ${svc.nextduedate}
+Days Overdue: ${daysDifference}
+Billing Cycle: ${svc.billingcycle || 'N/A'}
+
+=== ISSUE SUMMARY ===
+The client requested renewal for service "${svc.domain}" (ID: ${svc.id}) but the service is ${daysDifference} day(s) overdue (due: ${svc.nextduedate}).
+
+WHMCS GenInvoices did not generate an automatic renewal invoice, likely because:
+- The service is beyond the automatic renewal window
+- The service may be suspended or have billing restrictions
+- Manual intervention may be required
+
+=== REQUIRED ACTION ===
+Please investigate and contact the client to:
+1. Manually generate the renewal invoice in WHMCS admin
+2. Check for any service suspension or billing issues
+3. Process the renewal payment if received
+4. Restore service if suspended due to non-payment
+5. Verify service status and billing cycle
+
+This ticket was automatically generated from an overdue renewal request.`
+          : `=== EARLY SERVICE RENEWAL REQUEST ===
+Client attempted to renew a service outside the standard renewal window.
+
+=== SERVICE DETAILS ===
+Domain: ${svc.domain}
+Service ID: ${svc.id}
+Status: ${svc.status}
+Product: ${svc.productname || svc.name || 'N/A'}
+Next Due Date: ${svc.nextduedate}
+Days Until Due: ${daysUntilDue}
+Billing Cycle: ${svc.billingcycle || 'N/A'}
+
+=== ISSUE SUMMARY ===
+The client requested renewal for service "${svc.domain}" (ID: ${svc.id}) but the service is ${daysDifference} day(s) before the due date (${svc.nextduedate}).
+
+WHMCS GenInvoices did not generate an automatic renewal invoice because the service is outside the standard renewal window (typically 7-14 days before due date).
+
+The client wants to renew early, which may require manual processing.
+
+This ticket was automatically generated from an early renewal request.`;
+
+        try {
+          const deptid = process.env.BILLING_DEPTID;
+          const deptname = deptid ? undefined : (process.env.BILLING_DEPTNAME || 'Billing');
+          
+          const ticket = await openTicket({
+            deptid,
+            deptname,
+            subject: isOverdue 
+              ? `[Overdue] Service Renewal Request - ${svc.domain} (${daysDifference} days overdue)`
+              : `[Early Renewal] Service Renewal Request - ${svc.domain} (${daysDifference} days early)`,
+            message: ticketMessage,
+            clientid: clientId,
+            priority: 'High',
+            serviceid: svc.id
+          });
+          
+          const ticketId = ticket.tid || ticket.ticketid || ticket.id;
+          console.log(`→ Support ticket created: ${ticketId} for ${isOverdue ? 'overdue' : 'early'} service renewal`);
+          
+          return res.status(400).json({
+            success: false,
+            error: isOverdue 
+              ? 'Service is overdue and requires manual processing'
+              : 'Service renewal requested outside standard window',
+            message: isOverdue
+              ? `This service is ${daysDifference} day(s) overdue and cannot be automatically renewed. A support ticket (#${ticketId}) has been created for our billing team to manually process your renewal.`
+              : `This service renewal was requested ${daysDifference} day(s) before the due date, outside the standard renewal window. A support ticket (#${ticketId}) has been created for our billing team to process your early renewal request.`,
+            serviceId: svc.id,
+            serviceName: svc.name || svc.productname,
+            domain: svc.domain,
+            nextDueDate: svc.nextduedate,
+            daysUntilDue: daysUntilDue,
+            ticketId: ticketId,
+            isOverdue: isOverdue,
+            isEarlyRenewal: isEarlyRenewal
+          });
+        } catch (ticketError) {
+          console.log(`→ Failed to create support ticket: ${ticketError.message}`);
+          
+          // Fallback response if ticket creation fails
+          return res.status(400).json({
+            success: false,
+            error: isOverdue 
+              ? 'Service is overdue and requires manual processing'
+              : 'Service renewal requested outside standard window',
+            message: isOverdue
+              ? `This service is ${daysDifference} day(s) overdue and cannot be automatically renewed. Please contact billing support for manual renewal processing.`
+              : `This service renewal was requested ${daysDifference} day(s) before the due date, outside the standard renewal window. Please contact billing support for early renewal processing.`,
+            serviceId: svc.id,
+            serviceName: svc.name || svc.productname,
+            domain: svc.domain,
+            nextDueDate: svc.nextduedate,
+            daysUntilDue: daysUntilDue,
+            isOverdue: isOverdue,
+            isEarlyRenewal: isEarlyRenewal
+          });
+        }
+      }
+      
       return res.status(400).json({ 
         success: false, 
         error: 'Service is not within the renewal window.',
@@ -299,12 +424,142 @@ exports.renewService = async (req, res, next) => {
       // No invoice generated
       console.log('→ No invoice generated for domain');
       
+      // Check if domain is overdue
+      const domainExpiryDate = dom.expirydate || dom.nextduedate;
+      let daysUntilExpiry = null;
+      let isOverdue = false;
+      
+      if (domainExpiryDate && domainExpiryDate !== '0000-00-00') {
+        daysUntilExpiry = Math.ceil((new Date(domainExpiryDate) - new Date()) / (1000 * 60 * 60 * 24));
+        isOverdue = daysUntilExpiry < 0;
+      }
+      
+      // If domain is overdue or outside renewal window, create a support ticket
+      if (daysUntilExpiry !== null && (daysUntilExpiry < 0 || daysUntilExpiry >= 14)) {
+        const isDomainOverdue = daysUntilExpiry < 0;
+        const isEarlyDomainRenewal = daysUntilExpiry >= 14;
+        const daysDifference = Math.abs(daysUntilExpiry);
+        
+        if (isDomainOverdue) {
+          console.log(`→ Domain is overdue by ${daysDifference} days, creating support ticket`);
+        } else {
+          console.log(`→ Domain renewal requested ${daysDifference} days early, creating support ticket`);
+        }
+        
+        // Create support ticket for domain renewal outside normal window
+        const ticketMessage = isDomainOverdue
+          ? `=== OVERDUE DOMAIN RENEWAL REQUEST ===
+Client attempted to renew an overdue domain that cannot generate automatic invoices.
+
+=== DOMAIN DETAILS ===
+Domain: ${dom.domain || dom.domainname}
+Domain ID: ${dom.id}
+Status: ${dom.status}
+Registrar: ${dom.registrar || 'N/A'}
+Expiry Date: ${domainExpiryDate}
+Days Overdue: ${daysDifference}
+
+=== ISSUE SUMMARY ===
+The client requested renewal for domain "${dom.domain || dom.domainname}" (ID: ${dom.id}) but the domain is ${daysDifference} day(s) overdue (expired: ${domainExpiryDate}).
+
+WHMCS GenInvoices did not generate an automatic renewal invoice, likely because:
+- The domain is beyond the automatic renewal window
+- The domain may be in redemption period
+- Manual intervention may be required
+
+=== REQUIRED ACTION ===
+Please investigate and contact the client to:
+1. Check domain status with the registrar
+2. Manually generate the renewal invoice in WHMCS admin
+3. Verify if domain is still renewable or in redemption period
+4. Process the renewal if still possible
+5. Advise on re-registration if domain has expired beyond redemption
+
+This ticket was automatically generated from an overdue renewal request.`
+          : `=== EARLY DOMAIN RENEWAL REQUEST ===
+Client attempted to renew a domain outside the standard renewal window.
+
+=== DOMAIN DETAILS ===
+Domain: ${dom.domain || dom.domainname}
+Domain ID: ${dom.id}
+Status: ${dom.status}
+Registrar: ${dom.registrar || 'N/A'}
+Expiry Date: ${domainExpiryDate}
+Days Until Expiry: ${daysUntilExpiry}
+
+=== ISSUE SUMMARY ===
+The client requested renewal for domain "${dom.domain || dom.domainname}" (ID: ${dom.id}) but the domain is ${daysDifference} day(s) before the expiry date (${domainExpiryDate}).
+
+WHMCS GenInvoices did not generate an automatic renewal invoice because the domain is outside the standard renewal window (typically 7-14 days before expiry).
+
+The client wants to renew early, which may require manual processing.
+
+This ticket was automatically generated from an early domain renewal request.`;
+
+        try {
+          const deptid = process.env.BILLING_DEPTID;
+          const deptname = deptid ? undefined : (process.env.BILLING_DEPTNAME || 'Billing');
+          
+          const ticket = await openTicket({
+            deptid,
+            deptname,
+            subject: isDomainOverdue
+              ? `[Overdue] Domain Renewal Request - ${dom.domain || dom.domainname} (${daysDifference} days overdue)`
+              : `[Early Renewal] Domain Renewal Request - ${dom.domain || dom.domainname} (${daysDifference} days early)`,
+            message: ticketMessage,
+            clientid: clientId,
+            priority: 'High'
+          });
+          
+          const ticketId = ticket.tid || ticket.ticketid || ticket.id;
+          console.log(`→ Support ticket created: ${ticketId} for ${isDomainOverdue ? 'overdue' : 'early'} domain renewal`);
+          
+          return res.status(400).json({
+            success: false,
+            error: isDomainOverdue
+              ? 'Domain is overdue and requires manual processing'
+              : 'Domain renewal requested outside standard window',
+            message: isDomainOverdue
+              ? `This domain is ${daysDifference} day(s) overdue and cannot be automatically renewed. A support ticket (#${ticketId}) has been created for our billing team to check renewal options.`
+              : `This domain renewal was requested ${daysDifference} day(s) before the expiry date, outside the standard renewal window. A support ticket (#${ticketId}) has been created for our billing team to process your early renewal request.`,
+            domainId: dom.id,
+            domain: dom.domain || dom.domainname,
+            expiryDate: domainExpiryDate,
+            daysUntilExpiry: daysUntilExpiry,
+            ticketId: ticketId,
+            isOverdue: isDomainOverdue,
+            isEarlyRenewal: isEarlyDomainRenewal
+          });
+        } catch (ticketError) {
+          console.log(`→ Failed to create support ticket: ${ticketError.message}`);
+          
+          // Fallback response if ticket creation fails
+          return res.status(400).json({
+            success: false,
+            error: isDomainOverdue
+              ? 'Domain is overdue and requires manual processing'
+              : 'Domain renewal requested outside standard window',
+            message: isDomainOverdue
+              ? `This domain is ${daysDifference} day(s) overdue and cannot be automatically renewed. Please contact billing support for renewal assistance.`
+              : `This domain renewal was requested ${daysDifference} day(s) before the expiry date, outside the standard renewal window. Please contact billing support for early renewal processing.`,
+            domainId: dom.id,
+            domain: dom.domain || dom.domainname,
+            expiryDate: domainExpiryDate,
+            daysUntilExpiry: daysUntilExpiry,
+            isOverdue: isDomainOverdue,
+            isEarlyRenewal: isEarlyDomainRenewal
+          });
+        }
+      }
+      
       return res.status(400).json({ 
         success: false, 
         error: 'Domain is not within the renewal window.',
         domainId: dom.id,
         domain: dom.domain || dom.domainname,
-        message: 'System will automatically generate the renewal invoice when the domain is within the renewal window.'
+        expiryDate: domainExpiryDate,
+        daysUntilExpiry: daysUntilExpiry,
+        message: `System will automatically generate the renewal invoice when the domain is within the renewal window${domainExpiryDate ? ` (typically 7-14 days before ${domainExpiryDate})` : ''}.`
       });
     } else {
       console.log('✗ No valid service or domain ID found');
@@ -546,6 +801,503 @@ exports.createOrder = async (req, res, next) => {
     });
   } catch (err) {
     console.log('✗ Error:', err.message);
+    next(err);
+  }
+};
+
+/**
+ * Renew Service Endpoint
+ * Handles both hosting service and domain renewals with proper validation
+ * 
+ * Workflow:
+ * 1. Service Validation (Pre-check)
+ * 2. Check for Existing Unpaid Invoices (Anti-Duplication)
+ * 3. Create new order if no existing invoice found
+ * 4. Error Handling for standard WHMCS errors
+ */
+exports.renewServiceEndpoint = async (req, res, next) => {
+  console.log('[POST /api/renewservice]', { 
+    clientId: req.body.clientId, 
+    domain: req.body.domain, 
+    number: req.body.number 
+  });
+  
+  try {
+    const { clientId, domain, number } = req.body || {};
+    
+    if (!clientId || !domain) {
+      console.log('✗ Missing required parameters');
+      return res.status(400).json({ 
+        success: false, 
+        error: 'clientId and domain are required' 
+      });
+    }
+    
+    // Step 1: Service Validation (Pre-check)
+    console.log('→ Step 1: Service Validation');
+    
+    let serviceId = null;
+    let domainId = null;
+    let serviceData = null;
+    let domainData = null;
+    let isHostingService = false;
+    let isDomainService = false;
+    
+    // Check for hosting service first
+    try {
+      const productsResponse = await getClientsProducts(clientId);
+      const products = productsResponse.products?.product || [];
+      const productArray = Array.isArray(products) ? products : (products ? [products] : []);
+      
+      serviceData = productArray.find(product => 
+        product.domain === domain || 
+        (product.customfields && product.customfields.customfield && 
+         Array.isArray(product.customfields.customfield) && 
+         product.customfields.customfield.some(field => field.value === domain))
+      );
+      
+      if (serviceData) {
+        serviceId = serviceData.id;
+        isHostingService = true;
+        console.log(`→ Found hosting service: ID ${serviceId}, Status: ${serviceData.status}`);
+        
+        // Validate hosting service status
+        if (['Cancelled', 'Terminated'].includes(serviceData.status)) {
+          console.log(`→ Service cannot be renewed, creating support ticket`);
+          
+          // Create support ticket for non-renewable service
+          const ticketMessage = `=== SERVICE RENEWAL REQUEST - CANNOT BE PROCESSED ===
+Client attempted to renew a ${serviceData.status.toLowerCase()} service.
+
+=== SERVICE DETAILS ===
+Domain: ${domain}
+Service ID: ${serviceId}
+Status: ${serviceData.status}
+Product: ${serviceData.productname || serviceData.name || 'N/A'}
+Next Due Date: ${serviceData.nextduedate || 'N/A'}
+
+=== ISSUE SUMMARY ===
+The client requested renewal for domain "${domain}" but the associated hosting service (ID: ${serviceId}) has a status of "${serviceData.status}". 
+
+Services with Cancelled or Terminated status cannot be renewed through the standard renewal process.
+
+=== REQUIRED ACTION ===
+Please contact the client to discuss:
+1. Service reactivation options
+2. New service setup if needed
+3. Data recovery possibilities (if applicable)
+4. Alternative hosting solutions
+
+This ticket was automatically generated from a renewal request.`;
+
+          try {
+            const deptid = process.env.BILLING_DEPTID;
+            const deptname = deptid ? undefined : (process.env.BILLING_DEPTNAME || 'Billing');
+            
+            const ticket = await openTicket({
+              deptid,
+              deptname,
+              subject: `[${serviceData.status}] Renewal Request - ${domain} (Service ID: ${serviceId})`,
+              message: ticketMessage,
+              clientid: clientId,
+              priority: 'Medium',
+              serviceid: serviceId
+            });
+            
+            const ticketId = ticket.tid || ticket.ticketid || ticket.id;
+            console.log(`→ Support ticket created: ${ticketId} for non-renewable service`);
+            
+            return res.status(400).json({
+              success: false,
+              error: 'Service cannot be renewed',
+              message: `This service is ${serviceData.status} and cannot be renewed. A support ticket (#${ticketId}) has been created for our team to assist you with reactivation options.`,
+              serviceId: serviceId,
+              status: serviceData.status,
+              ticketId: ticketId,
+              contactSales: true
+            });
+          } catch (ticketError) {
+            console.log(`→ Failed to create support ticket: ${ticketError.message}`);
+            
+            // Fallback response if ticket creation fails
+            return res.status(400).json({
+              success: false,
+              error: 'Service cannot be renewed',
+              message: `This service is ${serviceData.status} and cannot be renewed. Please contact sales for assistance.`,
+              serviceId: serviceId,
+              status: serviceData.status,
+              contactSales: true
+            });
+          }
+        }
+        
+        if (serviceData.status === 'Suspended') {
+          console.log(`→ Service is suspended, noting for invoice check`);
+        }
+      }
+    } catch (err) {
+      console.log(`→ Error checking hosting services: ${err.message}`);
+    }
+    
+    // Check for domain registration if no hosting service found
+    if (!isHostingService) {
+      try {
+        const domainsResponse = await getClientsDomains(clientId);
+        const domains = domainsResponse.domains?.domain || [];
+        const domainArray = Array.isArray(domains) ? domains : (domains ? [domains] : []);
+        
+        domainData = domainArray.find(dom => 
+          dom.domain === domain || dom.domainname === domain
+        );
+        
+        if (domainData) {
+          domainId = domainData.id;
+          isDomainService = true;
+          console.log(`→ Found domain registration: ID ${domainId}, Status: ${domainData.status}`);
+          
+          // Validate domain status
+          if (domainData.status === 'Cancelled') {
+            console.log(`→ Domain cannot be renewed, creating support ticket`);
+            
+            // Create support ticket for cancelled domain
+            const ticketMessage = `=== DOMAIN RENEWAL REQUEST - CANNOT BE PROCESSED ===
+Client attempted to renew a cancelled domain.
+
+=== DOMAIN DETAILS ===
+Domain: ${domain}
+Domain ID: ${domainId}
+Status: ${domainData.status}
+Registrar: ${domainData.registrar || 'N/A'}
+Expiry Date: ${domainData.expirydate || domainData.nextduedate || 'N/A'}
+
+=== ISSUE SUMMARY ===
+The client requested renewal for domain "${domain}" but the domain registration has a status of "Cancelled". 
+
+Cancelled domains cannot be renewed through the standard renewal process and may require special handling or re-registration.
+
+=== REQUIRED ACTION ===
+Please contact the client to discuss:
+1. Domain re-registration options
+2. Domain transfer possibilities
+3. Alternative domain suggestions
+4. Recovery options if the domain is still within the redemption period
+
+This ticket was automatically generated from a renewal request.`;
+
+            try {
+              const deptid = process.env.BILLING_DEPTID;
+              const deptname = deptid ? undefined : (process.env.BILLING_DEPTNAME || 'Billing');
+              
+              const ticket = await openTicket({
+                deptid,
+                deptname,
+                subject: `[Cancelled] Domain Renewal Request - ${domain} (Domain ID: ${domainId})`,
+                message: ticketMessage,
+                clientid: clientId,
+                priority: 'Medium'
+              });
+              
+              const ticketId = ticket.tid || ticket.ticketid || ticket.id;
+              console.log(`→ Support ticket created: ${ticketId} for cancelled domain`);
+              
+              return res.status(400).json({
+                success: false,
+                error: 'Domain cannot be renewed',
+                message: `This domain is cancelled and cannot be renewed. A support ticket (#${ticketId}) has been created for our team to assist you with re-registration or recovery options.`,
+                domainId: domainId,
+                status: domainData.status,
+                ticketId: ticketId,
+                contactSales: true
+              });
+            } catch (ticketError) {
+              console.log(`→ Failed to create support ticket: ${ticketError.message}`);
+              
+              // Fallback response if ticket creation fails
+              return res.status(400).json({
+                success: false,
+                error: 'Domain cannot be renewed',
+                message: 'This domain is cancelled and cannot be renewed. Please contact sales for assistance.',
+                domainId: domainId,
+                status: domainData.status,
+                contactSales: true
+              });
+            }
+          }
+          
+          // Capture expiry date for domains
+          const expiryDate = domainData.expirydate || domainData.nextduedate;
+          if (expiryDate) {
+            console.log(`→ Domain expiry date: ${expiryDate}`);
+          }
+        }
+      } catch (err) {
+        console.log(`→ Error checking domains: ${err.message}`);
+      }
+    }
+    
+    // If neither service nor domain found
+    if (!isHostingService && !isDomainService) {
+      return res.status(404).json({
+        success: false,
+        error: 'Service or domain not found',
+        message: `No hosting service or domain registration found for ${domain} in your account.`
+      });
+    }
+    
+    // Step 2: Check for Existing Unpaid Invoices (Anti-Duplication)
+    console.log('→ Step 2: Checking for existing unpaid invoices');
+    
+    try {
+      const invoicesResponse = await getInvoices({ 
+        userid: clientId, 
+        status: 'Unpaid',
+        limitnum: 50 // Check more invoices to be thorough
+      });
+      
+      const invoices = invoicesResponse.invoices?.invoice || [];
+      const invoiceArray = Array.isArray(invoices) ? invoices : (invoices ? [invoices] : []);
+      
+      // Check each invoice for matching items
+      for (const invoice of invoiceArray) {
+        const items = invoice.items?.item || [];
+        const itemArray = Array.isArray(items) ? items : (items ? [items] : []);
+        
+        for (const item of itemArray) {
+          let isMatch = false;
+          
+          if (isHostingService) {
+            // Hosting: Check if relid matches serviceId AND type matches "Hosting"
+            if (String(item.relid) === String(serviceId) && item.type === 'Hosting') {
+              isMatch = true;
+            }
+          } else if (isDomainService) {
+            // Domain: Check if description contains domain name or relid/domainid matches
+            if (item.description && item.description.toLowerCase().includes(domain.toLowerCase())) {
+              isMatch = true;
+            } else if (String(item.relid) === String(domainId) || String(item.domainid) === String(domainId)) {
+              isMatch = true;
+            }
+          }
+          
+          if (isMatch) {
+            console.log(`→ Found existing unpaid invoice: ${invoice.invoiceid}`);
+            
+            return res.json({
+              success: true,
+              existingInvoice: true,
+              invoiceId: invoice.invoiceid,
+              balance: invoice.balance || invoice.total,
+              dueDate: invoice.duedate,
+              message: `An unpaid renewal invoice already exists: Invoice #${invoice.invoiceid} for ${invoice.balance || invoice.total} due on ${invoice.duedate}. Please pay this invoice to complete the renewal.`
+            });
+          }
+        }
+      }
+      
+      console.log('→ No existing unpaid invoices found');
+    } catch (err) {
+      console.log(`→ Error checking invoices: ${err.message}`);
+      // Continue with order creation even if invoice check fails
+    }
+    
+    // Step 3: Create new order using AddOrder
+    console.log('→ Step 3: Creating new renewal order');
+    
+    const paymentMethod = 'banktransfer'; // Default payment method
+    let orderParams = {
+      clientid: clientId,
+      paymentmethod: paymentMethod
+    };
+    
+    if (isHostingService) {
+      // For hosting services, use servicerenewals
+      orderParams.servicerenewals = [serviceId];
+      console.log(`→ Creating hosting service renewal order for service ${serviceId}`);
+    } else if (isDomainService) {
+      // For domains, use domainrenewals with period
+      const period = number || 1; // Default to 1 year if no period specified
+      orderParams.domainrenewals = { [domain]: period };
+      console.log(`→ Creating domain renewal order for ${domain} (${period} year${period > 1 ? 's' : ''})`);
+    }
+    
+    try {
+      const orderResult = await addOrder(orderParams);
+      
+      if (orderResult && orderResult.result === 'success') {
+        console.log(`→ Order created successfully: ${orderResult.orderid}`);
+        
+        return res.json({
+          success: true,
+          existingInvoice: false,
+          orderId: orderResult.orderid,
+          invoiceId: orderResult.invoiceid,
+          message: `Renewal order created successfully. Invoice #${orderResult.invoiceid} has been generated for your ${isHostingService ? 'hosting service' : 'domain'} renewal.`
+        });
+      } else {
+        // Handle WHMCS API errors
+        const errorMessage = orderResult.message || 'Failed to create renewal order';
+        console.log(`→ AddOrder failed: ${errorMessage}`);
+        
+        // Check for standard WHMCS errors and provide user-friendly messages
+        if (errorMessage.includes('cannot be renewed at this time')) {
+          console.log(`→ Renewal not available, creating support ticket`);
+          
+          // Create support ticket for renewal restriction
+          const ticketMessage = `=== RENEWAL REQUEST - NOT AVAILABLE ===
+Client attempted to renew ${isHostingService ? 'a hosting service' : 'a domain'} but WHMCS returned an error.
+
+=== ${isHostingService ? 'SERVICE' : 'DOMAIN'} DETAILS ===
+Domain: ${domain}
+${isHostingService ? `Service ID: ${serviceId}` : `Domain ID: ${domainId}`}
+${isHostingService ? `Status: ${serviceData?.status || 'N/A'}` : `Status: ${domainData?.status || 'N/A'}`}
+${isHostingService ? `Product: ${serviceData?.productname || 'N/A'}` : `Registrar: ${domainData?.registrar || 'N/A'}`}
+${isHostingService ? `Next Due Date: ${serviceData?.nextduedate || 'N/A'}` : `Expiry Date: ${domainData?.expirydate || domainData?.nextduedate || 'N/A'}`}
+
+=== ERROR DETAILS ===
+WHMCS Error: ${errorMessage}
+
+=== ISSUE SUMMARY ===
+The client requested renewal for "${domain}" but WHMCS returned an error indicating the ${isHostingService ? 'service' : 'domain'} cannot be renewed at this time.
+
+This could be due to:
+- Not within the renewal window
+- Payment restrictions
+- Account limitations
+- ${isHostingService ? 'Service-specific restrictions' : 'Domain registry restrictions'}
+
+=== REQUIRED ACTION ===
+Please investigate and contact the client to:
+1. Verify renewal eligibility
+2. Check for any account restrictions
+3. Manually process the renewal if appropriate
+4. Provide alternative solutions if needed
+
+This ticket was automatically generated from a renewal request.`;
+
+          try {
+            const deptid = process.env.BILLING_DEPTID;
+            const deptname = deptid ? undefined : (process.env.BILLING_DEPTNAME || 'Billing');
+            
+            const ticket = await openTicket({
+              deptid,
+              deptname,
+              subject: `[Renewal Issue] ${isHostingService ? 'Service' : 'Domain'} Renewal Not Available - ${domain}`,
+              message: ticketMessage,
+              clientid: clientId,
+              priority: 'Medium',
+              ...(isHostingService && serviceId ? { serviceid: serviceId } : {})
+            });
+            
+            const ticketId = ticket.tid || ticket.ticketid || ticket.id;
+            console.log(`→ Support ticket created: ${ticketId} for renewal restriction`);
+            
+            return res.status(400).json({
+              success: false,
+              error: 'Renewal not available',
+              message: `${isHostingService ? 'Service' : 'Domain'} cannot be renewed at this time. A support ticket (#${ticketId}) has been created for our team to investigate and assist you.`,
+              ticketId: ticketId
+            });
+          } catch (ticketError) {
+            console.log(`→ Failed to create support ticket: ${ticketError.message}`);
+            
+            // Fallback response if ticket creation fails
+            return res.status(400).json({
+              success: false,
+              error: 'Renewal not available',
+              message: `${isHostingService ? 'Service' : 'Domain'} cannot be renewed at this time. This may be because it's not within the renewal window or there are other restrictions. Please contact support for assistance.`
+            });
+          }
+        }
+        
+        return res.status(400).json({
+          success: false,
+          error: 'Order creation failed',
+          message: `Failed to create renewal order: ${errorMessage}`
+        });
+      }
+    } catch (orderError) {
+      console.log(`→ AddOrder exception: ${orderError.message}`);
+      
+      // Handle specific WHMCS error patterns
+      if (orderError.message.includes('Domain cannot be renewed at this time')) {
+        console.log(`→ Domain renewal exception, creating support ticket`);
+        
+        // Create support ticket for domain renewal exception
+        const ticketMessage = `=== DOMAIN RENEWAL REQUEST - EXCEPTION OCCURRED ===
+Client attempted to renew a domain but an exception occurred during the AddOrder process.
+
+=== DOMAIN DETAILS ===
+Domain: ${domain}
+${isDomainService ? `Domain ID: ${domainId}` : 'Domain ID: N/A (not found in client domains)'}
+${isDomainService ? `Status: ${domainData?.status || 'N/A'}` : 'Status: N/A'}
+${isDomainService ? `Registrar: ${domainData?.registrar || 'N/A'}` : 'Registrar: N/A'}
+${isDomainService ? `Expiry Date: ${domainData?.expirydate || domainData?.nextduedate || 'N/A'}` : 'Expiry Date: N/A'}
+Renewal Period: ${number || 1} year(s)
+
+=== ERROR DETAILS ===
+Exception Message: ${orderError.message}
+
+=== ISSUE SUMMARY ===
+The client requested renewal for domain "${domain}" but an exception occurred during the WHMCS AddOrder API call.
+
+The specific error indicates the domain cannot be renewed at this time, which could be due to:
+- Domain registry restrictions
+- Renewal timing limitations
+- Payment or account issues
+- Technical problems with the domain registration
+
+=== REQUIRED ACTION ===
+Please investigate and contact the client to:
+1. Check domain status with the registry
+2. Verify renewal eligibility and timing
+3. Manually process the renewal if appropriate
+4. Resolve any underlying issues
+
+This ticket was automatically generated from a renewal request.`;
+
+        try {
+          const deptid = process.env.BILLING_DEPTID;
+          const deptname = deptid ? undefined : (process.env.BILLING_DEPTNAME || 'Billing');
+          
+          const ticket = await openTicket({
+            deptid,
+            deptname,
+            subject: `[Exception] Domain Renewal Failed - ${domain}`,
+            message: ticketMessage,
+            clientid: clientId,
+            priority: 'High'
+          });
+          
+          const ticketId = ticket.tid || ticket.ticketid || ticket.id;
+          console.log(`→ Support ticket created: ${ticketId} for domain renewal exception`);
+          
+          return res.status(400).json({
+            success: false,
+            error: 'Domain renewal not available',
+            message: `Domain cannot be renewed at this time. A support ticket (#${ticketId}) has been created for our team to investigate and resolve this issue.`,
+            ticketId: ticketId
+          });
+        } catch (ticketError) {
+          console.log(`→ Failed to create support ticket: ${ticketError.message}`);
+          
+          // Fallback response if ticket creation fails
+          return res.status(400).json({
+            success: false,
+            error: 'Domain renewal not available',
+            message: 'Domain cannot be renewed at this time. This may be due to renewal restrictions or timing. Please contact support for assistance.'
+          });
+        }
+      }
+      
+      return res.status(500).json({
+        success: false,
+        error: 'Renewal order failed',
+        message: `An error occurred while creating the renewal order: ${orderError.message}`
+      });
+    }
+    
+  } catch (err) {
+    console.log('✗ Error in renewservice:', err.message);
     next(err);
   }
 };

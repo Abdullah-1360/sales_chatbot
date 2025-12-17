@@ -29,6 +29,7 @@
     "mongoose": "^8.19.3",
     "node-cache": "^5.1.2",
     "nodemon": "^3.1.10",
+    "ping": "^1.0.0",
     "socket.io": "^4.8.1",
     "whois-json": "^2.0.4"
   },

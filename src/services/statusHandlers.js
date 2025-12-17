@@ -51,7 +51,7 @@ async function getComprehensiveDNSStatus(serviceName, whmcsNameservers = null) {
 /**
  * Helper function to add server, domain, and DNS zone information to response objects
  */
-function addServerAndDomainInfo(response, domainStatus, hostingStatus, dnsZoneAnalysis = null) {
+function addServerAndDomainInfo(response, domainStatus, hostingStatus, dnsZoneAnalysis = null, reachabilityAnalysis = null) {
   // Add server information if available from hosting status
   if (hostingStatus) {
     if (hostingStatus.serverId) response.serverId = hostingStatus.serverId;
@@ -60,6 +60,7 @@ function addServerAndDomainInfo(response, domainStatus, hostingStatus, dnsZoneAn
     if (hostingStatus.serverHostname) response.serverHostname = hostingStatus.serverHostname;
     if (hostingStatus.productId) response.hostingProductId = hostingStatus.productId;
     if (hostingStatus.totalProducts > 1) response.hostingProducts = hostingStatus.totalProducts;
+    if (hostingStatus.username) response.username = hostingStatus.username;
   }
   
   // Add domain information if available
@@ -117,6 +118,46 @@ function addServerAndDomainInfo(response, domainStatus, hostingStatus, dnsZoneAn
     // Add error information if DNS analysis failed
     if (dnsZoneAnalysis.error) {
       response.dnsZoneAnalysis.error = dnsZoneAnalysis.error;
+    }
+  }
+  
+  // Add reachability analysis if available
+  if (reachabilityAnalysis) {
+    response.reachabilityAnalysis = {
+      domain: reachabilityAnalysis.domain,
+      reachable: reachabilityAnalysis.reachable,
+      method: reachabilityAnalysis.method,
+      responseTime: reachabilityAnalysis.responseTime,
+      statusCode: reachabilityAnalysis.statusCode,
+      issue: reachabilityAnalysis.issue,
+      recommendation: reachabilityAnalysis.recommendation
+    };
+    
+    // Add detailed check results
+    if (reachabilityAnalysis.ping) {
+      response.reachabilityAnalysis.ping = reachabilityAnalysis.ping;
+    }
+    
+    if (reachabilityAnalysis.http) {
+      response.reachabilityAnalysis.http = reachabilityAnalysis.http;
+    }
+    
+    if (reachabilityAnalysis.ssl) {
+      response.reachabilityAnalysis.ssl = reachabilityAnalysis.ssl;
+    }
+    
+    if (reachabilityAnalysis.https) {
+      response.reachabilityAnalysis.https = reachabilityAnalysis.https;
+    }
+    
+    // Add AutoSSL information if available
+    if (reachabilityAnalysis.autoSSL) {
+      response.reachabilityAnalysis.autoSSL = reachabilityAnalysis.autoSSL;
+    }
+    
+    // Add error information if reachability check failed
+    if (reachabilityAnalysis.error) {
+      response.reachabilityAnalysis.error = reachabilityAnalysis.error;
     }
   }
   
@@ -252,7 +293,7 @@ async function handleActiveService(params) {
   };
   
   // Add server, domain, and DNS zone information
-  response = addServerAndDomainInfo(response, domainStatus, hostingStatus, dnsZoneAnalysis);
+  response = addServerAndDomainInfo(response, domainStatus, hostingStatus, dnsZoneAnalysis, params.reachabilityAnalysis);
   
   // Add comprehensive DNS analysis for active services (helps with "site down" issues)
   if (serviceName && serviceName.includes('.')) {
@@ -363,7 +404,7 @@ async function handleCombinedStatus(params) {
     };
     
     // Add server, domain, and DNS zone information
-    return addServerAndDomainInfo(response, domainStatus, hostingStatus, dnsZoneAnalysis);
+    return addServerAndDomainInfo(response, domainStatus, hostingStatus, dnsZoneAnalysis, params.reachabilityAnalysis);
   }
   
   // ONLY DOMAIN INACTIVE
@@ -660,7 +701,7 @@ async function handleHostingOnly(params) {
     };
     
     // Add server, domain, and DNS zone information
-    response = addServerAndDomainInfo(response, null, hostingStatus, dnsZoneAnalysis);
+    response = addServerAndDomainInfo(response, null, hostingStatus, dnsZoneAnalysis, params.reachabilityAnalysis);
     
     // If suspended, check for invoice details
     if (hostingStatus.status === 'Suspended') {

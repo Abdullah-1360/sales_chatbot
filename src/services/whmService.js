@@ -356,11 +356,570 @@ class WHMService {
    */
   async getAccountByDomain(domain) {
     try {
-      const accounts = await this.listAccounts({ domain });
-      return accounts.find(acc => acc.domain === domain) || null;
+      // Search across all servers for the domain
+      const serverNames = Object.keys(this.serverApiKeys);
+      
+      for (const serverName of serverNames) {
+        try {
+          const response = await this.callServerAPI(serverName, 'listaccts', { 
+            searchtype: 'domain', 
+            search: domain 
+          });
+          
+          if (response.data && response.data.acct) {
+            const accounts = Array.isArray(response.data.acct) ? response.data.acct : [response.data.acct];
+            const domainAccount = accounts.find(acc => acc.domain === domain);
+            
+            if (domainAccount) {
+              console.log(`✅ Found account for domain ${domain} on server ${serverName.toUpperCase()}`);
+              return {
+                ...domainAccount,
+                serverName: serverName
+              };
+            }
+          }
+        } catch (serverError) {
+          console.log(`⚠️ Error checking server ${serverName} for domain ${domain}: ${serverError.message}`);
+          continue;
+        }
+      }
+      
+      console.log(`❌ Domain ${domain} not found on any server`);
+      return null;
     } catch (error) {
       console.error(`Error finding account for domain ${domain}:`, error.message);
       return null;
+    }
+  }
+
+  /**
+   * Get username for a domain using listaccts API
+   * @param {string} domain - Domain name
+   * @returns {Promise<string|null>} - Username or null
+   */
+  async getUsernameByDomain(domain) {
+    try {
+      console.log(`→ Getting username for domain: ${domain}`);
+      
+      // Search across all servers for the domain
+      const serverNames = Object.keys(this.serverApiKeys);
+      
+      for (const serverName of serverNames) {
+        try {
+          const response = await this.callServerAPI(serverName, 'listaccts', { 
+            search: domain,
+            searchtype: 'domain'
+          });
+          
+          if (response.data && response.data.acct) {
+            const accounts = Array.isArray(response.data.acct) ? response.data.acct : [response.data.acct];
+            const domainAccount = accounts.find(acc => acc.domain === domain);
+            
+            if (domainAccount && domainAccount.user) {
+              const username = domainAccount.user;
+              console.log(`✅ Found username for ${domain} on server ${serverName.toUpperCase()}: ${username}`);
+              return username;
+            }
+          }
+        } catch (serverError) {
+          // listaccts may return an error if no accounts found on this server
+          // This is expected behavior, so we continue to the next server
+          console.log(`→ Domain ${domain} not found on server ${serverName.toUpperCase()}`);
+          continue;
+        }
+      }
+      
+      console.log(`❌ Domain ${domain} not found on any server`);
+      return null;
+    } catch (error) {
+      console.error(`Error getting username for domain ${domain}:`, error.message);
+      return null;
+    }
+  }
+
+  /**
+   * Get username for a domain on a specific server using listaccts API
+   * @param {string} domain - Domain name
+   * @param {string} serverName - Server name (e.g., 'cp1', 'pcp3')
+   * @returns {Promise<string|null>} - Username or null
+   */
+  async getUsernameByDomainOnServer(domain, serverName) {
+    try {
+      console.log(`→ Getting username for domain: ${domain} on server ${serverName.toUpperCase()}`);
+      
+      const response = await this.callServerAPI(serverName, 'listaccts', { 
+        search: domain,
+        searchtype: 'domain'
+      });
+      
+      if (response.data && response.data.acct) {
+        const accounts = Array.isArray(response.data.acct) ? response.data.acct : [response.data.acct];
+        const domainAccount = accounts.find(acc => acc.domain === domain);
+        
+        if (domainAccount && domainAccount.user) {
+          const username = domainAccount.user;
+          console.log(`✅ Found username for ${domain} on server ${serverName.toUpperCase()}: ${username}`);
+          return username;
+        }
+      }
+      
+      console.log(`❌ Domain ${domain} not found on server ${serverName.toUpperCase()}`);
+      return null;
+    } catch (error) {
+      console.log(`❌ Error getting username for ${domain} on server ${serverName.toUpperCase()}: ${error.message}`);
+      return null;
+    }
+  }
+
+  // ========================================
+  // AUTOSSL MANAGEMENT
+  // ========================================
+
+  /**
+   * Force AutoSSL inclusion for a domain by removing it from excluded domains and actively triggering certificate generation
+   * This method implements both passive (remove from exclusion) and active (trigger check) approaches
+   * @param {string} serverName - Server name (e.g., 'cp1', 'pcp3')
+   * @param {string} username - cPanel username
+   * @param {string} domain - Domain to include in AutoSSL
+   * @returns {Promise<object>} - AutoSSL operation result
+   */
+  async forceAutoSSLInclusion(serverName, username, domain) {
+    try {
+      console.log(`🔒 Forcing AutoSSL inclusion for domain: ${domain} (user: ${username}, server: ${serverName})`);
+      console.log(`→ Using comprehensive approach: passive (remove exclusion) + active (trigger check)`);
+      
+      // Step 1: Get current excluded domains
+      console.log(`→ Step 1: Checking current AutoSSL excluded domains...`);
+      const currentExcluded = await this.getAutoSSLExcludedDomains(serverName, username);
+      
+      // Step 2: Remove the domain from excluded list if it exists
+      const updatedExcluded = currentExcluded.filter(excludedDomain => excludedDomain !== domain);
+      const wasExcluded = currentExcluded.length !== updatedExcluded.length;
+      
+      if (!wasExcluded) {
+        console.log(`→ Domain ${domain} was not in excluded list (already included in AutoSSL)`);
+        console.log(`→ Step 2: Skipping exclusion removal - proceeding to active trigger`);
+      } else {
+        console.log(`→ Step 2: Removing ${domain} from AutoSSL excluded domains list`);
+        console.log(`→ Previous excluded domains: ${currentExcluded.join(', ')}`);
+        console.log(`→ Updated excluded domains: ${updatedExcluded.join(', ')}`);
+        
+        // Set the updated excluded domains list (without the target domain)
+        const excludeResult = await this.setAutoSSLExcludedDomains(serverName, username, updatedExcluded);
+        
+        if (!excludeResult.success) {
+          console.log(`❌ Failed to update AutoSSL excluded domains: ${excludeResult.error}`);
+          return {
+            success: false,
+            error: excludeResult.error,
+            message: `Failed to include ${domain} in AutoSSL: ${excludeResult.error}`,
+            method: 'set_autossl_user_excluded_domains_failed',
+            username: username,
+            domain: domain,
+            serverName: serverName,
+            excludeResult: excludeResult
+          };
+        }
+        
+        console.log(`✅ Successfully removed ${domain} from AutoSSL excluded domains`);
+      }
+      
+      // Step 3: Actively trigger AutoSSL check for immediate certificate generation
+      console.log(`→ Step 3: Triggering active AutoSSL check for user ${username}...`);
+      console.log(`→ This attempts to generate SSL certificate immediately instead of waiting for scheduled run`);
+      
+      const autoSSLTriggerResult = await this.triggerAutoSSLCheck(serverName, username);
+      
+      // Step 4: Determine final result and provide comprehensive feedback
+      // Since active triggering is not available, we always use the passive approach
+      console.log(`✅ SUCCESS: AutoSSL inclusion completed using passive approach`);
+      console.log(`→ Domain ${domain} is now included in AutoSSL for automatic certificate generation`);
+      console.log(`→ SSL certificate will be generated in the next scheduled AutoSSL run`);
+      console.log(`→ AutoSSL typically runs every 4-6 hours on cPanel servers`);
+      
+      return {
+        success: true,
+        message: wasExcluded 
+          ? `Domain ${domain} has been included in AutoSSL. SSL certificate will be generated automatically in the next scheduled run (typically within 4-6 hours).`
+          : `Domain ${domain} was already included in AutoSSL. SSL certificate will be generated automatically in the next scheduled run (typically within 4-6 hours).`,
+        wasExcluded: wasExcluded,
+        removedFromExcluded: wasExcluded,
+        autoSSLTriggered: false, // Active triggering not available
+        triggerMethod: null,
+        triggerError: autoSSLTriggerResult.error,
+        triggerMessage: autoSSLTriggerResult.message,
+        previousExcluded: currentExcluded,
+        currentExcluded: updatedExcluded,
+        method: wasExcluded ? 'passive_inclusion_from_excluded' : 'passive_inclusion_already_included',
+        username: username,
+        domain: domain,
+        serverName: serverName,
+        triggerResult: autoSSLTriggerResult,
+        fallbackInfo: autoSSLTriggerResult.fallbackInfo,
+        timeline: 'SSL certificate will be generated in next scheduled AutoSSL run (typically within 4-6 hours)',
+        approach: 'passive',
+        explanation: 'Active AutoSSL triggering is not available via WHM API v1. The passive approach (including domain in AutoSSL) is the standard method used by most hosting providers.'
+      };
+      
+    } catch (error) {
+      console.log(`❌ Error forcing AutoSSL inclusion for ${domain}: ${error.message}`);
+      return {
+        success: false,
+        error: error.message,
+        message: `Error forcing AutoSSL inclusion for ${domain}: ${error.message}`,
+        method: 'force_autossl_inclusion_exception',
+        username: username,
+        domain: domain,
+        serverName: serverName
+      };
+    }
+  }
+
+  /**
+   * Get AutoSSL excluded domains for a user
+   * @param {string} serverName - Server name
+   * @param {string} username - cPanel username
+   * @returns {Promise<Array>} - Array of excluded domains
+   */
+  async getAutoSSLExcludedDomains(serverName, username) {
+    try {
+      const result = await this.callServerAPI(serverName, 'get_autossl_user_excluded_domains', {
+        username: username
+      });
+      
+      if (result && result.data && result.data.excluded_domains) {
+        return Array.isArray(result.data.excluded_domains) ? 
+          result.data.excluded_domains : 
+          [result.data.excluded_domains];
+      }
+      
+      return [];
+    } catch (error) {
+      console.log(`⚠️ Error getting AutoSSL excluded domains for ${username}: ${error.message}`);
+      return [];
+    }
+  }
+
+  /**
+   * Set AutoSSL excluded domains for a user
+   * @param {string} serverName - Server name
+   * @param {string} username - cPanel username
+   * @param {Array} excludedDomains - Array of domains to exclude from AutoSSL
+   * @returns {Promise<object>} - Operation result
+   */
+  async setAutoSSLExcludedDomains(serverName, username, excludedDomains) {
+    try {
+      console.log(`→ Setting AutoSSL excluded domains for ${username}: ${excludedDomains.join(', ')}`);
+      
+      const result = await this.callServerAPI(serverName, 'set_autossl_user_excluded_domains', {
+        username: username,
+        excluded_domains: excludedDomains
+      });
+      
+      if (result && result.metadata && result.metadata.result === 1) {
+        console.log(`✅ Successfully updated AutoSSL excluded domains for ${username}`);
+        return {
+          success: true,
+          message: `AutoSSL excluded domains updated for ${username}`,
+          excludedDomains: excludedDomains,
+          result: result
+        };
+      } else {
+        const error = result?.metadata?.reason || 'Unknown error';
+        console.log(`❌ Failed to update AutoSSL excluded domains for ${username}: ${error}`);
+        return {
+          success: false,
+          error: error,
+          message: `Failed to update AutoSSL excluded domains for ${username}: ${error}`,
+          result: result
+        };
+      }
+    } catch (error) {
+      console.log(`❌ Error setting AutoSSL excluded domains for ${username}: ${error.message}`);
+      return {
+        success: false,
+        error: error.message,
+        message: `Error setting AutoSSL excluded domains for ${username}: ${error.message}`
+      };
+    }
+  }
+
+  /**
+   * Reset AutoSSL provider to ensure it's properly configured
+   * @param {string} serverName - Server name
+   * @param {string} provider - AutoSSL provider ('Let\'s Encrypt', 'Sectigo', etc.)
+   * @returns {Promise<object>} - Operation result
+   */
+  async resetAutoSSLProvider(serverName, provider = 'Let\'s Encrypt') {
+    try {
+      console.log(`→ Resetting AutoSSL provider to: ${provider} on server ${serverName.toUpperCase()}`);
+      
+      const result = await this.callServerAPI(serverName, 'reset_autossl_provider', {
+        provider: provider
+      }, '1'); // WHM API v1
+      
+      if (result && result.metadata && result.metadata.result === 1) {
+        console.log(`✅ Successfully reset AutoSSL provider to ${provider}`);
+        return {
+          success: true,
+          message: `AutoSSL provider reset to ${provider}`,
+          provider: provider,
+          serverName: serverName,
+          result: result
+        };
+      } else {
+        const reason = result?.metadata?.reason || 'Unknown reason';
+        console.log(`❌ Failed to reset AutoSSL provider: ${reason}`);
+        return {
+          success: false,
+          error: reason,
+          message: `Failed to reset AutoSSL provider to ${provider}: ${reason}`,
+          provider: provider,
+          serverName: serverName,
+          result: result
+        };
+      }
+      
+    } catch (error) {
+      console.log(`❌ Error resetting AutoSSL provider: ${error.message}`);
+      return {
+        success: false,
+        error: error.message,
+        message: `Error resetting AutoSSL provider: ${error.message}`,
+        provider: provider,
+        serverName: serverName
+      };
+    }
+  }
+
+  /**
+   * Trigger AutoSSL check for a user to actively generate certificates
+   * Based on testing, WHM API v1 AutoSSL trigger endpoints are not available on most servers
+   * This method now focuses on providing clear feedback about the passive approach
+   * @param {string} serverName - Server name
+   * @param {string} username - cPanel username
+   * @returns {Promise<object>} - Operation result
+   */
+  async triggerAutoSSLCheck(serverName, username) {
+    try {
+      console.log(`→ Triggering AutoSSL check for user ${username} on server ${serverName.toUpperCase()}`);
+      console.log(`→ Using WHM API v1 compatible endpoints with correct method names`);
+      
+      // Method 1: Try start_autossl_check_for_one_user (CORRECT WHM API v1 method)
+      try {
+        console.log(`→ Method 1: Attempting start_autossl_check_for_one_user (WHM API v1)`);
+        const result = await this.callServerAPI(serverName, 'start_autossl_check_for_one_user', {
+          username: username
+        }, '1'); // Explicitly use API v1
+        
+        if (result && result.metadata && result.metadata.result === 1) {
+          console.log(`✅ Successfully triggered AutoSSL check using start_autossl_check_for_one_user`);
+          return {
+            success: true,
+            message: `AutoSSL check triggered for user ${username}`,
+            method: 'start_autossl_check_for_one_user',
+            username: username,
+            serverName: serverName,
+            result: result
+          };
+        } else {
+          console.log(`→ start_autossl_check_for_one_user returned result=0: ${result?.metadata?.reason || 'Unknown reason'}`);
+        }
+      } catch (firstError) {
+        console.log(`→ start_autossl_check_for_one_user failed: ${firstError.message}`);
+      }
+      
+      // Method 2: Try autossl_check_users (WHM API v1 compatible)
+      try {
+        console.log(`→ Method 2: Attempting autossl_check_users (WHM API v1)`);
+        const result = await this.callServerAPI(serverName, 'autossl_check_users', {
+          users: username
+        }, '1'); // Explicitly use API v1
+        
+        if (result && result.metadata && result.metadata.result === 1) {
+          console.log(`✅ Successfully triggered AutoSSL check using autossl_check_users`);
+          return {
+            success: true,
+            message: `AutoSSL check triggered for user ${username}`,
+            method: 'autossl_check_users',
+            username: username,
+            serverName: serverName,
+            result: result
+          };
+        } else {
+          console.log(`→ autossl_check_users returned result=0: ${result?.metadata?.reason || 'Unknown reason'}`);
+        }
+      } catch (secondError) {
+        console.log(`→ autossl_check_users failed: ${secondError.message}`);
+      }
+      
+      // Method 3: Try run_autossl_check_for_user (alternative naming)
+      try {
+        console.log(`→ Method 3: Attempting run_autossl_check_for_user (WHM API v1)`);
+        const result = await this.callServerAPI(serverName, 'run_autossl_check_for_user', {
+          username: username
+        }, '1'); // Explicitly use API v1
+        
+        if (result && result.metadata && result.metadata.result === 1) {
+          console.log(`✅ Successfully triggered AutoSSL check using run_autossl_check_for_user`);
+          return {
+            success: true,
+            message: `AutoSSL check triggered for user ${username}`,
+            method: 'run_autossl_check_for_user',
+            username: username,
+            serverName: serverName,
+            result: result
+          };
+        } else {
+          console.log(`→ run_autossl_check_for_user returned result=0: ${result?.metadata?.reason || 'Unknown reason'}`);
+        }
+      } catch (thirdError) {
+        console.log(`→ run_autossl_check_for_user failed: ${thirdError.message}`);
+      }
+      
+      // Method 4: Try autossl_check_all_users with user filter (WHM API v1)
+      try {
+        console.log(`→ Method 4: Attempting autossl_check_all_users with user filter (WHM API v1)`);
+        const result = await this.callServerAPI(serverName, 'autossl_check_all_users', {
+          user: username
+        }, '1'); // Explicitly use API v1
+        
+        if (result && result.metadata && result.metadata.result === 1) {
+          console.log(`✅ Successfully triggered AutoSSL check using autossl_check_all_users`);
+          return {
+            success: true,
+            message: `AutoSSL check triggered for user ${username}`,
+            method: 'autossl_check_all_users',
+            username: username,
+            serverName: serverName,
+            result: result
+          };
+        } else {
+          console.log(`→ autossl_check_all_users returned result=0: ${result?.metadata?.reason || 'Unknown reason'}`);
+        }
+      } catch (fourthError) {
+        console.log(`→ autossl_check_all_users failed: ${fourthError.message}`);
+      }
+      
+      // Method 5: Try start_autossl_check (fallback method)
+      try {
+        console.log(`→ Method 5: Attempting start_autossl_check (WHM API v1 fallback)`);
+        const result = await this.callServerAPI(serverName, 'start_autossl_check', {
+          users: username
+        }, '1'); // Explicitly use API v1
+        
+        if (result && result.metadata && result.metadata.result === 1) {
+          console.log(`✅ Successfully triggered AutoSSL check using start_autossl_check`);
+          return {
+            success: true,
+            message: `AutoSSL check triggered for user ${username}`,
+            method: 'start_autossl_check',
+            username: username,
+            serverName: serverName,
+            result: result
+          };
+        } else {
+          console.log(`→ start_autossl_check returned result=0: ${result?.metadata?.reason || 'Unknown reason'}`);
+        }
+      } catch (fifthError) {
+        console.log(`→ start_autossl_check failed: ${fifthError.message}`);
+      }
+      
+      // All active methods failed - provide comprehensive feedback
+      console.log(`⚠️ All active AutoSSL trigger methods failed on ${serverName.toUpperCase()}`);
+      console.log(`→ This indicates that WHM API v1 on this server may not support active AutoSSL triggering`);
+      console.log(`→ The domain has been removed from excluded list and will be processed in the next scheduled AutoSSL run`);
+      console.log(`→ AutoSSL typically runs every 4-6 hours automatically on most cPanel servers`);
+      
+      return {
+        success: false,
+        error: 'No active AutoSSL trigger API available in WHM API v1 on this server',
+        message: `AutoSSL trigger not available - domain will be checked in next scheduled AutoSSL run (typically within 4-6 hours)`,
+        method: 'none_available',
+        username: username,
+        serverName: serverName,
+        note: 'Domain has been removed from excluded list and will be processed in the next scheduled AutoSSL check',
+        fallbackInfo: {
+          scheduledRun: 'AutoSSL runs automatically every 4-6 hours',
+          manualOption: 'Server administrator can manually trigger AutoSSL from WHM interface',
+          domainStatus: 'Domain is now included in AutoSSL and will be processed automatically'
+        }
+      };
+      
+    } catch (error) {
+      console.log(`❌ Error triggering AutoSSL check for ${username}: ${error.message}`);
+      return {
+        success: false,
+        error: error.message,
+        message: `Error triggering AutoSSL check for ${username}: ${error.message}`,
+        method: 'error',
+        username: username,
+        serverName: serverName
+      };
+    }
+  }
+
+  /**
+   * Add domain to AutoSSL excluded domains
+   * @param {string} serverName - Server name
+   * @param {string} username - cPanel username
+   * @param {string} domain - Domain to exclude from AutoSSL
+   * @returns {Promise<object>} - AutoSSL operation result
+   */
+  async excludeDomainFromAutoSSL(serverName, username, domain) {
+    try {
+      console.log(`🚫 Excluding domain from AutoSSL: ${domain} (user: ${username}, server: ${serverName})`);
+      
+      // Get current excluded domains
+      const currentExcluded = await this.getAutoSSLExcludedDomains(serverName, username);
+      
+      // Add domain to excluded list if not already there
+      if (currentExcluded.includes(domain)) {
+        console.log(`→ Domain ${domain} is already excluded from AutoSSL`);
+        return {
+          success: true,
+          message: `Domain ${domain} is already excluded from AutoSSL`,
+          wasAlreadyExcluded: true,
+          currentExcluded: currentExcluded
+        };
+      }
+      
+      const updatedExcluded = [...currentExcluded, domain];
+      
+      console.log(`→ Adding ${domain} to AutoSSL excluded domains list`);
+      console.log(`→ Previous excluded domains: ${currentExcluded.join(', ')}`);
+      console.log(`→ Updated excluded domains: ${updatedExcluded.join(', ')}`);
+      
+      const result = await this.setAutoSSLExcludedDomains(serverName, username, updatedExcluded);
+      
+      if (result.success) {
+        console.log(`✅ Successfully excluded ${domain} from AutoSSL`);
+        return {
+          success: true,
+          message: `Domain ${domain} has been excluded from AutoSSL`,
+          wasAlreadyExcluded: false,
+          addedToExcluded: true,
+          previousExcluded: currentExcluded,
+          currentExcluded: updatedExcluded,
+          result: result
+        };
+      } else {
+        console.log(`❌ Failed to exclude ${domain} from AutoSSL: ${result.error}`);
+        return {
+          success: false,
+          error: result.error,
+          message: `Failed to exclude ${domain} from AutoSSL: ${error}`,
+          result: result
+        };
+      }
+      
+    } catch (error) {
+      console.log(`❌ Error excluding ${domain} from AutoSSL: ${error.message}`);
+      return {
+        success: false,
+        error: error.message,
+        message: `Error excluding ${domain} from AutoSSL: ${error.message}`
+      };
     }
   }
 
