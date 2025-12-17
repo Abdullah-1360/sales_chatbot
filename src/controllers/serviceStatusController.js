@@ -917,13 +917,14 @@ exports.checkServiceStatus = async (req, res, next) => {
           console.log(`  SSL Warnings: ${reachabilityAnalysis.ssl.warnings.join(', ')}`);
         }
         
-        // AutoSSL Management - Start AutoSSL check when SSL is invalid
+        // Focused AutoSSL Management - Complete workflow without wait
         if (!reachabilityAnalysis.ssl.valid && hostingStatus && hostingStatus.username && hostingStatus.serverName) {
-          console.log(`\n🔒 SSL Certificate Invalid - Starting Comprehensive AutoSSL Management...`);
+          console.log(`\n🎯 SSL Certificate Invalid - Starting Focused AutoSSL Management...`);
           console.log(`→ Domain: ${domain}`);
           console.log(`→ Username: ${hostingStatus.username}`);
           console.log(`→ Server: ${hostingStatus.serverName}`);
           console.log(`→ SSL Issues: ${reachabilityAnalysis.ssl.warnings.join(', ')}`);
+          console.log(`→ Using complete workflow: Remove Exclusion → Enable → Trigger (no wait)`);
           
           try {
             const whmService = require('../services/whmService');
@@ -935,25 +936,25 @@ exports.checkServiceStatus = async (req, res, next) => {
               throw new Error(`Could not extract server name from: ${hostingStatus.serverName}`);
             }
             
-            console.log(`→ Using extracted server name for AutoSSL: ${serverName.toUpperCase()}`);
+            console.log(`→ Using extracted server name for focused AutoSSL: ${serverName.toUpperCase()}`);
             
-            const autoSSLResult = await whmService.forceAutoSSLInclusion(
+            const autoSSLResult = await whmService.focusedAutoSSLManagement(
               serverName, 
               hostingStatus.username, 
               domain
             );
             
             if (autoSSLResult.success) {
-              console.log(`✅ AutoSSL Management Completed: ${autoSSLResult.message}`);
+              console.log(`✅ Focused AutoSSL Management Completed: ${autoSSLResult.message}`);
               
               // Determine the action taken based on the result
               let actionTaken = 'unknown';
-              let timeline = 'Certificate will be processed automatically';
+              let timeline = autoSSLResult.timeline || 'Certificate will be processed automatically';
               
               if (autoSSLResult.autoSSLTriggered) {
                 actionTaken = 'active_trigger_success';
-                timeline = autoSSLResult.timeline || 'SSL certificate should be generated within minutes';
-              } else if (autoSSLResult.removedFromExcluded || autoSSLResult.wasExcluded === false) {
+                timeline = autoSSLResult.timeline || 'SSL certificate generation has been actively triggered and should complete within minutes';
+              } else if (autoSSLResult.removedFromExcluded || autoSSLResult.wasExcluded) {
                 actionTaken = 'passive_inclusion_success';
                 timeline = autoSSLResult.timeline || 'SSL certificate will be generated in next scheduled AutoSSL run (typically within 4-6 hours)';
               }
@@ -969,20 +970,24 @@ exports.checkServiceStatus = async (req, res, next) => {
                 wasExcluded: autoSSLResult.wasExcluded,
                 autoSSLTriggered: autoSSLResult.autoSSLTriggered,
                 timeline: timeline,
+                approach: autoSSLResult.approach,
                 serverName: autoSSLResult.serverName,
                 username: autoSSLResult.username,
-                domain: autoSSLResult.domain
+                domain: autoSSLResult.domain,
+                workflowSuccess: autoSSLResult.workflowAnalysis?.workflowSuccess || false,
+                completeSuccess: autoSSLResult.workflowAnalysis?.completeSuccess || false,
+                domainsProcessed: autoSSLResult.workflowAnalysis?.domainsRemoved || 0
               };
               
               // Update recommendation with specific action taken
               if (autoSSLResult.autoSSLTriggered) {
                 reachabilityAnalysis.recommendation = `SSL certificate issues detected. AutoSSL certificate generation has been actively triggered using ${autoSSLResult.triggerMethod}. ${timeline}. ${reachabilityAnalysis.recommendation}`;
               } else {
-                reachabilityAnalysis.recommendation = `SSL certificate issues detected. Domain has been included in AutoSSL for automatic certificate generation. ${timeline}. Note: Active AutoSSL triggering is not available via API on this server, which is normal for most cPanel installations. ${reachabilityAnalysis.recommendation}`;
+                reachabilityAnalysis.recommendation = `SSL certificate issues detected. Domain has been processed for AutoSSL certificate generation. ${timeline}. ${autoSSLResult.explanation || 'AutoSSL workflow completed successfully.'}. ${reachabilityAnalysis.recommendation}`;
               }
               
             } else {
-              console.log(`❌ AutoSSL Management Failed: ${autoSSLResult.error}`);
+              console.log(`❌ Focused AutoSSL Management Failed: ${autoSSLResult.error}`);
               
               reachabilityAnalysis.autoSSL = {
                 attempted: true,
@@ -991,47 +996,52 @@ exports.checkServiceStatus = async (req, res, next) => {
                 message: autoSSLResult.message,
                 method: autoSSLResult.method,
                 triggerError: autoSSLResult.triggerError || null,
-                fallbackInfo: autoSSLResult.fallbackInfo || null,
+                approach: autoSSLResult.approach || 'failed',
+                timeline: autoSSLResult.timeline || 'AutoSSL workflow failed',
                 serverName: autoSSLResult.serverName,
                 username: autoSSLResult.username,
                 domain: autoSSLResult.domain
               };
               
-              reachabilityAnalysis.recommendation = `SSL certificate issues detected. AutoSSL management failed: ${autoSSLResult.error}. Please contact support for manual SSL certificate installation. ${reachabilityAnalysis.recommendation}`;
+              reachabilityAnalysis.recommendation = `SSL certificate issues detected. Focused AutoSSL management failed: ${autoSSLResult.error}. Please contact support for manual SSL certificate installation. ${reachabilityAnalysis.recommendation}`;
             }
             
           } catch (autoSSLError) {
-            console.log(`❌ AutoSSL Management Error: ${autoSSLError.message}`);
+            console.log(`❌ Focused AutoSSL Management Error: ${autoSSLError.message}`);
             
             reachabilityAnalysis.autoSSL = {
               attempted: true,
               success: false,
               error: autoSSLError.message,
-              message: `Error during AutoSSL management: ${autoSSLError.message}`,
-              method: 'force_autossl_inclusion_exception'
+              message: `Error during focused AutoSSL management: ${autoSSLError.message}`,
+              method: 'focused_autossl_exception',
+              approach: 'failed',
+              timeline: 'AutoSSL workflow failed - manual intervention required'
             };
             
-            reachabilityAnalysis.recommendation = `SSL certificate issues detected. Error during AutoSSL management: ${autoSSLError.message}. Please contact support for manual SSL certificate installation. ${reachabilityAnalysis.recommendation}`;
+            reachabilityAnalysis.recommendation = `SSL certificate issues detected. Error during focused AutoSSL management: ${autoSSLError.message}. Please contact support for manual SSL certificate installation. ${reachabilityAnalysis.recommendation}`;
           }
         } else if (!reachabilityAnalysis.ssl.valid) {
-          console.log(`\n⚠️ SSL Certificate Invalid but AutoSSL cannot be managed:`);
+          console.log(`\n⚠️ SSL Certificate Invalid but Focused AutoSSL cannot be managed:`);
           if (!hostingStatus) {
             console.log(`→ No hosting status available - domain may not be hosted with us`);
           } else if (!hostingStatus.username) {
-            console.log(`→ Username not available for domain ${domain} - cannot manage AutoSSL`);
+            console.log(`→ Username not available for domain ${domain} - cannot manage focused AutoSSL`);
           } else if (!hostingStatus.serverName) {
-            console.log(`→ Server name not available - cannot determine AutoSSL server`);
+            console.log(`→ Server name not available - cannot determine focused AutoSSL server`);
           }
           
-          // Add AutoSSL unavailable information
+          // Add focused AutoSSL unavailable information
           reachabilityAnalysis.autoSSL = {
             attempted: false,
             success: false,
-            error: 'AutoSSL management not available',
+            error: 'Focused AutoSSL management not available',
             message: !hostingStatus ? 'Domain not hosted with us' : 
                     !hostingStatus.username ? 'Username not available' : 
                     'Server information not available',
-            method: 'not_applicable'
+            method: 'not_applicable',
+            approach: 'unavailable',
+            timeline: 'AutoSSL management not possible - manual SSL certificate installation required'
           };
         }
         

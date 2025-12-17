@@ -924,6 +924,282 @@ class WHMService {
   }
 
   /**
+   * Focused AutoSSL Management - Implements the complete workflow without wait
+   * This method implements the Remove Exclusion → Enable → Trigger workflow from the focused test
+   * @param {string} serverName - Server name (e.g., 'cp1', 'pcp3')
+   * @param {string} username - cPanel username
+   * @param {string} domain - Domain to manage AutoSSL for
+   * @returns {Promise<object>} - AutoSSL operation result
+   */
+  async focusedAutoSSLManagement(serverName, username, domain) {
+    try {
+      console.log(`🎯 Focused AutoSSL Management for domain: ${domain} (user: ${username}, server: ${serverName})`);
+      console.log(`→ Using complete workflow: Remove Exclusion → Enable → Trigger (no wait)`);
+      
+      const results = {};
+      
+      // Step 1: Remove domain and www subdomain from AutoSSL excluded domains
+      console.log(`\n🔧 Step 1: Remove Domain and www Subdomain from AutoSSL Exclusions`);
+      console.log(`→ Method: remove_autossl_user_excluded_domains`);
+      console.log(`→ Domains to remove: ${domain} and www.${domain}`);
+      console.log(`→ Purpose: Ensures domain and www subdomain are not excluded from AutoSSL`);
+      
+      const domainsToRemove = [domain, `www.${domain}`];
+      const removeResults = [];
+      let successCount = 0;
+      let errorCount = 0;
+      
+      for (const domainToRemove of domainsToRemove) {
+        console.log(`\n→ Removing: ${domainToRemove}`);
+        try {
+          const removeResult = await this.callServerAPI(serverName, 'remove_autossl_user_excluded_domains', {
+            username: username,
+            domain: domainToRemove
+          }, '1'); // WHM API v1
+          
+          console.log(`→ Remove Result for ${domainToRemove}:`, JSON.stringify(removeResult, null, 2));
+          
+          const isSuccess = removeResult && removeResult.metadata && removeResult.metadata.result === 1;
+          if (isSuccess) {
+            console.log(`✅ SUCCESS: ${domainToRemove} removed from AutoSSL exclusions`);
+            successCount++;
+          } else {
+            console.log(`⚠️ PARTIAL: ${domainToRemove} removal result=${removeResult?.metadata?.result || 'unknown'}`);
+            console.log(`→ Reason: ${removeResult?.metadata?.reason || 'No reason provided'}`);
+          }
+          
+          removeResults.push({
+            domain: domainToRemove,
+            success: isSuccess,
+            result: removeResult,
+            reason: removeResult?.metadata?.reason || 'No reason provided'
+          });
+          
+        } catch (removeError) {
+          console.log(`❌ ERROR removing ${domainToRemove}: ${removeError.message}`);
+          errorCount++;
+          removeResults.push({
+            domain: domainToRemove,
+            success: false,
+            error: removeError.message,
+            reason: 'API call failed'
+          });
+        }
+      }
+      
+      results.step1_remove = {
+        method: 'remove_autossl_user_excluded_domains',
+        parameters: { username: username, domains: domainsToRemove },
+        success: successCount > 0, // Success if at least one domain was removed
+        completeSuccess: successCount === domainsToRemove.length, // Complete success if all domains removed
+        apiExists: removeResults.length > 0,
+        successCount: successCount,
+        errorCount: errorCount,
+        totalDomains: domainsToRemove.length,
+        results: removeResults,
+        reason: `${successCount}/${domainsToRemove.length} domains removed successfully`
+      };
+      
+      if (results.step1_remove.completeSuccess) {
+        console.log(`✅ Step 1 COMPLETE SUCCESS: All domains (${domain} and www.${domain}) removed from AutoSSL exclusions`);
+      } else if (results.step1_remove.success) {
+        console.log(`⚠️ Step 1 PARTIAL SUCCESS: ${successCount}/${domainsToRemove.length} domains removed from AutoSSL exclusions`);
+      } else {
+        console.log(`❌ Step 1 FAILED: No domains could be removed from AutoSSL exclusions`);
+      }
+      
+      // Step 2: Enable AutoSSL for user (ensures they are not excluded)
+      console.log(`\n🔧 Step 2: Enable AutoSSL for User`);
+      console.log(`→ Method: add_override_features_for_user`);
+      console.log(`→ Parameters: { user: '${username}', features: '{"autossl":1}' }`);
+      console.log(`→ Purpose: Ensures user is not excluded from AutoSSL`);
+      
+      try {
+        const enableResult = await this.callServerAPI(serverName, 'add_override_features_for_user', {
+          user: username,
+          features: JSON.stringify({ autossl: 1 })
+        }, '1'); // WHM API v1
+        
+        console.log(`→ Enable Result:`, JSON.stringify(enableResult, null, 2));
+        
+        results.step2_enable = {
+          method: 'add_override_features_for_user',
+          parameters: { user: username, features: '{"autossl":1}' },
+          success: enableResult && enableResult.metadata && enableResult.metadata.result === 1,
+          apiExists: enableResult && !enableResult.error,
+          result: enableResult,
+          reason: enableResult?.metadata?.reason || 'No reason provided'
+        };
+        
+        if (results.step2_enable.success) {
+          console.log(`✅ Step 2 SUCCESS: AutoSSL enabled for user ${username}`);
+        } else {
+          console.log(`⚠️ Step 2 PARTIAL: Enable API called but result=${enableResult?.metadata?.result || 'unknown'}`);
+          console.log(`→ Reason: ${enableResult?.metadata?.reason || 'No reason provided'}`);
+        }
+        
+      } catch (enableError) {
+        console.log(`❌ Step 2 ERROR: ${enableError.message}`);
+        results.step2_enable = {
+          method: 'add_override_features_for_user',
+          parameters: { user: username, features: '{"autossl":1}' },
+          success: false,
+          apiExists: false,
+          error: enableError.message
+        };
+      }
+      
+      // Step 3: Trigger AutoSSL for the specific user (starts the issuance)
+      console.log(`\n🔧 Step 3: Trigger AutoSSL for User`);
+      console.log(`→ Method: start_autossl_check_for_one_user`);
+      console.log(`→ Parameters: { username: '${username}' }`);
+      console.log(`→ Purpose: Starts the SSL certificate issuance process`);
+      
+      try {
+        const triggerResult = await this.callServerAPI(serverName, 'start_autossl_check_for_one_user', {
+          username: username
+        }, '1'); // WHM API v1
+        
+        console.log(`→ Trigger Result:`, JSON.stringify(triggerResult, null, 2));
+        
+        results.step3_trigger = {
+          method: 'start_autossl_check_for_one_user',
+          parameters: { username: username },
+          success: triggerResult && triggerResult.metadata && triggerResult.metadata.result === 1,
+          apiExists: triggerResult && !triggerResult.error,
+          result: triggerResult,
+          reason: triggerResult?.metadata?.reason || 'No reason provided'
+        };
+        
+        if (results.step3_trigger.success) {
+          console.log(`✅ Step 3 SUCCESS: AutoSSL check triggered for user ${username}`);
+        } else {
+          console.log(`⚠️ Step 3 PARTIAL: Trigger API called but result=${triggerResult?.metadata?.result || 'unknown'}`);
+          console.log(`→ Reason: ${triggerResult?.metadata?.reason || 'No reason provided'}`);
+        }
+        
+      } catch (triggerError) {
+        console.log(`❌ Step 3 ERROR: ${triggerError.message}`);
+        results.step3_trigger = {
+          method: 'start_autossl_check_for_one_user',
+          parameters: { username: username },
+          success: false,
+          apiExists: false,
+          error: triggerError.message
+        };
+      }
+      
+      console.log(`\n✅ Focused AutoSSL workflow completed!`);
+      console.log(`→ AutoSSL certificate generation has been triggered`);
+      console.log(`→ Certificate will be generated automatically by the system`);
+      console.log(`→ No wait time - returning immediately`);
+      
+      // Analyze complete workflow results
+      const workflowAnalysis = {
+        removeWorked: results.step1_remove.success,
+        removeCompleteSuccess: results.step1_remove.completeSuccess,
+        domainsRemoved: results.step1_remove.successCount,
+        totalDomains: results.step1_remove.totalDomains,
+        enableWorked: results.step2_enable.success,
+        triggerWorked: results.step3_trigger.success,
+        bothAPIsExist: results.step2_enable.apiExists && results.step3_trigger.apiExists,
+        workflowSuccess: results.step2_enable.success && results.step3_trigger.success,
+        completeSuccess: results.step2_enable.success && results.step3_trigger.success && results.step1_remove.success,
+        domainProvided: true,
+        recommendedApproach: null
+      };
+      
+      // Determine recommended approach based on complete workflow
+      if (workflowAnalysis.completeSuccess) {
+        workflowAnalysis.recommendedApproach = 'COMPLETE SUCCESS: Use full Remove Exclusion → Enable → Trigger workflow';
+      } else if (workflowAnalysis.workflowSuccess) {
+        workflowAnalysis.recommendedApproach = 'SUCCESS: Use add_override_features_for_user + start_autossl_check_for_one_user workflow';
+      } else if (results.step3_trigger.success && !results.step2_enable.success) {
+        workflowAnalysis.recommendedApproach = 'Use start_autossl_check_for_one_user only (enable not needed)';
+      } else if (results.step2_enable.success && !results.step3_trigger.success) {
+        workflowAnalysis.recommendedApproach = 'Use add_override_features_for_user only (trigger not available)';
+      } else if (workflowAnalysis.bothAPIsExist) {
+        workflowAnalysis.recommendedApproach = 'Both APIs exist but may need different parameters';
+      } else {
+        workflowAnalysis.recommendedApproach = 'APIs not working - use passive AutoSSL approach';
+      }
+      
+      console.log(`\n📊 COMPLETE WORKFLOW ANALYSIS:`);
+      console.log(`→ Remove exclusion worked: ${workflowAnalysis.removeWorked ? '✅' : '❌'}`);
+      console.log(`→ Domains removed: ${workflowAnalysis.domainsRemoved}/${workflowAnalysis.totalDomains}`);
+      console.log(`→ Complete removal: ${workflowAnalysis.removeCompleteSuccess ? '✅' : '❌'}`);
+      console.log(`→ Enable worked: ${workflowAnalysis.enableWorked ? '✅' : '❌'}`);
+      console.log(`→ Trigger worked: ${workflowAnalysis.triggerWorked ? '✅' : '❌'}`);
+      console.log(`→ Both APIs exist: ${workflowAnalysis.bothAPIsExist ? '✅' : '❌'}`);
+      console.log(`→ Workflow success: ${workflowAnalysis.workflowSuccess ? '✅' : '❌'}`);
+      console.log(`→ Complete success: ${workflowAnalysis.completeSuccess ? '✅' : '❌'}`);
+      console.log(`→ Recommended approach: ${workflowAnalysis.recommendedApproach}`);
+      
+      // Return result in format compatible with existing service status flow
+      return {
+        success: workflowAnalysis.workflowSuccess || workflowAnalysis.removeWorked,
+        message: workflowAnalysis.completeSuccess 
+          ? `AutoSSL workflow completed successfully. Domain ${domain} and www.${domain} have been processed for SSL certificate generation.`
+          : workflowAnalysis.workflowSuccess
+          ? `AutoSSL workflow partially successful. SSL certificate generation has been triggered for user ${username}.`
+          : workflowAnalysis.removeWorked
+          ? `Domain exclusions removed successfully. AutoSSL will process ${domain} in the next scheduled run.`
+          : `AutoSSL workflow failed. Manual intervention may be required.`,
+        
+        // Compatibility with existing service status flow
+        wasExcluded: results.step1_remove.successCount > 0,
+        removedFromExcluded: results.step1_remove.success,
+        autoSSLTriggered: results.step3_trigger.success,
+        triggerMethod: results.step3_trigger.success ? 'start_autossl_check_for_one_user' : null,
+        triggerError: results.step3_trigger.success ? null : (results.step3_trigger.error || 'Trigger method not available'),
+        triggerMessage: results.step3_trigger.reason || 'AutoSSL trigger attempted',
+        
+        // Additional workflow details
+        method: workflowAnalysis.completeSuccess ? 'focused_autossl_complete' : 
+                workflowAnalysis.workflowSuccess ? 'focused_autossl_partial' :
+                workflowAnalysis.removeWorked ? 'focused_autossl_remove_only' : 'focused_autossl_failed',
+        username: username,
+        domain: domain,
+        serverName: serverName,
+        
+        // Timeline information
+        timeline: results.step3_trigger.success 
+          ? 'SSL certificate generation has been actively triggered and should complete within minutes'
+          : results.step2_enable.success
+          ? 'AutoSSL has been enabled and will generate certificate in next scheduled run (typically within 4-6 hours)'
+          : results.step1_remove.success
+          ? 'Domain exclusions removed - certificate will be generated in next scheduled AutoSSL run (typically within 4-6 hours)'
+          : 'AutoSSL workflow failed - manual intervention required',
+        
+        approach: results.step3_trigger.success ? 'active' : 'passive',
+        explanation: results.step3_trigger.success 
+          ? 'Active AutoSSL triggering successful - certificate generation initiated immediately'
+          : 'Active AutoSSL triggering not available - using passive approach with scheduled generation',
+        
+        // Detailed results for debugging
+        workflowResults: results,
+        workflowAnalysis: workflowAnalysis
+      };
+      
+    } catch (error) {
+      console.log(`❌ Error in focused AutoSSL management for ${domain}: ${error.message}`);
+      return {
+        success: false,
+        error: error.message,
+        message: `Error in focused AutoSSL management for ${domain}: ${error.message}`,
+        method: 'focused_autossl_exception',
+        username: username,
+        domain: domain,
+        serverName: serverName,
+        autoSSLTriggered: false,
+        triggerMethod: null,
+        approach: 'failed',
+        timeline: 'AutoSSL workflow failed - manual intervention required'
+      };
+    }
+  }
+
+  /**
    * Get account information by username
    * @param {string} username - cPanel username
    * @returns {Promise<object|null>} - Account object or null
