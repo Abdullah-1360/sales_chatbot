@@ -27,6 +27,12 @@ router.post('/test-dns-zone-analysis', serviceStatusController.testDNSZoneAnalys
 // POST /api/test-reachability - Test domain reachability (for testing)
 router.post('/test-reachability', serviceStatusController.testReachability);
 
+// POST /api/test-error-log - Test error log fetching for 500 errors (for testing)
+router.post('/test-error-log', serviceStatusController.testErrorLogFetching);
+
+// POST /api/test-syntax-error-ticket - Test syntax error ticket creation (for testing)
+router.post('/test-syntax-error-ticket', serviceStatusController.testSyntaxErrorTicket);
+
 // POST /api/renewService
 router.post('/renewService', resolveClientId, billingController.renewService);
 

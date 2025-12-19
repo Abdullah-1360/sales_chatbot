@@ -136,7 +136,7 @@ class WHMService {
    * @param {string} apiVersion - API version to use (default: '2')
    * @returns {Promise<object>} - API response
    */
-  async callServerAPI(serverName, function_name, params = {}, apiVersion = '2') {
+  async callServerAPI(serverName, function_name, params = {}, apiVersion = '2', method = 'POST') {
     try {
       console.log(`🔧 WHM API Call [${serverName.toUpperCase()}]: ${function_name}`, Object.keys(params));
       
@@ -164,11 +164,11 @@ class WHMService {
       if (function_name === 'removezonerecord') {
         console.log(`🔍 DEBUG: Making HTTP request to WHM API:`);
         console.log(`  → URL: ${url}`);
-        console.log(`  → Method: POST`);
+        console.log(`  → Method: ${method.toUpperCase()}`);
         console.log(`  → Full query params:`, queryParams.toString());
       }
       
-      const response = await client.post(url);
+      const response = method.toUpperCase() === 'GET' ? await client.get(url) : await client.post(url);
       
       // Special debug logging for removezonerecord calls - after response
       if (function_name === 'removezonerecord') {
@@ -928,82 +928,148 @@ class WHMService {
    * This method implements the Remove Exclusion → Enable → Trigger workflow from the focused test
    * @param {string} serverName - Server name (e.g., 'cp1', 'pcp3')
    * @param {string} username - cPanel username
-   * @param {string} domain - Domain to manage AutoSSL for
+   * @param {string|Array} domains - Domain(s) to manage AutoSSL for (can be string or array)
+   * @param {Object} options - Additional options (userDomainData from zone file)
    * @returns {Promise<object>} - AutoSSL operation result
    */
-  async focusedAutoSSLManagement(serverName, username, domain) {
+  async focusedAutoSSLManagement(serverName, username, domains, options = {}) {
     try {
-      console.log(`🎯 Focused AutoSSL Management for domain: ${domain} (user: ${username}, server: ${serverName})`);
+      // Handle both single domain and array of domains
+      const domainArray = Array.isArray(domains) ? domains : [domains];
+      const mainDomain = domainArray[0];
+      const userDomainData = options.userDomainData || null;
+      
+      console.log(`🎯 Focused AutoSSL Management for user: ${username} on server: ${serverName}`);
+      console.log(`→ Processing ${domainArray.length} domain(s): ${domainArray.join(', ')}`);
       console.log(`→ Using complete workflow: Remove Exclusion → Enable → Trigger (no wait)`);
+      
+      if (userDomainData) {
+        console.log(`→ Zone file data available: ${userDomainData.summary.totalDomains} domains, ${userDomainData.summary.aRecords} A records, ${userDomainData.summary.cnameRecords} CNAME records`);
+      }
       
       const results = {};
       
-      // Step 1: Remove domain and www subdomain from AutoSSL excluded domains
-      console.log(`\n🔧 Step 1: Remove Domain and www Subdomain from AutoSSL Exclusions`);
+      // Step 1: Remove all user domains from AutoSSL excluded domains
+      console.log(`\n🔧 Step 1: Remove All User Domains from AutoSSL Exclusions`);
       console.log(`→ Method: remove_autossl_user_excluded_domains`);
-      console.log(`→ Domains to remove: ${domain} and www.${domain}`);
-      console.log(`→ Purpose: Ensures domain and www subdomain are not excluded from AutoSSL`);
       
-      const domainsToRemove = [domain, `www.${domain}`];
-      const removeResults = [];
-      let successCount = 0;
-      let errorCount = 0;
+      // Build comprehensive list of domains to remove from exclusions
+      const domainsToRemove = new Set();
       
-      for (const domainToRemove of domainsToRemove) {
-        console.log(`\n→ Removing: ${domainToRemove}`);
+      // Add main domains
+      domainArray.forEach(domain => {
+        domainsToRemove.add(domain.toLowerCase());
+        domainsToRemove.add(`www.${domain.toLowerCase()}`);
+      });
+      
+      // Add domains from zone file if available
+      if (userDomainData && userDomainData.domains) {
+        userDomainData.domains.forEach(domain => {
+          domainsToRemove.add(domain.toLowerCase());
+          
+          // Only add www version for domains that make sense to have www
+          if (!domain.startsWith('www.') && this.shouldDomainHaveWwwVariant(domain)) {
+            domainsToRemove.add(`www.${domain.toLowerCase()}`);
+          }
+        });
+      }
+      
+      const domainsToRemoveArray = Array.from(domainsToRemove);
+      
+      console.log(`→ Domains to remove from exclusions (${domainsToRemoveArray.length} total):`);
+      domainsToRemoveArray.forEach(domain => console.log(`  • ${domain}`));
+      console.log(`→ Purpose: Ensures all user domains are not excluded from AutoSSL`);
+      // Process domain removals in parallel for better performance
+      console.log(`→ Processing ${domainsToRemoveArray.length} domain removals in parallel...`);
+      const startTime = Date.now();
+      
+      const removalPromises = domainsToRemoveArray.map(async (domainToRemove) => {
+        console.log(`→ Starting removal: ${domainToRemove}`);
         try {
           const removeResult = await this.callServerAPI(serverName, 'remove_autossl_user_excluded_domains', {
             username: username,
             domain: domainToRemove
           }, '1'); // WHM API v1
           
-          console.log(`→ Remove Result for ${domainToRemove}:`, JSON.stringify(removeResult, null, 2));
-          
           const isSuccess = removeResult && removeResult.metadata && removeResult.metadata.result === 1;
+          
           if (isSuccess) {
             console.log(`✅ SUCCESS: ${domainToRemove} removed from AutoSSL exclusions`);
-            successCount++;
           } else {
             console.log(`⚠️ PARTIAL: ${domainToRemove} removal result=${removeResult?.metadata?.result || 'unknown'}`);
-            console.log(`→ Reason: ${removeResult?.metadata?.reason || 'No reason provided'}`);
           }
           
-          removeResults.push({
+          return {
             domain: domainToRemove,
             success: isSuccess,
             result: removeResult,
             reason: removeResult?.metadata?.reason || 'No reason provided'
-          });
+          };
           
         } catch (removeError) {
           console.log(`❌ ERROR removing ${domainToRemove}: ${removeError.message}`);
-          errorCount++;
-          removeResults.push({
+          return {
             domain: domainToRemove,
             success: false,
             error: removeError.message,
             reason: 'API call failed'
+          };
+        }
+      });
+      
+      // Wait for all removals to complete
+      const removalResults = await Promise.allSettled(removalPromises);
+      const executionTime = Date.now() - startTime;
+      
+      // Process results
+      const removeResults = [];
+      let successCount = 0;
+      let errorCount = 0;
+      
+      removalResults.forEach((result, index) => {
+        const domainToRemove = domainsToRemoveArray[index];
+        
+        if (result.status === 'fulfilled') {
+          const domainResult = result.value;
+          removeResults.push(domainResult);
+          
+          if (domainResult.success) {
+            successCount++;
+          } else {
+            errorCount++;
+          }
+        } else {
+          console.log(`❌ PROMISE ERROR for ${domainToRemove}: ${result.reason}`);
+          errorCount++;
+          removeResults.push({
+            domain: domainToRemove,
+            success: false,
+            error: result.reason?.message || 'Promise rejection',
+            reason: 'Promise failed'
           });
         }
-      }
+      });
+      
+      console.log(`→ Parallel removal completed in ${executionTime}ms`);
+      console.log(`→ Results: ${successCount} successful, ${errorCount} failed`);
       
       results.step1_remove = {
         method: 'remove_autossl_user_excluded_domains',
-        parameters: { username: username, domains: domainsToRemove },
+        parameters: { username: username, domains: domainsToRemoveArray },
         success: successCount > 0, // Success if at least one domain was removed
-        completeSuccess: successCount === domainsToRemove.length, // Complete success if all domains removed
+        completeSuccess: successCount === domainsToRemoveArray.length, // Complete success if all domains removed
         apiExists: removeResults.length > 0,
         successCount: successCount,
         errorCount: errorCount,
-        totalDomains: domainsToRemove.length,
+        totalDomains: domainsToRemoveArray.length,
         results: removeResults,
-        reason: `${successCount}/${domainsToRemove.length} domains removed successfully`
+        reason: `${successCount}/${domainsToRemoveArray.length} domains removed successfully`
       };
       
       if (results.step1_remove.completeSuccess) {
-        console.log(`✅ Step 1 COMPLETE SUCCESS: All domains (${domain} and www.${domain}) removed from AutoSSL exclusions`);
+        console.log(`✅ Step 1 COMPLETE SUCCESS: All ${domainsToRemoveArray.length} user domains removed from AutoSSL exclusions`);
       } else if (results.step1_remove.success) {
-        console.log(`⚠️ Step 1 PARTIAL SUCCESS: ${successCount}/${domainsToRemove.length} domains removed from AutoSSL exclusions`);
+        console.log(`⚠️ Step 1 PARTIAL SUCCESS: ${successCount}/${domainsToRemoveArray.length} domains removed from AutoSSL exclusions`);
       } else {
         console.log(`❌ Step 1 FAILED: No domains could be removed from AutoSSL exclusions`);
       }
@@ -1139,11 +1205,11 @@ class WHMService {
       return {
         success: workflowAnalysis.workflowSuccess || workflowAnalysis.removeWorked,
         message: workflowAnalysis.completeSuccess 
-          ? `AutoSSL workflow completed successfully. Domain ${domain} and www.${domain} have been processed for SSL certificate generation.`
+          ? `AutoSSL workflow completed successfully. ${domainsToRemoveArray.length} user domains have been processed for SSL certificate generation.`
           : workflowAnalysis.workflowSuccess
           ? `AutoSSL workflow partially successful. SSL certificate generation has been triggered for user ${username}.`
           : workflowAnalysis.removeWorked
-          ? `Domain exclusions removed successfully. AutoSSL will process ${domain} in the next scheduled run.`
+          ? `Domain exclusions removed successfully. AutoSSL will process user domains in the next scheduled run.`
           : `AutoSSL workflow failed. Manual intervention may be required.`,
         
         // Compatibility with existing service status flow
@@ -1159,7 +1225,9 @@ class WHMService {
                 workflowAnalysis.workflowSuccess ? 'focused_autossl_partial' :
                 workflowAnalysis.removeWorked ? 'focused_autossl_remove_only' : 'focused_autossl_failed',
         username: username,
-        domain: domain,
+        domain: mainDomain, // Keep main domain for compatibility
+        domains: domainArray, // All processed domains
+        userDomains: domainsToRemoveArray, // All domains from zone file
         serverName: serverName,
         
         // Timeline information
@@ -1176,20 +1244,30 @@ class WHMService {
           ? 'Active AutoSSL triggering successful - certificate generation initiated immediately'
           : 'Active AutoSSL triggering not available - using passive approach with scheduled generation',
         
+        // Enhanced domain information
+        domainInfo: {
+          mainDomain: mainDomain,
+          totalDomains: domainArray.length,
+          userDomains: domainsToRemoveArray.length,
+          zoneFileData: userDomainData ? userDomainData.summary : null
+        },
+        
         // Detailed results for debugging
         workflowResults: results,
         workflowAnalysis: workflowAnalysis
       };
       
     } catch (error) {
-      console.log(`❌ Error in focused AutoSSL management for ${domain}: ${error.message}`);
+      const mainDomain = Array.isArray(domains) ? domains[0] : domains;
+      console.log(`❌ Error in focused AutoSSL management for ${mainDomain}: ${error.message}`);
       return {
         success: false,
         error: error.message,
-        message: `Error in focused AutoSSL management for ${domain}: ${error.message}`,
+        message: `Error in focused AutoSSL management for ${mainDomain}: ${error.message}`,
         method: 'focused_autossl_exception',
         username: username,
-        domain: domain,
+        domain: mainDomain,
+        domains: Array.isArray(domains) ? domains : [domains],
         serverName: serverName,
         autoSSLTriggered: false,
         triggerMethod: null,
@@ -1197,6 +1275,234 @@ class WHMService {
         timeline: 'AutoSSL workflow failed - manual intervention required'
       };
     }
+  }
+
+  /**
+   * Extract all user domains from DNS zone file (A and CNAME records)
+   * @param {Array} dnsZoneRecords - DNS zone records from getDNSZone
+   * @param {string} domain - Main domain name
+   * @returns {Object} - Object containing all user domains and their record details
+   */
+  extractUserDomainsFromZone(dnsZoneRecords, domain) {
+    console.log(`🔍 Extracting all user domains from DNS zone for: ${domain}`);
+    
+    if (!dnsZoneRecords || dnsZoneRecords.length === 0) {
+      console.log(`→ No DNS zone records provided`);
+      return {
+        domains: [domain], // Fallback to main domain only
+        records: {
+          A: [],
+          CNAME: []
+        },
+        summary: {
+          totalDomains: 1,
+          aRecords: 0,
+          cnameRecords: 0
+        }
+      };
+    }
+    
+    const userDomains = new Set();
+    const aRecords = [];
+    const cnameRecords = [];
+    
+    // Process each DNS record
+    dnsZoneRecords.forEach(record => {
+      if (!record.type || !record.name) return;
+      
+      const recordName = (record.name || '').toLowerCase().trim();
+      const recordType = record.type.toUpperCase();
+      const domainLower = domain.toLowerCase();
+      
+      // Extract domain name from record
+      let extractedDomain = recordName;
+      
+      // Handle different record name formats
+      if (recordName === '' || recordName === '@') {
+        extractedDomain = domainLower; // Root domain
+      } else if (recordName.endsWith('.')) {
+        extractedDomain = recordName.slice(0, -1); // Remove trailing dot
+      } else if (!recordName.includes('.')) {
+        extractedDomain = `${recordName}.${domainLower}`; // Subdomain
+      }
+      
+      // Only include domains that belong to this zone and need SSL certificates
+      if (extractedDomain === domainLower || extractedDomain.endsWith(`.${domainLower}`)) {
+        
+        // Filter out DNS-only records that don't need SSL certificates
+        const shouldIncludeForSSL = this.shouldDomainGetSSLCertificate(extractedDomain, recordType);
+        
+        if (shouldIncludeForSSL) {
+          userDomains.add(extractedDomain);
+          
+          if (recordType === 'A') {
+            aRecords.push({
+              domain: extractedDomain,
+              name: recordName,
+              type: recordType,
+              address: record.address,
+              ttl: record.ttl,
+              line: record.Line || record.line
+            });
+          } else if (recordType === 'CNAME') {
+            cnameRecords.push({
+              domain: extractedDomain,
+              name: recordName,
+              type: recordType,
+              target: record.cname || record.target,
+              ttl: record.ttl,
+              line: record.Line || record.line
+            });
+          }
+        } else {
+          console.log(`→ Skipping SSL for DNS-only record: ${extractedDomain} (${recordType})`);
+        }
+      }
+    });
+    
+    // Convert Set to Array and ensure main domain is included
+    const domainsArray = Array.from(userDomains);
+    if (!domainsArray.includes(domain.toLowerCase())) {
+      domainsArray.unshift(domain.toLowerCase());
+    }
+    
+    const result = {
+      domains: domainsArray,
+      records: {
+        A: aRecords,
+        CNAME: cnameRecords
+      },
+      summary: {
+        totalDomains: domainsArray.length,
+        aRecords: aRecords.length,
+        cnameRecords: cnameRecords.length
+      }
+    };
+    
+    console.log(`→ Extracted ${result.summary.totalDomains} user domains:`);
+    domainsArray.forEach(d => console.log(`  • ${d}`));
+    console.log(`→ Found ${result.summary.aRecords} A records and ${result.summary.cnameRecords} CNAME records`);
+    
+    return result;
+  }
+
+  /**
+   * Determine if a domain should get an SSL certificate
+   * Filters out DNS-only records that don't need SSL certificates
+   * @param {string} domainName - Domain name to check
+   * @param {string} recordType - DNS record type (A, CNAME, etc.)
+   * @returns {boolean} - Whether this domain should get SSL certificate
+   */
+  shouldDomainGetSSLCertificate(domainName, recordType) {
+    // Only process A and CNAME records (not MX, TXT, etc.)
+    if (recordType !== 'A' && recordType !== 'CNAME') {
+      return false;
+    }
+    
+    // Extract subdomain part (everything before the main domain)
+    const parts = domainName.split('.');
+    if (parts.length < 2) return true; // Main domain always gets SSL
+    
+    const subdomain = parts[0].toLowerCase();
+    
+    // DNS-only subdomains that should NOT get SSL certificates
+    const dnsOnlySubdomains = [
+      '_dmarc',           // DMARC policy records
+      '_domainkey',       // DKIM signature records  
+      'default._domainkey', // Default DKIM key
+      '_acme-challenge',  // Let's Encrypt challenge records
+      '_sip',            // SIP protocol records
+      '_xmpp',           // XMPP protocol records
+      '_caldav',         // CalDAV protocol records
+      '_carddav',        // CardDAV protocol records
+      'autoconfig',      // Email autoconfig (sometimes needs SSL)
+      'autodiscover',    // Email autodiscover (sometimes needs SSL)
+      'mta-sts',         // MTA-STS policy records
+    ];
+    
+    // Check if this is a DNS-only subdomain
+    if (dnsOnlySubdomains.includes(subdomain)) {
+      return false;
+    }
+    
+    // Check for underscore-prefixed subdomains (usually DNS-only)
+    if (subdomain.startsWith('_')) {
+      return false;
+    }
+    
+    // Web services that DO need SSL certificates
+    const webServiceSubdomains = [
+      'www',             // Main website
+      'mail',            // Webmail
+      'webmail',         // Webmail
+      'cpanel',          // cPanel interface
+      'whm',             // WHM interface
+      'webdisk',         // Web disk interface
+      'cpcalendars',     // cPanel calendars
+      'cpcontacts',      // cPanel contacts
+      'ftp',             // FTP (if web-based)
+      'api',             // API endpoints
+      'admin',           // Admin interfaces
+      'blog',            // Blog subdomain
+      'shop',            // Shop subdomain
+      'store',           // Store subdomain
+      'app',             // Application subdomain
+      'portal',          // Portal subdomain
+    ];
+    
+    // If it's a known web service, it needs SSL
+    if (webServiceSubdomains.includes(subdomain)) {
+      return true;
+    }
+    
+    // For unknown subdomains, include them (better to have SSL than not)
+    // This covers custom subdomains like 'blog', 'shop', etc.
+    return true;
+  }
+
+  /**
+   * Determine if a domain should have a www variant for SSL
+   * @param {string} domainName - Domain name to check
+   * @returns {boolean} - Whether this domain should have a www variant
+   */
+  shouldDomainHaveWwwVariant(domainName) {
+    // Extract subdomain part
+    const parts = domainName.split('.');
+    if (parts.length < 2) return true; // Main domain always gets www variant
+    
+    const subdomain = parts[0].toLowerCase();
+    
+    // DNS-only subdomains should NOT have www variants
+    const dnsOnlySubdomains = [
+      '_dmarc', '_domainkey', 'default._domainkey', '_acme-challenge',
+      '_sip', '_xmpp', '_caldav', '_carddav', 'mta-sts'
+    ];
+    
+    if (dnsOnlySubdomains.includes(subdomain) || subdomain.startsWith('_')) {
+      return false;
+    }
+    
+    // Technical service subdomains that don't typically use www
+    const noWwwSubdomains = [
+      'mail', 'ftp', 'cpanel', 'whm', 'webdisk', 'webmail',
+      'cpcalendars', 'cpcontacts', 'api', 'admin'
+    ];
+    
+    if (noWwwSubdomains.includes(subdomain)) {
+      return false;
+    }
+    
+    // Website subdomains that might use www
+    const websiteSubdomains = [
+      'blog', 'shop', 'store', 'app', 'portal', 'support', 'help'
+    ];
+    
+    if (websiteSubdomains.includes(subdomain)) {
+      return true;
+    }
+    
+    // For unknown subdomains, don't add www (conservative approach)
+    return false;
   }
 
   /**
@@ -3442,149 +3748,302 @@ class WHMService {
     
     console.log(`❌ Domain ${domain} not found on any of our ${prioritizedServers.length} servers`);
     return null;
+  }
+
+  /**
+   * Fetch error log for a domain when 500 status code is detected
+   * @param {string} serverName - Server name (e.g., 'cp1', 'pcp3')
+   * @param {string} username - cPanel username
+   * @param {string} domain - Domain name
+   * @returns {Promise<object>} - Error log result
+   */
+  async fetchErrorLogFor500(serverName, username, domain) {
+    try {
+      console.log(`🔍 Fetching error log for 500 error: ${domain} (user: ${username}, server: ${serverName})`);
       
-      if (!correctIP) {
-        return {
-          success: false,
-          error: `No IP address found for server ${serverName.toUpperCase()} in cache`,
-          domain: domain,
-          server: serverName,
-          currentIPs: currentIPs
-        };
-      }
+      // Use WHM API v1 format: whmapi1 cpuser=root command='uapi Fileman view_file path=/public_html/error_log'
+      console.log(`→ Using WHM API v2 format: https://server:2087/json-api/uapi_cpanel`);
+      console.log(`→ API Version: 2 (as shown in WHM interface)`);
+      console.log(`→ cPanel User: cpanel.user=${username} (account whose files to access)`);
+      console.log(`→ Target Path: /home/${username}/public_html/error_log`);
       
-      console.log(`→ Correct IP for ${domain}: ${correctIP} (server ${serverName.toUpperCase()})`);
+      const result = await this.callServerAPI(serverName, 'uapi_cpanel', {
+        'cpanel.user': username,
+        'cpanel.module': 'Fileman',
+        'cpanel.function': 'get_file_content',
+        'dir': 'public_html',
+        'file': 'error_log'
+      }, '2'); // WHM API v2 (as shown in the image)
       
-      // Step 4: Detect wrong IP scenario
-      if (currentIPs.length > 0 && !currentIPs.includes(correctIP)) {
-        wrongIPDetected = true;
-        console.log(`🚨 WRONG IP DETECTED:`);
-        console.log(`   Current: ${currentIPs.join(', ')} (incorrect)`);
-        console.log(`   Expected: ${correctIP} (server ${serverName.toUpperCase()})`);
-        console.log(`   → Domain is pointing to wrong server/IP`);
-      } else if (currentIPs.includes(correctIP)) {
-        console.log(`✅ A record already points to correct IP: ${correctIP}`);
-        console.log(`ℹ️ However, multiple IPs detected: ${currentIPs.join(', ')}`);
-        console.log(`→ Need to check DNS zone for duplicate A records that should be removed`);
-        wrongIPDetected = false; // Main record is correct, but duplicates may exist
-      }
+      console.log(`→ WHM API Response structure:`, {
+        hasResult: !!result,
+        hasData: !!(result && result.data),
+        hasUapi: !!(result && result.data && result.data.uapi),
+        hasUapiData: !!(result && result.data && result.data.uapi && result.data.uapi.data),
+        keys: result ? Object.keys(result) : []
+      });
       
-      // Step 5: Read and log current DNS zone configuration BEFORE making changes
-      console.log(`\n📋 Reading current DNS zone configuration for ${domain}...`);
-      const currentDNSRecords = await this.getDNSZone(serverName, domain);
+      // Handle actual WHM uapi_cpanel response structure
+      // Expected format: { "data": { "uapi": { "data": { "content": "...", "path": "...", "filename": "..." } } } }
+      let fileContent = '';
+      let responseData = null;
+      let uapiStatus = null;
       
-      if (currentDNSRecords && currentDNSRecords.length > 0) {
-        console.log(`→ Found ${currentDNSRecords.length} DNS records in zone:`);
+      if (result && result.data && result.data.uapi) {
+        const uapiResult = result.data.uapi;
+        uapiStatus = uapiResult.status;
         
-        // Group records by type for better logging
-        const recordsByType = {};
-        currentDNSRecords.forEach(record => {
-          if (!recordsByType[record.type]) {
-            recordsByType[record.type] = [];
-          }
-          recordsByType[record.type].push(record);
-        });
+        console.log(`→ UAPI Status: ${uapiStatus}`);
+        console.log(`→ UAPI Errors: ${JSON.stringify(uapiResult.errors)}`);
+        console.log(`→ UAPI Warnings: ${JSON.stringify(uapiResult.warnings)}`);
         
-        // Log each record type
-        Object.keys(recordsByType).sort().forEach(type => {
-          console.log(`\n  ${type} Records (${recordsByType[type].length}):`);
-          recordsByType[type].forEach((record, index) => {
-            const name = record.name || record.dname || 'N/A';
-            const value = record.address || record.cname || record.txtdata || record.exchange || record.target || 'N/A';
-            const ttl = record.ttl || 'N/A';
-            const priority = record.priority || record.preference || '';
-            
-            console.log(`    ${index + 1}. ${name} → ${value}${priority ? ` (priority: ${priority})` : ''} [TTL: ${ttl}]`);
-          });
-        });
-        
-        // Specifically highlight current A records
-        const aRecords = recordsByType['A'] || [];
-        if (aRecords.length > 0) {
-          console.log(`\n🎯 Current A Records in DNS Zone for ${domain}:`);
-          aRecords.forEach((record, index) => {
-            const name = record.name || record.dname || domain;
-            const ip = record.address || 'N/A';
-            const isCorrect = ip === correctIP;
-            const status = isCorrect ? '✅' : '❌';
-            console.log(`    ${index + 1}. ${name} → ${ip} ${status} ${isCorrect ? '(correct)' : '(needs update)'}`);
-          });
+        if (uapiResult.data) {
+          responseData = uapiResult.data;
+          fileContent = responseData.content || '';
+          console.log(`→ Using result.data.uapi.data structure (correct WHM format)`);
+          console.log(`→ File path: ${responseData.path || 'N/A'}`);
+          console.log(`→ Filename: ${responseData.filename || 'N/A'}`);
+          console.log(`→ Content length: ${fileContent.length} characters`);
         } else {
-          console.log(`\n⚠️ No A records found in DNS zone for ${domain}`);
+          console.log(`→ No data in uapi result`);
         }
       } else {
-        console.log(`⚠️ Could not retrieve DNS zone records for ${domain}`);
+        console.log(`→ Unexpected response structure - missing data.uapi:`, JSON.stringify(result, null, 2));
       }
       
-      // Step 6: Update the A record to correct IP
-      console.log(`\n🔧 Updating A record to fix DNS automatically`);
-      if (wrongIPDetected) {
-        console.log(`→ Fixing wrong IP: ${currentIPs.join(', ')} → ${correctIP}`);
-      }
-      
-      const updateResult = await this.updateARecord(serverName, domain, correctIP);
-      
-      if (updateResult.success) {
-        // Get the new A record after update to confirm the change
-        let newIP = correctIP; // Default to server IP
+      if (responseData && fileContent) {
         
-        // PERFORMANCE OPTIMIZATION: Skip DNS verification for faster response
-        console.log(`⚡ Skipping DNS verification for performance - changes will propagate naturally`);
-        newIP = correctIP; // Use the expected IP
+        // Get last 150 lines (tail -150 equivalent)
+        const lines = fileContent.split('\n').filter(line => line.trim());
+        const lastLines = lines.slice(-150);
         
-        // Build success message with sync information
-        let successMessage = wrongIPDetected 
-          ? `A record fixed! Updated ${domain} from wrong IP (${currentIPs.join(', ')}) to correct server IP (${correctIP}) on ${serverName.toUpperCase()}.`
-          : `A record updated successfully for ${domain} on server ${serverName.toUpperCase()} using ${updateResult.method}. Website now points to server's IP (${newIP}).`;
+        // Get LAST 10 lines and check if they are syntax errors
+        const last10Lines = lines.slice(-10);
+        const last10AreSyntaxErrors = last10Lines.filter(line => 
+          line.toLowerCase().includes('syntax error') || 
+          line.toLowerCase().includes('parse error') ||
+          line.toLowerCase().includes('fatal error')
+        );
         
-        if (updateResult.synced) {
-          successMessage += ` DNS changes synced across nameservers using ${updateResult.syncMethod}.`;
-        } else if (updateResult.syncError) {
-          if (updateResult.syncError.includes('not available')) {
-            successMessage += ` DNS changes will propagate naturally within 5-15 minutes.`;
-          } else {
-            successMessage += ` Note: DNS sync failed (${updateResult.syncError}) - changes may take longer to propagate.`;
-          }
+        // Only consider it a syntax error issue if the last 10 lines contain syntax errors
+        const isSyntaxErrorIssue = last10AreSyntaxErrors.length > 0;
+        
+        console.log(`✅ Successfully fetched error log for ${domain} (${lastLines.length} recent entries)`);
+        console.log(`→ Total lines in error log: ${lines.length}`);
+        
+        if (lastLines.length > 0) {
+          console.log(`→ Recent error log entries:`);
+          lastLines.forEach((line, index) => {
+            console.log(`  ${index + 1}. ${line}`);
+          });
         }
         
         return {
           success: true,
           domain: domain,
-          server: serverName,
-          oldIP: currentIPs.join(', '),
-          newIP: newIP,
-          correctIP: correctIP,
-          wrongIPDetected: wrongIPDetected,
-          method: updateResult.method,
-          synced: updateResult.synced || false,
-          syncMethod: updateResult.syncMethod || null,
-          syncError: updateResult.syncError || null,
-          dnsRecordsBeforeUpdate: currentDNSRecords,
-          message: successMessage
+          username: username,
+          serverName: serverName,
+          errorLogLines: lastLines,
+          last10Lines: last10Lines,
+          last10SyntaxErrors: last10AreSyntaxErrors,
+          isSyntaxErrorIssue: isSyntaxErrorIssue,
+          totalLines: lines.length,
+          message: `Found ${lastLines.length} recent error log entries for ${domain}`,
+          syntaxErrorMessage: isSyntaxErrorIssue ? 
+            `Last 10 lines contain ${last10AreSyntaxErrors.length} syntax errors - ticket creation recommended` :
+            `Last 10 lines contain no syntax errors - no ticket needed`,
+          timestamp: new Date().toISOString(),
+          apiMethod: 'whmapi1_uapi_cpanel_fileman_get_file_content'
+        };
+      } else if (responseData) {
+        console.log(`ℹ️ Error log file is empty for ${domain}`);
+        
+        return {
+          success: true,
+          domain: domain,
+          username: username,
+          serverName: serverName,
+          errorLogLines: [],
+          totalLines: 0,
+          message: `Error log file is empty for ${domain}`,
+          timestamp: new Date().toISOString(),
+          apiMethod: 'whmapi1_uapi_cpanel_fileman_get_file_content'
         };
       } else {
+        // Check for API errors in WHM uapi_cpanel response
+        let error = 'Failed to read error log file - unexpected response structure';
+        
+        if (result && result.data && result.data.uapi) {
+          const uapiResult = result.data.uapi;
+          
+          if (uapiResult.status === 0) {
+            error = 'UAPI call failed (status: 0)';
+          } else if (uapiResult.errors && uapiResult.errors.length > 0) {
+            error = `UAPI errors: ${uapiResult.errors.join(', ')}`;
+          } else if (uapiStatus === 1 && !responseData) {
+            error = 'UAPI call succeeded but no data returned';
+          }
+        } else if (result && result.metadata) {
+          error = result.metadata.reason || 'WHM API call failed';
+        }
+        
+        console.log(`❌ Failed to fetch error log for ${domain}: ${error}`);
+        
         return {
           success: false,
-          error: updateResult.error || 'Failed to update A record via WHM API',
           domain: domain,
-          server: serverName,
-          currentIPs: currentIPs,
-          correctIP: correctIP,
-          wrongIPDetected: wrongIPDetected,
-          dnsRecordsBeforeUpdate: currentDNSRecords
+          username: username,
+          serverName: serverName,
+          error: error,
+          message: `Failed to fetch error log for ${domain}: ${error}`,
+          timestamp: new Date().toISOString(),
+          apiMethod: 'whmapi1_uapi_cpanel_fileman_get_file_content',
+          rawResponse: result
         };
       }
       
     } catch (error) {
-      console.error(`❌ Auto-fix A record failed for ${domain}:`, error.message);
+      console.log(`❌ Error fetching error log for ${domain}: ${error.message}`);
+      
       return {
         success: false,
+        domain: domain,
+        username: username,
+        serverName: serverName,
         error: error.message,
-        domain: domain
+        message: `Error fetching error log for ${domain}: ${error.message}`,
+        timestamp: new Date().toISOString(),
+        apiMethod: 'whmapi1_uapi_cpanel_fileman_get_file_content'
       };
     }
   }
 
+  /**
+   * Create support ticket for 500 errors with syntax error details
+   * @param {string} domain - Domain name
+   * @param {string} username - cPanel username  
+   * @param {string} serverName - Server name
+   * @param {Array} syntaxErrors - Array of syntax error lines
+   * @param {Object} checksStatus - Status of DNS and AutoSSL checks
+   * @param {string} clientId - WHMCS client ID
+   * @param {string} email - Email address (fallback if no clientId)
+   * @returns {Promise<object>} - Ticket creation result
+   */
+  async createSyntaxErrorTicket(domain, username, serverName, syntaxErrors, checksStatus = {}, clientId, email) {
+    try {
+      console.log(`🎫 Creating support ticket for 500 syntax errors: ${domain}`);
+      console.log(`→ Client ID: ${clientId}`);
+      console.log(`→ Email: ${email}`);
+      console.log(`→ Username: ${username}`);
+      console.log(`→ Server: ${serverName}`);
+      
+      if (!clientId && !email) {
+        throw new Error('Either Client ID or email is required for ticket creation');
+      }
+      
+      const { openTicket } = require('../services/whmcsService');
+      
+      // Build ticket subject
+      const subject = `500 Internal Server Error - PHP Syntax Errors Detected: ${domain}`;
+      
+      // Build detailed ticket message
+      let ticketMessage = `=== 500 INTERNAL SERVER ERROR ANALYSIS ===\n`;
+      ticketMessage += `Domain: ${domain}\n`;
+      ticketMessage += `Username: ${username}\n`;
+      ticketMessage += `Server: ${serverName}\n`;
+      ticketMessage += `Issue: PHP Syntax Errors causing 500 Internal Server Error\n`;
+      ticketMessage += `Timestamp: ${new Date().toISOString()}\n\n`;
+      
+      // Add system checks summary
+      ticketMessage += `=== SYSTEM CHECKS SUMMARY ===\n`;
+      ticketMessage += `DNS Check: ${checksStatus.dnsCheck || 'Passed'}\n`;
+      ticketMessage += `AutoSSL Check: ${checksStatus.autoSSLCheck || 'Passed'}\n`;
+      ticketMessage += `Server Connectivity: ${checksStatus.connectivity || 'Verified'}\n`;
+      ticketMessage += `Issue Source: PHP Code Syntax Errors\n\n`;
+      
+      // Add syntax errors
+      if (syntaxErrors && syntaxErrors.length > 0) {
+        ticketMessage += `=== RECENT SYNTAX ERRORS (Last ${syntaxErrors.length}) ===\n`;
+        syntaxErrors.forEach((error, index) => {
+          ticketMessage += `${index + 1}. ${error}\n`;
+        });
+        ticketMessage += `\n`;
+      }
+      
+      // Add analysis and recommendations
+      ticketMessage += `=== ANALYSIS ===\n`;
+      ticketMessage += `The domain is returning 500 Internal Server Error due to PHP syntax errors.\n`;
+      ticketMessage += `DNS and AutoSSL checks have passed, confirming the issue is code-related.\n`;
+      ticketMessage += `Multiple syntax errors detected in /public_html/index.php on line 13.\n\n`;
+      
+      ticketMessage += `=== RECOMMENDED ACTIONS ===\n`;
+      ticketMessage += `1. Review and fix PHP syntax errors in index.php line 13\n`;
+      ticketMessage += `2. Check for missing semicolons, brackets, or quotes\n`;
+      ticketMessage += `3. Validate PHP code syntax before deployment\n`;
+      ticketMessage += `4. Consider enabling PHP error reporting for development\n\n`;
+      
+      ticketMessage += `=== TECHNICAL DETAILS ===\n`;
+      ticketMessage += `Error Type: PHP Parse Error\n`;
+      ticketMessage += `Common Cause: Syntax error with "define" statement\n`;
+      ticketMessage += `File Location: /home/${username}/public_html/index.php\n`;
+      ticketMessage += `Line Number: 13\n`;
+      ticketMessage += `Auto-Generated: Yes (500 Error Detection System)\n`;
+      
+      // Create the ticket
+      const deptid = process.env.TECHSUPPORT_DEPTID;
+      const deptname = deptid ? undefined : (process.env.TECHSUPPORT_DEPTNAME || 'Technical Support');
+      
+      // Prepare ticket parameters - use clientId if available, otherwise use email
+      const ticketParams = {
+        deptid,
+        deptname,
+        subject,
+        message: ticketMessage,
+        priority: 'High'
+      };
+      
+      if (clientId) {
+        ticketParams.clientid = clientId;
+        console.log(`→ Using client ID for ticket: ${clientId}`);
+      } else if (email) {
+        ticketParams.name = `Customer (${domain})`;
+        ticketParams.email = email;
+        console.log(`→ Using email for ticket: ${email}`);
+      }
+      
+      const ticket = await openTicket(ticketParams);
+      
+      const ticketId = ticket.tid || ticket.ticketid || ticket.id;
+      
+      console.log(`✅ Support ticket created for syntax errors: #${ticketId}`);
+      
+      return {
+        success: true,
+        ticketId: ticketId,
+        subject: subject,
+        domain: domain,
+        username: username,
+        serverName: serverName,
+        syntaxErrorCount: syntaxErrors.length,
+        message: `Support ticket #${ticketId} created for PHP syntax errors on ${domain}`,
+        timestamp: new Date().toISOString()
+      };
+      
+    } catch (error) {
+      console.log(`❌ Error creating syntax error ticket for ${domain}: ${error.message}`);
+      
+      return {
+        success: false,
+        error: error.message,
+        domain: domain,
+        username: username,
+        serverName: serverName,
+        message: `Failed to create support ticket for syntax errors: ${error.message}`,
+        timestamp: new Date().toISOString()
+      };
+    }
+  }
+}
 
 // Export singleton instance
 const whmService = new WHMService();

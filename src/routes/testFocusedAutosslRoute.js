@@ -37,7 +37,7 @@ router.post('/', async (req, res) => {
     
     // Test the new focused AutoSSL method
     const startTime = Date.now();
-    const result = await whmService.focusedAutoSSLManagement(serverName, username, domain);
+    const result = await whmService.focusedAutoSSLManagement(serverName, username, domain, {});
     const executionTime = Date.now() - startTime;
     
     console.log(`\n📊 Focused AutoSSL Test Results:`);

@@ -504,7 +504,7 @@ function formatAsCards(plans, gid) {
           name: plan.name || 'Unknown Plan',
           description: description,
           price: Math.round(pkrPrice),
-          link: plan.link || 'https://portal.hostbreak.com'
+          link: plan.link || `https://portal.hostbreak.com/cart.php?a=add&pid=${plan.pid}&currency=2`
         };
         
         // Include requirements match score if available
@@ -529,7 +529,7 @@ function formatAsCards(plans, gid) {
           name: plan.name || 'Plan',
           description: 'Error loading plan details',
           price: 0,
-          link: plan.link || 'https://portal.hostbreak.com'
+          link: plan.link || `https://portal.hostbreak.com/cart.php?a=add&pid=${plan.pid}&currency=2`
         };
       }
     }).filter(plan => plan !== null);

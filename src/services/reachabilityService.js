@@ -62,22 +62,30 @@ class ReachabilityService {
         return result;
       }
       
-      console.log(`✅ SSL certificate is valid - proceeding with other reachability checks`);
+      console.log(`✅ SSL certificate is valid - checking HTTPS status code only`);
       
-      // Step 2: Ping check (only if SSL is valid)
-      console.log(`→ Step 2: Ping check for ${domain}`);
-      result.ping = await this.pingDomain(domain);
-      
-      // Step 3: HTTP check (only if SSL is valid)
-      console.log(`→ Step 3: HTTP check for ${domain}`);
-      result.http = await this.httpCheck(domain, false);
-      
-      // Step 4: HTTPS check (only if SSL is valid)
-      console.log(`→ Step 4: HTTPS check for ${domain}`);
+      // Step 2: HTTPS status code check (only if SSL is valid)
+      console.log(`→ Step 2: HTTPS status code check for ${domain}`);
       result.https = await this.httpCheck(domain, true);
       
-      // Step 5: Determine overall reachability
-      this.determineOverallReachability(result);
+      // Skip ping and HTTP checks when SSL is valid
+      result.ping = {
+        alive: null,
+        responseTime: null,
+        error: 'Skipped - SSL is valid',
+        skipped: true
+      };
+      
+      result.http = {
+        reachable: null,
+        statusCode: null,
+        responseTime: null,
+        error: 'Skipped - SSL is valid',
+        skipped: true
+      };
+      
+      // Step 3: Determine overall reachability (based on HTTPS only)
+      this.determineOverallReachabilityForValidSSL(result);
       
       console.log(`→ Overall reachability: ${result.overall.reachable ? '✅' : '❌'} (${result.overall.method})`);
       
@@ -448,6 +456,40 @@ class ReachabilityService {
       result.overall.method = 'none';
       result.overall.responseTime = null;
       result.overall.statusCode = null;
+    }
+  }
+
+  /**
+   * Determine overall reachability for domains with valid SSL (simplified workflow)
+   * @param {Object} result - Complete reachability result
+   */
+  determineOverallReachabilityForValidSSL(result) {
+    // For valid SSL, only use HTTPS status code check
+    
+    if (result.https && result.https.reachable) {
+      result.overall.reachable = true;
+      result.overall.method = 'https_ssl_valid';
+      result.overall.responseTime = result.https.responseTime;
+      result.overall.statusCode = result.https.statusCode;
+      
+      // Add SSL status to overall result
+      result.overall.sslValid = result.ssl.valid;
+      result.overall.sslWarnings = result.ssl.warnings;
+      result.overall.sslDaysUntilExpiry = result.ssl.daysUntilExpiry;
+      
+      console.log(`→ HTTPS reachable with status ${result.https.statusCode} (SSL valid)`);
+    } else {
+      result.overall.reachable = false;
+      result.overall.method = 'https_failed';
+      result.overall.responseTime = result.https ? result.https.responseTime : null;
+      result.overall.statusCode = result.https ? result.https.statusCode : null;
+      
+      // Add SSL status to overall result
+      result.overall.sslValid = result.ssl.valid;
+      result.overall.sslWarnings = result.ssl.warnings;
+      result.overall.sslDaysUntilExpiry = result.ssl.daysUntilExpiry;
+      
+      console.log(`→ HTTPS not reachable despite valid SSL certificate`);
     }
   }
 
