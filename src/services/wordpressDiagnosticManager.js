@@ -1,10 +1,9 @@
 const winston = require('winston');
 const CpanelClient = require('../lib/cpanel');
-const MySQLClient = require('../lib/mysql');
 const GuardStep = require('../steps/guards');
 const ParserStep = require('../steps/parser');
-const DiagnosisStep = require('../steps/diagnosis');
-const RemediationStep = require('../steps/remediation');
+const MySQLStep = require('../steps/mysql');
+const ErrorMappingStep = require('../steps/errorMapping');
 
 class WordPressDiagnosticManager {
   constructor() {
@@ -27,11 +26,13 @@ class WordPressDiagnosticManager {
       ]
     });
 
-    this.mysqlClient = new MySQLClient();
+    this.mysqlClient = null; // No longer needed
     this.guardStep = new GuardStep();
     this.parserStep = new ParserStep();
-    this.diagnosisStep = new DiagnosisStep(this.mysqlClient);
-    this.remediationStep = new RemediationStep(this.mysqlClient);
+    this.mysqlStep = new MySQLStep();
+    this.errorMappingStep = new ErrorMappingStep();
+    this.diagnosisStep = null; // No longer needed
+    this.remediationStep = null; // No longer needed
   }
 
   /**
@@ -79,13 +80,13 @@ class WordPressDiagnosticManager {
   }
 
   /**
-   * Enhanced diagnostic workflow implementing Steps A through F
+   * Simplified diagnostic workflow implementing only Steps A and B
    */
   async diagnoseWordPressDatabase(params) {
     const startTime = Date.now();
     
     try {
-      this.logger.info('Starting enhanced WordPress database diagnostic workflow (Steps A-F)');
+      this.logger.info('Starting simplified WordPress diagnostic workflow (Steps A-B only)');
       
       const result = {
         timestamp: new Date().toISOString(),
@@ -93,10 +94,8 @@ class WordPressDiagnosticManager {
         workflow: {
           stepA_quickGuards: null,
           stepB_parseConfig: null,
-          stepC_connectionAttempt: null,
-          stepD_errorMapping: null,
-          stepE_targetedChecks: null,
-          stepF_postFixVerification: null
+          stepC_mysqlConnection: null,
+          stepD_errorMapping: null
         },
         summary: null,
         duration: null,
@@ -123,12 +122,6 @@ class WordPressDiagnosticManager {
         whmApiKey, // WHM API key for authentication
         2087 // WHM port for UAPI calls
       );
-
-      let whmClient = null;
-      if (params.whmHost && params.whmUsername && params.whmPassword) {
-        // WHM client would be initialized here if provided
-        this.logger.info('WHM credentials provided - advanced features available');
-      }
 
       // Step A: Quick Guards - Fast checks for service state and DNS
       this.logger.info('=== Step A: Quick Guards ===');
@@ -202,77 +195,53 @@ class WordPressDiagnosticManager {
         return result;
       }
 
-      const dbConfig = result.workflow.stepB_parseConfig.config;
+      // Step C: Test MySQL Connection
+      this.logger.info('=== Step C: Test MySQL Connection ===');
+      
+      // Pass DNS check result from Step A if available
+      const dnsCheckResult = result.workflow.stepA_quickGuards?.dnsCheck || null;
+      
+      result.workflow.stepC_mysqlConnection = await this.mysqlStep.testMySQLConnection(
+        result.workflow.stepB_parseConfig,
+        dnsCheckResult
+      );
 
-      // Step C: Attempt direct DB connection using parsed credentials
-      this.logger.info('=== Step C: Database Connection Attempt ===');
-      result.workflow.stepC_connectionAttempt = await this.diagnosisStep.attemptDatabaseConnection(dbConfig, cpanelClient);
+      // Step D: MySQL Error Mapping (always run to provide analysis)
+      this.logger.info('=== Step D: MySQL Error Mapping ===');
+      result.workflow.stepD_errorMapping = await this.errorMappingStep.mapMySQLError(
+        result.workflow.stepC_mysqlConnection
+      );
 
-      // Step D: Map MySQL error to root cause (if connection failed)
-      this.logger.info('=== Step D: Error Mapping ===');
-      if (result.workflow.stepC_connectionAttempt.success) {
-        result.workflow.stepD_errorMapping = {
-          cause: 'CONNECTION_SUCCESS',
-          description: 'Database connection successful',
-          severity: 'NONE'
+      if (!result.workflow.stepC_mysqlConnection.success) {
+        // Use detailed error analysis from Step D
+        result.escalation = {
+          type: 'technical',
+          reason: 'MYSQL_CONNECTION_FAILED',
+          message: 'Cannot connect to MySQL database',
+          errorAnalysis: result.workflow.stepD_errorMapping.errorAnalysis,
+          recommendations: result.workflow.stepD_errorMapping.recommendations
         };
-        result.success = true;
-      } else {
-        const connectionResult = result.workflow.stepC_connectionAttempt.attempts?.[0]?.result || 
-                               result.workflow.stepC_connectionAttempt;
-        result.workflow.stepD_errorMapping = this.diagnosisStep.mapMysqlErrorToRootCause(connectionResult);
+        result.summary = {
+          status: 'MYSQL_CONNECTION_FAILED',
+          message: result.workflow.stepC_mysqlConnection.error || 'MySQL connection test failed',
+          escalation: result.escalation
+        };
+        result.duration = Date.now() - startTime;
+        return result;
       }
 
-      // Step E: Targeted deeper checks (only if connection failed)
-      if (!result.workflow.stepC_connectionAttempt.success) {
-        this.logger.info('=== Step E: Targeted Deeper Checks ===');
-        result.workflow.stepE_targetedChecks = await this.diagnosisStep.performTargetedChecks(
-          result.workflow.stepD_errorMapping,
-          dbConfig,
-          cpanelClient,
-          whmClient
-        );
+      // Mark as successful if we got this far
+      result.success = true;
 
-        // Attempt remediation if enabled and auto-fix is available
-        if (params.enableRemediation && result.workflow.stepE_targetedChecks.autoFixAvailable) {
-          this.logger.info('=== Attempting Automated Remediation ===');
-          const remediationResult = await this.remediationStep.performRemediation(
-            { basicDiagnosis: { rootCause: result.workflow.stepD_errorMapping } },
-            dbConfig,
-            cpanelClient,
-            whmClient,
-            {
-              approveServiceRestart: params.approveServiceRestart || false,
-              approveTableRepair: params.approveTableRepair || false,
-              approveKillConnections: params.approveKillConnections || false
-            }
-          );
-
-          result.workflow.remediation = remediationResult;
-
-          // Step F: Post-fix verification (if remediation was attempted)
-          if (remediationResult.actionsAttempted.length > 0) {
-            this.logger.info('=== Step F: Post-fix Verification ===');
-            result.workflow.stepF_postFixVerification = await this.remediationStep.performPostFixVerification(
-              dbConfig,
-              params.domain,
-              cpanelClient
-            );
-            
-            result.success = result.workflow.stepF_postFixVerification.success;
-          }
-        }
-      }
-
-      // Generate comprehensive summary
-      result.summary = this.generateEnhancedSummary(result.workflow);
+      // Generate simplified summary
+      result.summary = this.generateSimplifiedSummary(result.workflow);
       result.duration = Date.now() - startTime;
 
-      this.logger.info(`Enhanced WordPress diagnostic completed in ${result.duration}ms. Success: ${result.success}`);
+      this.logger.info(`Simplified WordPress diagnostic completed in ${result.duration}ms. Success: ${result.success}`);
       return result;
 
     } catch (error) {
-      this.logger.error(`Enhanced WordPress diagnostic failed: ${error.message}`);
+      this.logger.error(`Simplified WordPress diagnostic failed: ${error.message}`);
       return {
         timestamp: new Date().toISOString(),
         domain: params.domain,
@@ -289,9 +258,9 @@ class WordPressDiagnosticManager {
   }
 
   /**
-   * Generate enhanced summary for Steps A-F workflow
+   * Generate simplified summary for Steps A-D workflow
    */
-  generateEnhancedSummary(workflow) {
+  generateSimplifiedSummary(workflow) {
     const summary = {
       status: 'UNKNOWN',
       message: '',
@@ -300,154 +269,87 @@ class WordPressDiagnosticManager {
       recommendations: []
     };
 
-    // Check final outcome
-    if (workflow.stepF_postFixVerification?.success) {
-      summary.status = 'FIXED_AND_VERIFIED';
-      summary.message = 'Database connection issues were resolved and verified';
-    } else if (workflow.stepC_connectionAttempt?.success) {
-      summary.status = 'HEALTHY';
-      summary.message = 'WordPress database connection is working correctly';
-    } else if (workflow.remediation?.success) {
-      summary.status = 'FIXED_PENDING_VERIFICATION';
-      summary.message = 'Database connection issues were resolved but verification pending';
-    } else if (workflow.stepE_targetedChecks?.autoFixAvailable && workflow.stepE_targetedChecks?.requiresApproval) {
-      summary.status = 'FIXABLE_WITH_APPROVAL';
-      summary.message = 'Issues identified with automated fixes available (requires approval)';
-    } else if (workflow.stepD_errorMapping?.escalation) {
-      summary.status = 'REQUIRES_ESCALATION';
-      summary.message = `Issue requires escalation: ${workflow.stepD_errorMapping.description}`;
-      summary.escalation = {
-        type: workflow.stepD_errorMapping.escalation,
-        reason: workflow.stepD_errorMapping.cause
-      };
+    // Check if all steps completed successfully
+    const guardsCompleted = workflow.stepA_quickGuards && !workflow.stepA_quickGuards.skipped;
+    const configParsed = workflow.stepB_parseConfig?.success;
+    const mysqlConnected = workflow.stepC_mysqlConnection?.success;
+
+    if (mysqlConnected) {
+      summary.status = 'MYSQL_CONNECTION_SUCCESS';
+      summary.message = 'WordPress configuration parsed and MySQL connection verified';
+    } else if (configParsed) {
+      summary.status = 'CONFIG_PARSED';
+      summary.message = 'WordPress configuration successfully parsed but MySQL connection failed';
     } else {
-      summary.status = 'UNHEALTHY';
-      summary.message = 'WordPress database connection has issues requiring attention';
+      summary.status = 'CONFIG_PARSE_FAILED';
+      summary.message = 'Failed to parse WordPress configuration';
     }
 
     // Add step details
     summary.details = {
-      quickGuards: workflow.stepA_quickGuards ? 'completed' : 'skipped',
+      quickGuards: workflow.stepA_quickGuards ? (workflow.stepA_quickGuards.skipped ? 'skipped' : 'completed') : 'not_performed',
       configParsing: workflow.stepB_parseConfig?.success ? 'success' : 'failed',
-      connectionAttempt: workflow.stepC_connectionAttempt?.success ? 'success' : 'failed',
-      errorMapping: workflow.stepD_errorMapping?.cause || 'unknown',
-      targetedChecks: workflow.stepE_targetedChecks ? 'completed' : 'not_needed',
-      postFixVerification: workflow.stepF_postFixVerification?.success ? 'verified' : 'not_performed'
+      mysqlConnection: workflow.stepC_mysqlConnection?.success ? 'success' : 'failed',
+      errorMapping: workflow.stepD_errorMapping ? 'completed' : 'not_performed'
     };
 
-    // Add recommendations from targeted checks
-    if (workflow.stepE_targetedChecks?.recommendations) {
-      summary.recommendations.push(...workflow.stepE_targetedChecks.recommendations);
+    // Add service and DNS status if available
+    if (workflow.stepA_quickGuards?.serviceCheck) {
+      summary.details.serviceStatus = workflow.stepA_quickGuards.serviceCheck.passed ? 'active' : 'inactive';
+    }
+    
+    if (workflow.stepA_quickGuards?.dnsCheck) {
+      summary.details.dnsStatus = workflow.stepA_quickGuards.dnsCheck.passed ? 'resolved' : 'failed';
+    }
+
+    // Add configuration details if parsing succeeded
+    if (workflow.stepB_parseConfig?.success) {
+      // Create a safe copy to prevent winston interference
+      const safeConfig = JSON.parse(JSON.stringify(workflow.stepB_parseConfig.config));
+      summary.details.databaseConfig = {
+        host: safeConfig.host,
+        database: safeConfig.database,
+        user: safeConfig.user,
+        valid: workflow.stepB_parseConfig.validation?.valid || false
+      };
+    }
+
+    // Add MySQL connection details if tested
+    if (workflow.stepC_mysqlConnection) {
+      summary.details.mysqlConnectionDetails = {
+        success: workflow.stepC_mysqlConnection.success,
+        isLocalhost: workflow.stepC_mysqlConnection.dnsResolution?.isLocalhost || false,
+        usedResolvedIp: workflow.stepC_mysqlConnection.connectionTest?.resolvedIp?.success || false,
+        dnsResolution: workflow.stepC_mysqlConnection.dnsResolution?.success || false,
+        resolvedFromNetworkInterface: workflow.stepC_mysqlConnection.dnsResolution?.fromNetworkInterface || false
+      };
+
+      // Add recommendations if connection failed
+      if (!workflow.stepC_mysqlConnection.success) {
+        // Use detailed recommendations from Step D if available
+        if (workflow.stepD_errorMapping?.recommendations) {
+          summary.recommendations = workflow.stepD_errorMapping.recommendations;
+        } else {
+          summary.recommendations = this.mysqlStep.generateConnectionRecommendations(
+            workflow.stepC_mysqlConnection
+          );
+        }
+      }
+    }
+
+    // Add error mapping details if performed
+    if (workflow.stepD_errorMapping) {
+      summary.details.errorMappingDetails = {
+        success: workflow.stepD_errorMapping.success || false,
+        category: workflow.stepD_errorMapping.errorAnalysis?.category || 'unknown',
+        severity: workflow.stepD_errorMapping.errorAnalysis?.severity || 'unknown',
+        description: workflow.stepD_errorMapping.errorAnalysis?.description || 'No analysis available'
+      };
     }
 
     return summary;
   }
 
-  /**
-   * Generate workflow summary
-   */
-  generateWorkflowSummary(workflow) {
-    const summary = {
-      status: 'UNKNOWN',
-      message: '',
-      details: {},
-      recommendations: []
-    };
-
-    // Check connection status
-    const connectionSuccess = workflow.diagnosis?.basicDiagnosis?.connectionTest?.success;
-    const remediationSuccess = workflow.remediation?.success;
-
-    if (connectionSuccess) {
-      summary.status = 'HEALTHY';
-      summary.message = 'WordPress database connection is working correctly';
-    } else if (remediationSuccess) {
-      summary.status = 'FIXED';
-      summary.message = 'Database connection issues were successfully resolved';
-    } else {
-      summary.status = 'UNHEALTHY';
-      summary.message = 'WordPress database connection has issues';
-    }
-
-    // Add details
-    if (workflow.guards) {
-      summary.details.guards = {
-        passed: workflow.guards.passed,
-        issues: workflow.guards.summary
-      };
-    }
-
-    if (workflow.parser) {
-      summary.details.configuration = {
-        valid: workflow.parser.success,
-        validation: workflow.parser.validation
-      };
-    }
-
-    if (workflow.diagnosis) {
-      summary.details.diagnosis = this.diagnosisStep.generateDiagnosisSummary(workflow.diagnosis);
-      
-      // Add recommendations from diagnosis
-      if (workflow.diagnosis.basicDiagnosis?.recommendations) {
-        summary.recommendations.push(...workflow.diagnosis.basicDiagnosis.recommendations);
-      }
-    }
-
-    if (workflow.remediation) {
-      summary.details.remediation = this.remediationStep.generateRemediationSummary(workflow.remediation);
-    }
-
-    return summary;
-  }
-
-  /**
-   * Quick connection test (simplified workflow)
-   */
-  async quickConnectionTest(params) {
-    try {
-      this.logger.info('Performing quick WordPress database connection test');
-      
-      const cpanelClient = new CpanelClient(
-        params.cpanelHost,
-        params.cpanelUsername,
-        params.cpanelPassword,
-        params.cpanelPort
-      );
-
-      // Extract database config
-      const parserResult = await this.parserStep.extractDatabaseConfig(
-        cpanelClient,
-        params.wpConfigPath || 'public_html/wp-config.php'
-      );
-
-      if (!parserResult.success) {
-        return {
-          success: false,
-          error: parserResult.error,
-          type: 'PARSER_ERROR'
-        };
-      }
-
-      // Test connection
-      const connectionResult = await this.mysqlClient.testConnection(parserResult.config);
-      
-      return {
-        success: connectionResult.success,
-        config: this.parserStep.generateConnectionString(parserResult.config, true),
-        error: connectionResult.error,
-        rootCause: connectionResult.success ? null : this.mysqlClient.mapErrorToRootCause(connectionResult),
-        type: connectionResult.success ? 'SUCCESS' : 'CONNECTION_ERROR'
-      };
-
-    } catch (error) {
-      this.logger.error(`Quick connection test failed: ${error.message}`);
-      return {
-        success: false,
-        error: error.message,
-        type: 'SYSTEM_ERROR'
-      };
-    }
-  }
 }
 
 module.exports = WordPressDiagnosticManager;

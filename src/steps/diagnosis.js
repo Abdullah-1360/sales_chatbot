@@ -20,15 +20,15 @@ class DiagnosisStep {
 
   /**
    * Step C: Attempt direct DB connection using parsed credentials
-   * Try multiple connection methods including UNIX sockets
+   * Try multiple connection methods including UNIX sockets and resolved IP
    */
-  async attemptDatabaseConnection(dbConfig, cpanelClient = null) {
+  async attemptDatabaseConnection(dbConfig, cpanelClient = null, resolvedIP = null) {
     try {
       this.logger.info('Step C: Attempting database connection with parsed credentials');
       
-      // Use the enhanced MySQL client that handles UNIX sockets and TCP
-      // Pass the cPanel client to get the actual socket path
-      const connectionResult = await this.mysqlClient.testConnection(dbConfig, cpanelClient);
+      // Use the enhanced MySQL client that handles UNIX sockets, TCP, and resolved IP
+      // Pass the cPanel client to get the actual socket path and resolved IP for external connections
+      const connectionResult = await this.mysqlClient.testConnection(dbConfig, cpanelClient, resolvedIP);
       
       if (connectionResult.success) {
         this.logger.info(`Database connection successful: ${connectionResult.message}`);
@@ -115,19 +115,39 @@ class DiagnosisStep {
 
       // Step D1: Access denied for user
       if (code === 'ER_ACCESS_DENIED_ERROR' || error.includes('Access denied')) {
+        // Check if this is an external connection attempt
+        const isExternalConnection = error.includes('@') && !error.includes('@localhost') && !error.includes('@127.0.0.1');
+        
         return {
           cause: 'ACCESS_DENIED',
-          description: 'Wrong password, wrong user, or missing privileges',
+          description: isExternalConnection ? 
+            'Database user not configured for external connections' : 
+            'Wrong password, wrong user, or missing privileges',
           severity: 'HIGH',
           escalation: 'automated_check',
           details: {
-            possibleCauses: [
+            possibleCauses: isExternalConnection ? [
+              'MySQL user is configured for localhost connections only',
+              'Database user needs to be granted access from external IPs',
+              'MySQL server bind-address configuration restricts external connections',
+              'Firewall blocking external MySQL connections'
+            ] : [
               'Incorrect password in wp-config.php',
               'Database user does not exist',
               'User exists but lacks privileges on database',
               'User not allowed to connect from current host'
             ],
-            nextSteps: ['check_user_exists', 'check_privileges', 'verify_password']
+            nextSteps: isExternalConnection ? [
+              'check_mysql_user_host_permissions',
+              'verify_mysql_bind_address',
+              'check_firewall_rules'
+            ] : [
+              'check_user_exists', 
+              'check_privileges', 
+              'verify_password'
+            ],
+            isExternalConnection: isExternalConnection,
+            originalError: error
           }
         };
       }
@@ -334,15 +354,17 @@ class DiagnosisStep {
       
       // Check if database user exists
       const users = await cpanelClient.listDatabaseUsers();
-      const userExists = users.some(user => 
-        user.user === dbConfig.user || user.user.endsWith(`_${dbConfig.user}`)
-      );
+      const userExists = users.some(user => {
+        // Handle both string format and object format
+        const userName = typeof user === 'string' ? user : user.user;
+        return userName === dbConfig.user || userName.endsWith(`_${dbConfig.user}`);
+      });
 
       checks.checks.push({
         type: 'user_existence',
         result: userExists,
         details: userExists ? 'Database user exists' : 'Database user not found',
-        users: users.map(u => u.user)
+        users: users.map(u => typeof u === 'string' ? u : u.user)
       });
 
       if (userExists) {
@@ -588,10 +610,12 @@ class DiagnosisStep {
         // Check if user exists
         try {
           const users = await cpanelClient.listDatabaseUsers();
-          extendedDiagnosis.userExists = users.some(user => 
-            user.user === dbConfig.user || user.user.endsWith(`_${dbConfig.user}`)
-          );
-          extendedDiagnosis.additionalChecks.availableUsers = users.map(user => user.user);
+          extendedDiagnosis.userExists = users.some(user => {
+            // Handle both string format and object format
+            const userName = typeof user === 'string' ? user : user.user;
+            return userName === dbConfig.user || userName.endsWith(`_${dbConfig.user}`);
+          });
+          extendedDiagnosis.additionalChecks.availableUsers = users.map(user => typeof user === 'string' ? user : user.user);
         } catch (error) {
           this.logger.warn(`Could not check database users: ${error.message}`);
         }

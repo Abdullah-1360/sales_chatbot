@@ -21,7 +21,7 @@ class RemediationStep {
   /**
    * Perform automated remediation based on diagnosis
    */
-  async performRemediation(diagnosis, dbConfig, cpanelClient, whmClient = null, options = {}) {
+  async performRemediation(diagnosis, dbConfig, cpanelClient, whmClient = null, options = {}, resolvedIP = null) {
     try {
       this.logger.info(`Starting remediation for: ${diagnosis.basicDiagnosis?.rootCause?.cause}`);
       
@@ -39,23 +39,23 @@ class RemediationStep {
 
       switch (rootCause) {
         case 'ACCESS_DENIED':
-          await this.remediateAccessDenied(remediation, dbConfig, cpanelClient, options);
+          await this.remediateAccessDenied(remediation, dbConfig, cpanelClient, options, resolvedIP);
           break;
 
         case 'UNKNOWN_DATABASE':
-          await this.remediateUnknownDatabase(remediation, dbConfig, cpanelClient, options);
+          await this.remediateUnknownDatabase(remediation, dbConfig, cpanelClient, options, resolvedIP);
           break;
 
         case 'CONNECTION_REFUSED':
-          await this.remediateConnectionRefused(remediation, whmClient, options);
+          await this.remediateConnectionRefused(remediation, whmClient, options, resolvedIP);
           break;
 
         case 'TABLE_CORRUPT':
-          await this.remediateTableCorrupt(remediation, dbConfig, cpanelClient, options);
+          await this.remediateTableCorrupt(remediation, dbConfig, cpanelClient, options, resolvedIP);
           break;
 
         case 'TOO_MANY_CONNECTIONS':
-          await this.remediateTooManyConnections(remediation, whmClient, options);
+          await this.remediateTooManyConnections(remediation, whmClient, options, resolvedIP);
           break;
 
         default:
@@ -67,10 +67,22 @@ class RemediationStep {
           break;
       }
 
-      // Test connection after remediation attempts
+      // Test connection after remediation attempts using resolved IP
       if (remediation.actionsAttempted.length > 0) {
-        const finalTest = await this.mysqlClient.testConnection(dbConfig);
-        remediation.success = finalTest.success;
+        const finalTest = await this.mysqlClient.testConnection(dbConfig, cpanelClient, resolvedIP);
+        
+        // For external connection issues, don't mark as complete failure if privileges were successfully re-granted
+        const isExternalConnection = resolvedIP && resolvedIP !== '127.0.0.1' && resolvedIP !== 'localhost';
+        const privilegesReGranted = remediation.results.some(r => r.action === 'RE_GRANT_PRIVILEGES' && r.success);
+        
+        if (isExternalConnection && !finalTest.success && privilegesReGranted) {
+          // External connection failed but privileges were re-granted - this might be expected
+          remediation.success = false; // Still mark as failed for diagnostic purposes
+          remediation.note = 'External connection failed but this may be expected due to localhost-only MySQL configuration. WordPress should work normally.';
+        } else {
+          remediation.success = finalTest.success;
+        }
+        
         remediation.finalConnectionTest = finalTest;
       }
 
@@ -86,31 +98,64 @@ class RemediationStep {
   /**
    * Remediate access denied errors
    */
-  async remediateAccessDenied(remediation, dbConfig, cpanelClient, options) {
+  async remediateAccessDenied(remediation, dbConfig, cpanelClient, options, resolvedIP = null) {
     try {
       // Check if user exists
       const users = await cpanelClient.listDatabaseUsers();
-      const userExists = users.some(user => 
-        user.user === dbConfig.user || user.user.endsWith(`_${dbConfig.user}`)
-      );
+      const userExists = users.some(user => {
+        // Handle both string format and object format
+        const userName = typeof user === 'string' ? user : user.user;
+        return userName === dbConfig.user || userName.endsWith(`_${dbConfig.user}`);
+      });
 
       if (userExists) {
-        // User exists, try to re-grant privileges
-        remediation.actionsAttempted.push('RE_GRANT_PRIVILEGES');
+        // Check if this is an external connection issue
+        const isExternalConnection = resolvedIP && resolvedIP !== '127.0.0.1' && resolvedIP !== 'localhost';
         
-        try {
-          await cpanelClient.grantPrivileges(dbConfig.database, dbConfig.user);
+        if (isExternalConnection) {
+          // For external connections, the issue is likely that MySQL user is configured for localhost only
           remediation.results.push({
-            action: 'RE_GRANT_PRIVILEGES',
-            success: true,
-            message: `Successfully re-granted privileges for user: ${dbConfig.user}`
-          });
-        } catch (error) {
-          remediation.results.push({
-            action: 'RE_GRANT_PRIVILEGES',
+            action: 'EXTERNAL_CONNECTION_DETECTED',
             success: false,
-            message: `Failed to re-grant privileges: ${error.message}`
+            message: `Database user '${dbConfig.user}' exists but is configured for localhost connections only. External connection from diagnostic service cannot be established.`,
+            recommendation: 'This is a common security configuration. The WordPress site should work normally as it connects via localhost.'
           });
+          
+          // Still try to re-grant privileges in case there's a privilege issue
+          remediation.actionsAttempted.push('RE_GRANT_PRIVILEGES');
+          
+          try {
+            await cpanelClient.grantPrivileges(dbConfig.database, dbConfig.user);
+            remediation.results.push({
+              action: 'RE_GRANT_PRIVILEGES',
+              success: true,
+              message: `Successfully re-granted privileges for user: ${dbConfig.user} (though external connection may still fail due to localhost-only configuration)`
+            });
+          } catch (error) {
+            remediation.results.push({
+              action: 'RE_GRANT_PRIVILEGES',
+              success: false,
+              message: `Failed to re-grant privileges: ${error.message}`
+            });
+          }
+        } else {
+          // For local connections, try to re-grant privileges
+          remediation.actionsAttempted.push('RE_GRANT_PRIVILEGES');
+          
+          try {
+            await cpanelClient.grantPrivileges(dbConfig.database, dbConfig.user);
+            remediation.results.push({
+              action: 'RE_GRANT_PRIVILEGES',
+              success: true,
+              message: `Successfully re-granted privileges for user: ${dbConfig.user}`
+            });
+          } catch (error) {
+            remediation.results.push({
+              action: 'RE_GRANT_PRIVILEGES',
+              success: false,
+              message: `Failed to re-grant privileges: ${error.message}`
+            });
+          }
         }
       } else {
         remediation.results.push({
@@ -303,7 +348,7 @@ class RemediationStep {
    * Step F: Post-fix verification
    * Re-run connection test and HTTP check after remediation
    */
-  async performPostFixVerification(dbConfig, domain, cpanelClient) {
+  async performPostFixVerification(dbConfig, domain, cpanelClient, resolvedIP = null) {
     try {
       this.logger.info('Step F: Performing post-fix verification');
       
@@ -315,9 +360,9 @@ class RemediationStep {
         success: false
       };
 
-      // F1: Re-run database connection test
+      // F1: Re-run database connection test using resolved IP
       this.logger.info('F1: Re-testing database connection');
-      const connectionResult = await this.mysqlClient.testConnection(dbConfig);
+      const connectionResult = await this.mysqlClient.testConnection(dbConfig, cpanelClient, resolvedIP);
       verification.databaseConnection = {
         success: connectionResult.success,
         error: connectionResult.error,

@@ -1,4 +1,4 @@
-const mysql = require('mysql2/promise');
+const mysql = require('mysql');
 const winston = require('winston');
 
 class MySQLClient {
@@ -18,223 +18,8 @@ class MySQLClient {
     });
   }
 
-  /**
-   * Test MySQL connection with given credentials using multiple methods
-   */
-  async testConnection(config, cpanelClient = null) {
-    // Mask password in logs
-    const logConfig = { ...config, password: '***MASKED***' };
-    this.logger.info(`Testing MySQL connection: ${JSON.stringify(logConfig)}`);
-    
-    const results = {
-      success: false,
-      attempts: [],
-      primaryError: null,
-      message: null
-    };
 
-    let customSocketPath = null;
-    
-    // Try to get the actual socket path from cPanel if available
-    if (cpanelClient && (config.host === 'localhost' || config.host === '127.0.0.1')) {
-      try {
-        customSocketPath = await cpanelClient.getMySQLSocketPath();
-        if (customSocketPath) {
-          this.logger.info(`Got MySQL socket path from cPanel: ${customSocketPath}`);
-        }
-      } catch (error) {
-        this.logger.debug(`Could not get socket path from cPanel: ${error.message}`);
-      }
-    }
 
-    // Method 1: Try UNIX socket if host is localhost
-    if (config.host === 'localhost' || config.host === '127.0.0.1') {
-      const socketResult = await this.trySocketConnection(config, customSocketPath);
-      results.attempts.push({
-        method: 'unix_socket',
-        socketPath: socketResult.socketPath,
-        customSocketPath: customSocketPath,
-        result: socketResult
-      });
-      
-      if (socketResult.success) {
-        results.success = true;
-        results.message = 'Connection successful via UNIX socket';
-        return results;
-      }
-    }
-
-    // Method 2: Try TCP connection to localhost (127.0.0.1)
-    if (config.host === 'localhost') {
-      const localhostResult = await this.tryTcpConnection({
-        ...config,
-        host: '127.0.0.1'
-      });
-      results.attempts.push({
-        method: 'localhost_tcp',
-        host: '127.0.0.1',
-        port: config.port || 3306,
-        result: localhostResult
-      });
-      
-      if (localhostResult.success) {
-        results.success = true;
-        results.message = 'Connection successful via localhost TCP';
-        return results;
-      }
-    }
-
-    // Method 3: Try direct TCP connection
-    const directResult = await this.tryTcpConnection(config);
-    results.attempts.push({
-      method: 'direct_tcp',
-      host: config.host,
-      port: config.port || 3306,
-      tcpReachable: await this.checkTcpReachability(config.host, config.port || 3306),
-      result: directResult
-    });
-    
-    if (directResult.success) {
-      results.success = true;
-      results.message = 'Connection successful via direct TCP';
-      return results;
-    }
-
-    // All methods failed
-    results.primaryError = results.attempts[0]?.result?.error || 'All connection methods failed';
-    results.message = 'All connection methods failed';
-    
-    this.logger.error(`All MySQL connection methods failed. Primary error: ${results.primaryError}`);
-    return results;
-  }
-
-  /**
-   * Try UNIX socket connection for localhost
-   */
-  async trySocketConnection(config, customSocketPath = null) {
-    let socketPaths = [];
-    
-    // If a custom socket path is provided, try it first
-    if (customSocketPath) {
-      socketPaths.push(customSocketPath);
-    }
-    
-    // Add only the specified socket path
-    const commonSocketPaths = [
-      '/var/lib/mysql/mysql.sock'
-    ];
-    
-    // Avoid duplicates
-    commonSocketPaths.forEach(path => {
-      if (!socketPaths.includes(path)) {
-        socketPaths.push(path);
-      }
-    });
-
-    for (const socketPath of socketPaths) {
-      try {
-        this.logger.info(`Trying UNIX socket: ${socketPath}`);
-        
-        const connection = await mysql.createConnection({
-          socketPath: socketPath,
-          user: config.user,
-          password: config.password,
-          database: config.database,
-          connectTimeout: 5000
-        });
-
-        // Test the connection with a simple query
-        await connection.execute('SELECT 1');
-        await connection.end();
-        
-        this.logger.info(`MySQL connection successful via UNIX socket: ${socketPath}`);
-        return { 
-          success: true, 
-          message: `Connection successful via UNIX socket: ${socketPath}`,
-          socketPath: socketPath
-        };
-        
-      } catch (error) {
-        this.logger.debug(`UNIX socket ${socketPath} failed: ${error.message}`);
-        // Continue to next socket path
-      }
-    }
-
-    return {
-      success: false,
-      error: 'No working UNIX socket found',
-      code: 'NO_SOCKET',
-      testedPaths: socketPaths
-    };
-  }
-
-  /**
-   * Try TCP connection
-   */
-  async tryTcpConnection(config) {
-    let connection = null;
-    
-    try {
-      connection = await mysql.createConnection({
-        host: config.host,
-        user: config.user,
-        password: config.password,
-        database: config.database,
-        port: config.port || 3306,
-        connectTimeout: 10000
-      });
-
-      // Test the connection with a simple query
-      await connection.execute('SELECT 1');
-      
-      this.logger.info(`MySQL TCP connection successful to ${config.host}:${config.port || 3306}`);
-      return { success: true, message: 'TCP connection successful' };
-      
-    } catch (error) {
-      this.logger.debug(`MySQL TCP connection failed to ${config.host}:${config.port || 3306}: ${error.message}`);
-      return {
-        success: false,
-        error: error.message,
-        code: error.code,
-        errno: error.errno,
-        sqlState: error.sqlState
-      };
-    } finally {
-      if (connection) {
-        await connection.end();
-      }
-    }
-  }
-
-  /**
-   * Check TCP reachability
-   */
-  async checkTcpReachability(host, port) {
-    return new Promise((resolve) => {
-      const net = require('net');
-      const socket = new net.Socket();
-      
-      const timeout = setTimeout(() => {
-        socket.destroy();
-        resolve(false);
-      }, 3000);
-      
-      socket.connect(port, host, () => {
-        clearTimeout(timeout);
-        socket.destroy();
-        resolve(true);
-      });
-      
-      socket.on('error', () => {
-        clearTimeout(timeout);
-        resolve(false);
-      });
-    });
-  }
-
-  /**
-   * Map MySQL error codes to root causes
-   */
   mapErrorToRootCause(error) {
     const errorMappings = {
       'ER_ACCESS_DENIED_ERROR': {
@@ -280,7 +65,7 @@ class MySQLClient {
     };
 
     const mapping = errorMappings[error.code] || errorMappings[error.errno];
-    
+
     if (mapping) {
       return {
         ...mapping,
@@ -299,6 +84,112 @@ class MySQLClient {
   }
 
   /**
+   * Test MySQL connection with parsed configuration
+   */
+  async testConnection(config, resolvedIp = null) {
+    return new Promise((resolve) => {
+      try {
+        this.logger.info(`Testing MySQL connection to ${config.host}:${config.port}`);
+        
+        // Use resolved IP if available, otherwise use the host from config
+        const connectionHost = resolvedIp || config.host;
+        
+        // Create connection object with completely isolated values to prevent winston interference
+        const connectionConfig = {
+          host: connectionHost,
+          user: config.user ? String(config.user) : '',
+          password: config.password ? String(config.password) : '',
+          database: config.database ? String(config.database) : ''
+        };
+        
+        // Add port if specified and not default
+        if (config.port && config.port !== 3306) {
+          connectionConfig.port = Number(config.port);
+        }
+        
+        // Log connection config for debugging (no masking)
+        console.log('Connection Config:', JSON.stringify(connectionConfig, null, 2));
+        
+        const connection = mysql.createConnection(connectionConfig);
+        
+        connection.connect((err) => {
+          if (err) {
+            this.logger.error(`MySQL connection failed: ${err.message}`);
+            const rootCause = this.mapErrorToRootCause(err);
+
+            resolve({
+              success: false,
+              error: err.message,
+              errorCode: err.code,
+              rootCause,
+              connectionDetails: {
+                host: connectionHost,
+                user: config.user,
+                database: config.database,
+                port: config.port,
+                originalHost: config.host,
+                usedResolvedIp: !!resolvedIp
+              }
+            });
+          } else {
+            this.logger.info("Database credentials are valid");
+            connection.end();
+
+            resolve({
+              success: true,
+              message: "Database credentials are valid",
+              connectionDetails: {
+                host: connectionHost,
+                user: config.user,
+                database: config.database,
+                port: config.port,
+                originalHost: config.host,
+                usedResolvedIp: !!resolvedIp
+              }
+            });
+          }
+        });
+
+        // Handle connection timeout
+        connection.on('error', (err) => {
+          this.logger.error(`MySQL connection error: ${err.message}`);
+          const rootCause = this.mapErrorToRootCause(err);
+
+          resolve({
+            success: false,
+            error: err.message,
+            errorCode: err.code,
+            rootCause,
+            connectionDetails: {
+              host: connectionHost,
+              user: config.user,
+              database: config.database,
+              port: config.port,
+              originalHost: config.host,
+              usedResolvedIp: !!resolvedIp
+            }
+          });
+        });
+
+      } catch (error) {
+        this.logger.error(`MySQL connection test failed: ${error.message}`);
+        resolve({
+          success: false,
+          error: error.message,
+          connectionDetails: {
+            host: resolvedIp || config.host,
+            user: config.user,
+            database: config.database,
+            port: config.port,
+            originalHost: config.host,
+            usedResolvedIp: !!resolvedIp
+          }
+        });
+      }
+    });
+  }
+
+  /**
    * Check if MySQL service is running (requires WHM access)
    */
   async checkMySQLService(whmClient) {
@@ -306,7 +197,7 @@ class MySQLClient {
       const serviceStatus = await whmClient.makeApiCall('ServiceStatus', 'get_service_status', {
         service: 'mysql'
       });
-      
+
       return {
         running: serviceStatus.enabled === 1 && serviceStatus.monitored === 1,
         status: serviceStatus
@@ -327,11 +218,11 @@ class MySQLClient {
 
     try {
       this.logger.warn('Attempting to restart MySQL service');
-      
+
       const result = await whmClient.makeApiCall('ServiceControl', 'restart_service', {
         service: 'mysql'
       });
-      
+
       this.logger.info('MySQL service restart initiated');
       return result;
     } catch (error) {

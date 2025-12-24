@@ -123,25 +123,19 @@ class CpanelCredentialResolver {
 
       result.serverInfo = serverInfo;
 
-      // Step 4: Get cPanel username from WHM
+      // Step 5: Get cPanel username from WHM (password setting disabled)
       const cpanelUsername = await this.getCpanelUsername(domain, serverInfo.serverName);
       if (!cpanelUsername) {
         result.error = `cPanel username not found for domain: ${domain}`;
         return result;
       }
 
-      // Step 5: Generate or retrieve cPanel password
-      const cpanelPassword = await this.getCpanelPassword(cpanelUsername, serverInfo.serverName);
-      if (!cpanelPassword) {
-        result.error = `Unable to retrieve cPanel password for user: ${cpanelUsername}`;
-        return result;
-      }
-
+      // Note: Password setting has been disabled for security reasons
       result.cpanelCredentials = {
         host: serverInfo.hostname,
         port: 2083,
         username: cpanelUsername,
-        password: cpanelPassword
+        password: null // Password setting disabled
       };
 
       result.success = true;
@@ -495,48 +489,20 @@ class CpanelCredentialResolver {
   }
 
   /**
-   * Get or generate cPanel password
-   * Note: For security reasons, we'll use a temporary password approach
+   * Get cPanel password - removed password setting logic
+   * Note: Password setting has been removed for security reasons
    */
   async getCpanelPassword(username, serverName) {
     try {
-      // Option 1: Generate a temporary password and set it
-      const tempPassword = this.generateTemporaryPassword();
-      
-      // Use WHM API to set temporary password
-      const result = await this.whmService.callServerAPI(serverName, 'passwd', {
-        user: username,
-        password: tempPassword  // Changed from 'pass' to 'password'
-      });
-
-      if (result && result.metadata && result.metadata.result === 1) {
-        this.logger.info(`Temporary password set for user: ${username}`);
-        return tempPassword;
-      }
-
-      // Option 2: If password reset fails, return null
-      // In production, you might want to use a different approach
-      this.logger.warn(`Failed to set temporary password for user: ${username}`);
+      // Password setting logic has been removed
+      // Return null to indicate no password is available
+      this.logger.info(`Password retrieval skipped for user: ${username} (password setting disabled)`);
       return null;
 
     } catch (error) {
-      this.logger.error(`Error getting/setting cPanel password: ${error.message}`);
+      this.logger.error(`Error in cPanel password method: ${error.message}`);
       return null;
     }
-  }
-
-  /**
-   * Generate a secure temporary password
-   */
-  generateTemporaryPassword() {
-    const chars = 'ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%^&*';
-    let password = '';
-    
-    for (let i = 0; i < 16; i++) {
-      password += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    
-    return password;
   }
 
   /**

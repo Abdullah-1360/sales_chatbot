@@ -389,7 +389,10 @@ module.exports = {
   checkCapabilities,
   healthCheck,
   monitoringScript,
-  batchDiagnosticWithRemediation
+  batchDiagnosticWithRemediation,
+  mysqlConnectionTest,
+  simpleMysqlTest,
+  completeWordPressDiagnostic
 };
 
 // Run examples if executed directly
@@ -405,7 +408,10 @@ if (require.main === module) {
     'custom-path': diagnosticCustomPath,
     'skip-guards': diagnosticSkipGuards,
     'capabilities': checkCapabilities,
-    'health': healthCheck
+    'health': healthCheck,
+    'mysql-test': mysqlConnectionTest,
+    'simple-mysql': simpleMysqlTest,
+    'complete-diagnostic': completeWordPressDiagnostic
   };
   
   if (examples[example]) {
@@ -418,5 +424,234 @@ if (require.main === module) {
       console.log(`  - ${key}`);
     });
     console.log('\nUsage: node examples/wordpress-diagnostic-examples.js [example-name]');
+  }
+}
+
+/**
+ * Example 11: MySQL Connection Test with Error Mapping (Steps A-D)
+ * 
+ * Demonstrates the complete workflow including Step D error mapping for detailed analysis.
+ */
+async function mysqlConnectionTest() {
+  try {
+    console.log('Running MySQL connection test using DNS resolution from Step A...');
+    
+    const response = await axios.post(`${API_BASE_URL}/wordpress/diagnose`, {
+      domain: 'example.com',
+      cpanelHost: 'cpanel.example.com',
+      cpanelUsername: 'username',
+      cpanelPassword: 'password',
+      expectedIp: '192.168.1.100'  // This IP will be used for MySQL connection if localhost is detected
+    });
+
+    console.log('MySQL connection test result:', JSON.stringify(response.data, null, 2));
+    
+    // Check the MySQL connection step specifically
+    const mysqlStep = response.data.data.workflow.stepC_mysqlConnection;
+    const dnsCheck = response.data.data.workflow.stepA_quickGuards?.dnsCheck;
+    
+    if (mysqlStep) {
+      console.log('\n=== MySQL Connection Details ===');
+      console.log('Overall Success:', mysqlStep.success);
+      
+      // DNS Resolution from Step A
+      if (dnsCheck) {
+        console.log('\nDNS Check from Step A:');
+        console.log('  Passed:', dnsCheck.passed);
+        console.log('  Resolved IPs:', dnsCheck.dnsInfo?.resolvedIps);
+        console.log('  Primary IP:', dnsCheck.dnsInfo?.primaryIp);
+      }
+      
+      // MySQL DNS Resolution
+      if (mysqlStep.dnsResolution) {
+        console.log('\nMySQL DNS Resolution:');
+        console.log('  Success:', mysqlStep.dnsResolution.success);
+        console.log('  Used IP from DNS Check:', mysqlStep.dnsResolution.fromDnsCheck);
+        console.log('  IP Used:', mysqlStep.dnsResolution.ip);
+      }
+      
+      // Connection Tests
+      console.log('\nConnection Tests:');
+      
+      // Resolved IP test (should use IP from Step A)
+      if (mysqlStep.connectionTest?.resolvedIp) {
+        const resolvedTest = mysqlStep.connectionTest.resolvedIp;
+        console.log('  Resolved IP Test:');
+        console.log('    Success:', resolvedTest.success);
+        console.log('    Host Used:', resolvedTest.connectionDetails.host);
+        console.log('    Used Resolved IP:', resolvedTest.connectionDetails.usedResolvedIp);
+        if (!resolvedTest.success) {
+          console.log('    Error:', resolvedTest.error);
+          console.log('    Root Cause:', resolvedTest.rootCause?.cause);
+        }
+      }
+      
+      // Original hostname test (fallback)
+      if (mysqlStep.connectionTest?.originalHost) {
+        const originalTest = mysqlStep.connectionTest.originalHost;
+        console.log('  Original Hostname Test:');
+        console.log('    Success:', originalTest.success);
+        console.log('    Host Used:', originalTest.connectionDetails.host);
+        if (!originalTest.success) {
+          console.log('    Error:', originalTest.error);
+          console.log('    Root Cause:', originalTest.rootCause?.cause);
+        }
+      }
+      
+      // Final result
+      console.log('\nFinal Result:');
+      console.log('  Success:', mysqlStep.finalResult.success);
+      console.log('  Host Used:', mysqlStep.finalResult.connectionDetails.host);
+      console.log('  Used Resolved IP:', mysqlStep.finalResult.connectionDetails.usedResolvedIp);
+      
+      if (!mysqlStep.success && response.data.data.summary.recommendations) {
+        console.log('\nRecommendations:');
+        response.data.data.summary.recommendations.forEach(rec => {
+          console.log(`  - [${rec.priority.toUpperCase()}] ${rec.message}`);
+          console.log(`    Action: ${rec.action}`);
+        });
+      }
+    }
+    
+    return response.data;
+  } catch (error) {
+    console.error('MySQL connection test error:', error.response?.data || error.message);
+    throw error;
+  }
+}
+
+/**
+ * Example 12: Simplified MySQL Connection Test
+ * 
+ * A minimal example showing just the MySQL connection functionality.
+ */
+async function simpleMysqlTest() {
+  try {
+    console.log('Running simple MySQL connection test...');
+    
+    const response = await axios.post(`${API_BASE_URL}/wordpress/diagnose`, {
+      domain: 'example.com',
+      email: 'client@example.com',
+      skipGuards: true
+    });
+
+    const mysqlStep = response.data.data.workflow.stepC_mysqlConnection;
+    
+    if (mysqlStep?.success) {
+      console.log('✓ MySQL connection successful');
+      console.log(`  Connected to: ${mysqlStep.config.host}:${mysqlStep.config.port}`);
+      console.log(`  Database: ${mysqlStep.config.database}`);
+      console.log(`  User: ${mysqlStep.config.user}`);
+    } else {
+      console.log('✗ MySQL connection failed');
+      if (mysqlStep?.error) {
+        console.log(`  Error: ${mysqlStep.error}`);
+      }
+      
+      // Show recommendations
+      if (response.data.data.summary.recommendations) {
+        console.log('  Recommendations:');
+        response.data.data.summary.recommendations.forEach(rec => {
+          console.log(`    - ${rec.message}`);
+        });
+      }
+    }
+    
+    return response.data;
+  } catch (error) {
+    console.error('Simple MySQL test error:', error.response?.data || error.message);
+    throw error;
+  }
+}
+
+/**
+ * Example 13: Complete WordPress Diagnostic with Error Mapping
+ * 
+ * Shows the full Steps A-D workflow with detailed error analysis.
+ */
+async function completeWordPressDiagnostic() {
+  try {
+    console.log('Running complete WordPress diagnostic (Steps A-D)...');
+    
+    const response = await axios.post(`${API_BASE_URL}/wordpress/diagnose`, {
+      domain: 'example.com',
+      cpanelHost: 'cpanel.example.com',
+      cpanelUsername: 'username',
+      cpanelPassword: 'password'
+    });
+
+    console.log('\n=== COMPLETE DIAGNOSTIC RESULT ===');
+    const workflow = response.data.data.workflow;
+    
+    // Show all steps
+    console.log('Step A (Guards):', workflow.stepA_quickGuards ? 'COMPLETED' : 'SKIPPED');
+    console.log('Step B (Config Parsing):', workflow.stepB_parseConfig?.success ? 'SUCCESS' : 'FAILED');
+    console.log('Step C (MySQL Connection):', workflow.stepC_mysqlConnection?.success ? 'SUCCESS' : 'FAILED');
+    console.log('Step D (Error Mapping):', workflow.stepD_errorMapping ? 'COMPLETED' : 'SKIPPED');
+    
+    // Show error analysis if connection failed
+    if (!workflow.stepC_mysqlConnection?.success && workflow.stepD_errorMapping?.errorAnalysis) {
+      const analysis = workflow.stepD_errorMapping.errorAnalysis;
+      console.log('\n=== ERROR ANALYSIS ===');
+      console.log('Category:', analysis.category);
+      console.log('Severity:', analysis.severity);
+      console.log('Description:', analysis.description);
+      
+      if (analysis.likelyCauses && analysis.likelyCauses.length > 0) {
+        console.log('\nLikely Causes:');
+        analysis.likelyCauses.forEach((cause, index) => {
+          console.log(`  ${index + 1}. ${cause}`);
+        });
+      }
+      
+      if (workflow.stepD_errorMapping.recommendations) {
+        console.log('\nRecommendations:');
+        workflow.stepD_errorMapping.recommendations.forEach((rec, index) => {
+          console.log(`  ${index + 1}. [${rec.priority.toUpperCase()}] ${rec.message}`);
+        });
+      }
+    }
+    
+    return response.data;
+  } catch (error) {
+    console.error('Complete diagnostic error:', error.response?.data || error.message);
+    throw error;
+  }
+}
+  try {
+    console.log('Running simple MySQL connection test...');
+    
+    const response = await axios.post(`${API_BASE_URL}/wordpress/diagnose`, {
+      domain: 'example.com',
+      email: 'client@example.com',
+      skipGuards: true
+    });
+
+    const mysqlStep = response.data.data.workflow.stepC_mysqlConnection;
+    
+    if (mysqlStep?.success) {
+      console.log('✓ MySQL connection successful');
+      console.log(`  Connected to: ${mysqlStep.config.host}:${mysqlStep.config.port}`);
+      console.log(`  Database: ${mysqlStep.config.database}`);
+      console.log(`  User: ${mysqlStep.config.user}`);
+    } else {
+      console.log('✗ MySQL connection failed');
+      if (mysqlStep?.error) {
+        console.log(`  Error: ${mysqlStep.error}`);
+      }
+      
+      // Show recommendations
+      if (response.data.data.summary.recommendations) {
+        console.log('  Recommendations:');
+        response.data.data.summary.recommendations.forEach(rec => {
+          console.log(`    - ${rec.message}`);
+        });
+      }
+    }
+    
+    return response.data;
+  } catch (error) {
+    console.error('Simple MySQL test error:', error.response?.data || error.message);
+    throw error;
   }
 }
