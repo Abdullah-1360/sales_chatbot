@@ -89,15 +89,33 @@ class ErrorMappingStep {
 
     // Add connection context
     analysis.context = {
-      host: connectionResult.finalResult?.connectionDetails?.host || 'unknown',
+      host: connectionResult.finalResult?.connectionDetails?.host || connectionResult.config?.host || 'unknown',
       user: connectionResult.config?.user || 'unknown',
       database: connectionResult.config?.database || 'unknown',
       usedResolvedIp: connectionResult.finalResult?.connectionDetails?.usedResolvedIp || false
     };
 
+    // Check for localhost validation failure first
+    if (errorCode === 'NON_LOCALHOST_HOST' || connectionResult.localhostValidation?.valid === false) {
+      analysis.category = 'configuration_error';
+      analysis.severity = 'high';
+      analysis.description = 'Database host is not localhost - diagnostic tool limitation';
+      analysis.likelyCauses = [
+        'Database host is configured for a remote server',
+        'wp-config.php DB_HOST is not set to localhost or 127.0.0.1',
+        'Using a remote database server that cannot be tested by this tool',
+        'Database configuration points to external MySQL server'
+      ];
+      analysis.technicalDetails = {
+        errorPattern: 'NON_LOCALHOST_HOST',
+        commonScenario: 'Remote database configuration detected',
+        configuredHost: connectionResult.config?.host || 'unknown',
+        localhostValidation: connectionResult.localhostValidation
+      };
+
     // Analyze based on error code and message
     // Check for database permissions error first (more specific)
-    if (errorCode === 'ER_DBACCESS_DENIED_ERROR' || (error.includes('Access denied for user') && error.includes('to database'))) {
+    } else if (errorCode === 'ER_DBACCESS_DENIED_ERROR' || (error.includes('Access denied for user') && error.includes('to database'))) {
       analysis.category = 'database_permissions';
       analysis.severity = 'high';
       analysis.description = 'User authenticated but lacks database access permissions';
@@ -265,6 +283,42 @@ class ErrorMappingStep {
     const recommendations = [];
 
     switch (errorAnalysis.category) {
+      case 'configuration_error':
+        if (errorAnalysis.technicalDetails?.errorPattern === 'NON_LOCALHOST_HOST') {
+          recommendations.push({
+            type: 'localhost_requirement',
+            priority: 'high',
+            message: 'Update database host to localhost in wp-config.php',
+            action: 'update_db_host',
+            details: 'Change DB_HOST to "localhost" or "127.0.0.1" in wp-config.php'
+          });
+
+          recommendations.push({
+            type: 'tool_limitation',
+            priority: 'high',
+            message: 'This diagnostic tool only works with localhost MySQL configurations',
+            action: 'use_alternative_tools',
+            details: 'For remote databases, use your hosting provider\'s database management tools'
+          });
+
+          recommendations.push({
+            type: 'remote_database_info',
+            priority: 'medium',
+            message: 'If using a remote database server, contact your hosting provider',
+            action: 'contact_support',
+            details: 'Remote database connections require different diagnostic approaches'
+          });
+
+          recommendations.push({
+            type: 'configuration_check',
+            priority: 'medium',
+            message: 'Verify if the database should actually be localhost',
+            action: 'verify_configuration',
+            details: 'Check if the database is supposed to be on the same server as WordPress'
+          });
+        }
+        break;
+
       case 'authentication':
         recommendations.push({
           type: 'check_credentials',

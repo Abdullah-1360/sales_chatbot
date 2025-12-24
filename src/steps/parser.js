@@ -183,7 +183,8 @@ class ParserStep {
           filename: wpConfigData.filename,
           dir: wpConfigData.dir,
           charset: wpConfigData.charset,
-          contentLength: wpConfigData.content.length
+          contentLength: wpConfigData.content.length,
+          content: wpConfigData.content // Store the actual content for reuse
         }
       };
 

@@ -2,6 +2,7 @@ const winston = require('winston');
 const CpanelClient = require('../lib/cpanel');
 const GuardStep = require('../steps/guards');
 const ParserStep = require('../steps/parser');
+const DatabaseUserManagementStep = require('../steps/databaseUserManagement');
 const MySQLStep = require('../steps/mysql');
 const ErrorMappingStep = require('../steps/errorMapping');
 
@@ -29,6 +30,7 @@ class WordPressDiagnosticManager {
     this.mysqlClient = null; // No longer needed
     this.guardStep = new GuardStep();
     this.parserStep = new ParserStep();
+    this.databaseUserManagementStep = new DatabaseUserManagementStep();
     this.mysqlStep = new MySQLStep();
     this.errorMappingStep = new ErrorMappingStep();
     this.diagnosisStep = null; // No longer needed
@@ -94,6 +96,7 @@ class WordPressDiagnosticManager {
         workflow: {
           stepA_quickGuards: null,
           stepB_parseConfig: null,
+          stepB2_databaseUserManagement: null,
           stepC_mysqlConnection: null,
           stepD_errorMapping: null
         },
@@ -195,14 +198,90 @@ class WordPressDiagnosticManager {
         return result;
       }
 
+      // Step B2: Validate localhost requirement - STOP if not localhost
+      this.logger.info('=== Step B2: Validate Localhost Requirement ===');
+      const localhostValidation = this.mysqlStep.mysqlClient.validateLocalhostRequirement(
+        result.workflow.stepB_parseConfig.config
+      );
+      
+      if (!localhostValidation.valid) {
+        this.logger.error(`Localhost validation failed: ${localhostValidation.message}`);
+        
+        result.escalation = {
+          type: 'configuration_error',
+          reason: 'NON_LOCALHOST_HOST',
+          message: 'Database host is not localhost - diagnostic tool limitation',
+          localhostValidation: localhostValidation,
+          userFriendlyMessage: localhostValidation.userFriendlyMessage,
+          recommendations: localhostValidation.recommendations
+        };
+        
+        result.summary = {
+          status: 'NON_LOCALHOST_HOST',
+          message: localhostValidation.userFriendlyMessage,
+          escalation: result.escalation,
+          recommendations: localhostValidation.recommendations
+        };
+        
+        result.duration = Date.now() - startTime;
+        return result;
+      }
+      
+      this.logger.info(`Localhost validation passed for host: ${result.workflow.stepB_parseConfig.config.host}`);
+
+      // Step B2: Database User Management - Check and create user if needed
+      this.logger.info('=== Step B2: Database User Management ===');
+      result.workflow.stepB2_databaseUserManagement = await this.databaseUserManagementStep.manageDatabaseUser(
+        cpanelClient,
+        result.workflow.stepB_parseConfig.config,
+        'public_html/wp-config.php',
+        result.workflow.stepB_parseConfig.wpConfigData?.content // Pass the existing content
+      );
+
+      // Update config with new credentials if user was created
+      let finalConfig = result.workflow.stepB_parseConfig.config;
+      if (result.workflow.stepB2_databaseUserManagement.success && 
+          result.workflow.stepB2_databaseUserManagement.wpConfigUpdated) {
+        
+        this.logger.info('Using updated database credentials from user management step');
+        finalConfig = {
+          ...finalConfig,
+          user: result.workflow.stepB2_databaseUserManagement.finalCredentials.username,
+          password: result.workflow.stepB2_databaseUserManagement.finalCredentials.password
+        };
+      }
+
+      // If database user management failed critically, escalate
+      if (!result.workflow.stepB2_databaseUserManagement.success && 
+          result.workflow.stepB2_databaseUserManagement.checkResult?.issue === 'DATABASE_NOT_FOUND') {
+        result.escalation = {
+          type: 'technical',
+          reason: 'DATABASE_NOT_FOUND',
+          message: result.workflow.stepB2_databaseUserManagement.message
+        };
+        result.summary = {
+          status: 'DATABASE_NOT_FOUND',
+          message: result.workflow.stepB2_databaseUserManagement.message,
+          escalation: result.escalation
+        };
+        result.duration = Date.now() - startTime;
+        return result;
+      }
+
       // Step C: Test MySQL Connection
       this.logger.info('=== Step C: Test MySQL Connection ===');
       
       // Pass DNS check result from Step A if available
       const dnsCheckResult = result.workflow.stepA_quickGuards?.dnsCheck || null;
       
+      // Use the final config (potentially updated with new credentials)
+      const configForMysqlTest = {
+        ...result.workflow.stepB_parseConfig,
+        config: finalConfig
+      };
+      
       result.workflow.stepC_mysqlConnection = await this.mysqlStep.testMySQLConnection(
-        result.workflow.stepB_parseConfig,
+        configForMysqlTest,
         dnsCheckResult
       );
 
@@ -272,6 +351,7 @@ class WordPressDiagnosticManager {
     // Check if all steps completed successfully
     const guardsCompleted = workflow.stepA_quickGuards && !workflow.stepA_quickGuards.skipped;
     const configParsed = workflow.stepB_parseConfig?.success;
+    const userManagementCompleted = workflow.stepB2_databaseUserManagement?.success;
     const mysqlConnected = workflow.stepC_mysqlConnection?.success;
 
     if (mysqlConnected) {
@@ -289,6 +369,7 @@ class WordPressDiagnosticManager {
     summary.details = {
       quickGuards: workflow.stepA_quickGuards ? (workflow.stepA_quickGuards.skipped ? 'skipped' : 'completed') : 'not_performed',
       configParsing: workflow.stepB_parseConfig?.success ? 'success' : 'failed',
+      databaseUserManagement: workflow.stepB2_databaseUserManagement?.success ? 'success' : 'failed',
       mysqlConnection: workflow.stepC_mysqlConnection?.success ? 'success' : 'failed',
       errorMapping: workflow.stepD_errorMapping ? 'completed' : 'not_performed'
     };
@@ -312,6 +393,27 @@ class WordPressDiagnosticManager {
         user: safeConfig.user,
         valid: workflow.stepB_parseConfig.validation?.valid || false
       };
+    }
+
+    // Add database user management details if performed
+    if (workflow.stepB2_databaseUserManagement) {
+      summary.details.databaseUserManagement = {
+        success: workflow.stepB2_databaseUserManagement.success,
+        userCreated: workflow.stepB2_databaseUserManagement.userCreated,
+        userAssigned: workflow.stepB2_databaseUserManagement.userAssigned,
+        wpConfigUpdated: workflow.stepB2_databaseUserManagement.wpConfigUpdated,
+        actions: workflow.stepB2_databaseUserManagement.actions,
+        message: workflow.stepB2_databaseUserManagement.message
+      };
+
+      // If credentials were updated, show the final credentials used
+      if (workflow.stepB2_databaseUserManagement.wpConfigUpdated) {
+        summary.details.updatedCredentials = {
+          username: workflow.stepB2_databaseUserManagement.finalCredentials.username,
+          database: workflow.stepB2_databaseUserManagement.finalCredentials.database,
+          credentialsUpdated: true
+        };
+      }
     }
 
     // Add MySQL connection details if tested

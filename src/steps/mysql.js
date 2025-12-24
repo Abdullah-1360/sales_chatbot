@@ -163,6 +163,54 @@ class MySQLStep {
       // Create a deep copy of the config to prevent winston interference
       const config = JSON.parse(JSON.stringify(parsedConfig.config));
       
+      // FIRST: Validate localhost requirement using MySQLClient validation
+      const localhostValidation = this.mysqlClient.validateLocalhostRequirement(config);
+      
+      if (!localhostValidation.valid) {
+        this.logger.error(`Localhost validation failed: ${localhostValidation.message}`);
+        
+        return {
+          success: false,
+          error: localhostValidation.message,
+          errorCode: 'NON_LOCALHOST_HOST',
+          localhostValidation: localhostValidation,
+          connectionTest: {
+            originalHost: null,
+            resolvedIp: null
+          },
+          dnsResolution: {
+            success: false,
+            ip: null,
+            hostname: config.host,
+            fromDnsCheck: false,
+            error: 'Localhost validation failed'
+          },
+          finalResult: {
+            success: false,
+            error: localhostValidation.message,
+            errorCode: 'NON_LOCALHOST_HOST',
+            localhostValidation: localhostValidation,
+            connectionDetails: {
+              host: config.host,
+              user: config.user,
+              database: config.database,
+              port: config.port,
+              originalHost: config.host,
+              usedResolvedIp: false,
+              localhostValidationFailed: true
+            }
+          },
+          config: {
+            host: config.host,
+            user: config.user,
+            database: config.database,
+            port: config.port
+          }
+        };
+      }
+      
+      this.logger.info(`Localhost validation passed for host: ${config.host}`);
+      
       // Check if we have a resolved IP from Step A DNS check
       let resolvedIpFromDnsCheck = null;
       
@@ -196,6 +244,7 @@ class MySQLStep {
         return {
           success: false,
           error: 'No resolved IP available from DNS check and localhost connections are not supported',
+          localhostValidation: localhostValidation,
           connectionTest: {
             originalHost: null,
             resolvedIp: null
@@ -226,6 +275,7 @@ class MySQLStep {
       
       return {
         success: overallSuccess,
+        localhostValidation: localhostValidation,
         connectionTest: {
           originalHost: null, // No localhost testing
           resolvedIp: connectionTestResolved
