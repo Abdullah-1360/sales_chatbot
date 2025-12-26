@@ -10,6 +10,7 @@ const { sendWhmcsError } = require('./middleware/errorHandler');
 const app = express();
 
 // CORS configuration for frontend communication
+//prc
 const corsOrigin = 'https://chat.hostbrake.com';
 
 // Support multiple origins (comma-separated)
