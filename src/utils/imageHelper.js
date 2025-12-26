@@ -14,7 +14,7 @@ const crypto = require('crypto');
  */
 async function downloadImage(imageUrl) {
   try {
-    console.log('→ Downloading image from:', imageUrl);
+    // Downloading image - no logging for performance
     
     // Validate URL
     const url = new URL(imageUrl);
@@ -54,7 +54,7 @@ async function downloadImage(imageUrl) {
     const filepath = path.join(tempDir, filename);
     fs.writeFileSync(filepath, response.data);
     
-    console.log('→ Image downloaded:', filename, `(${response.data.length} bytes)`);
+    // Image downloaded - no logging for performance
     
     return {
       filepath,
@@ -63,7 +63,7 @@ async function downloadImage(imageUrl) {
       size: response.data.length
     };
   } catch (error) {
-    console.log('✗ Error downloading image:', error.message);
+    // Error downloading image - no logging for performance
     throw new Error(`Failed to download image: ${error.message}`);
   }
 }
@@ -92,10 +92,10 @@ function cleanupTempFile(filepath) {
   try {
     if (fs.existsSync(filepath)) {
       fs.unlinkSync(filepath);
-      console.log('→ Cleaned up temp file:', path.basename(filepath));
+      // Cleaned up temp file - no logging for performance
     }
   } catch (error) {
-    console.log('⚠️  Warning: Could not delete temp file:', error.message);
+    // Warning: Could not delete temp file - no logging for performance
   }
 }
 

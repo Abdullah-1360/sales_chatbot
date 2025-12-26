@@ -1,23 +1,42 @@
 const Joi = require('joi');
 const WordPressDiagnosticManager = require('../services/wordpressDiagnosticManager');
 const CpanelCredentialResolver = require('../services/cpanelCredentialResolver');
+const ResponseFormatter = require('../utils/responseFormatter');
 
-// Validation schemas
+// Import performance monitor (with fallback for compatibility)
+let performanceMonitor;
+try {
+  performanceMonitor = require('../utils/performanceMonitor');
+} catch (error) {
+  // Fallback performance monitor if import fails
+  performanceMonitor = {
+    startTimer: (name) => ({ end: () => 0 }),
+    getSummary: () => ({})
+  };
+}
+
+// Optimized validation schemas (reused for better performance)
 const diagnosticSchema = Joi.object({
   domain: Joi.string().domain().required(),
-  
-  // Client identification (either email or phone required)
   email: Joi.string().email().optional(),
   phone: Joi.string().optional()
-}).or('email', 'phone'); // Require either email or phone
+}).or('email', 'phone');
 
-const quickTestSchema = Joi.object({
-  domain: Joi.string().domain().required(),
-  
-  // Client identification (either email or phone required)
-  email: Joi.string().email().optional(),
-  phone: Joi.string().optional()
-}).or('email', 'phone'); // Require either email or phone
+const quickTestSchema = diagnosticSchema; // Reuse same schema
+
+// Simple in-memory cache for diagnostic results (5 minute TTL)
+const diagnosticCache = new Map();
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+// Cache cleanup interval
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, value] of diagnosticCache.entries()) {
+    if (now - value.timestamp > CACHE_TTL) {
+      diagnosticCache.delete(key);
+    }
+  }
+}, 60000); // Cleanup every minute
 
 class WordPressDiagnosticController {
   constructor() {
@@ -35,102 +54,143 @@ class WordPressDiagnosticController {
    * Full WordPress database diagnostic workflow
    */
   async diagnoseDatabase(req, res) {
+    const timer = performanceMonitor.startTimer('diagnose_database_total');
+    const startTime = Date.now();
+    
     try {
-      // Validate request
+      // Fast validation with pre-compiled schema
+      const validationTimer = performanceMonitor.startTimer('validation');
       const { error, value } = diagnosticSchema.validate(req.body);
+      validationTimer.end();
+      
       if (error) {
-        return res.status(400).json({
-          success: false,
-          error: 'Validation failed',
-          details: error.details.map(d => d.message)
-        });
+        const formattedError = ResponseFormatter.formatValidationError(
+          error.details.map(d => d.message)
+        );
+        return res.status(400).json(formattedError);
       }
 
-      // Step 1: Resolve cPanel credentials from domain and client info
-      console.log(`🔍 Resolving cPanel credentials for domain: ${value.domain}`);
+      // Check cache first
+      const cacheTimer = performanceMonitor.startTimer('cache_lookup');
+      const cacheKey = `${value.domain}:${value.email || value.phone || 'no-id'}`;
+      const cached = diagnosticCache.get(cacheKey);
+      cacheTimer.end();
+      
+      if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
+        // Return cached result with updated timestamp
+        const cacheAge = Date.now() - cached.timestamp;
+        const formattedResponse = ResponseFormatter.formatCachedResponse(cached.data, cacheAge);
+        
+        timer.end();
+        return res.status(formattedResponse.success ? 200 : 500).json(formattedResponse);
+      }
+
+      // Step 1: Resolve cPanel credentials (optimized with reduced logging)
+      const credentialTimer = performanceMonitor.startTimer('credential_resolution');
       const credentialResult = await this.credentialResolver.resolveCpanelCredentials(
         value.domain,
         value.email,
         value.phone
       );
+      credentialTimer.end();
 
       if (!credentialResult.success) {
-        return res.status(404).json({
-          success: false,
-          error: 'Unable to resolve cPanel credentials',
-          message: credentialResult.error,
-          details: {
-            domain: value.domain,
+        timer.end();
+        const formattedError = ResponseFormatter.formatCredentialError(
+          value.domain,
+          credentialResult.error,
+          {
             clientLookup: credentialResult.clientInfo ? 'found' : 'not_found',
             serverLookup: credentialResult.serverInfo ? 'found' : 'not_found'
           }
-        });
+        );
+        formattedError.performance = {
+          totalTime: Date.now() - startTime,
+          cached: false
+        };
+        return res.status(404).json(formattedError);
       }
 
-      console.log(`✅ Successfully resolved cPanel credentials for ${value.domain}`);
-
-      // Step 2: Prepare diagnostic parameters with resolved credentials and default settings
+      // Step 2: Prepare diagnostic parameters (streamlined object creation)
       const diagnosticParams = {
         domain: value.domain,
-        clientId: credentialResult.clientInfo?.id, // Pass client ID for WHMCS checks
+        clientId: credentialResult.clientInfo?.id,
         cpanelHost: credentialResult.cpanelCredentials.host,
         cpanelUsername: credentialResult.cpanelCredentials.username,
         cpanelPassword: credentialResult.cpanelCredentials.password,
         cpanelPort: credentialResult.cpanelCredentials.port,
-        serverName: credentialResult.serverInfo?.serverName, // Pass server name for WHM API key lookup
-        
-        // Use default settings for WordPress configuration
+        serverName: credentialResult.serverInfo?.serverName,
         wpPath: 'public_html',
         wpConfigPath: 'public_html/wp-config.php',
-        
-        // Use default settings for guards and remediation
         skipGuards: false,
         expectedIp: null,
         enableRemediation: true,
         approveServiceRestart: false,
         approveTableRepair: false,
-        approveKillConnections: false
+        approveKillConnections: false,
+        whmcsService: req.whmcsService
       };
-
-      // Add WHMCS service if available (from existing services)
-      if (req.whmcsService) {
-        diagnosticParams.whmcsService = req.whmcsService;
-      }
 
       // Step 3: Run diagnostic workflow
+      const diagnosticTimer = performanceMonitor.startTimer('diagnostic_workflow');
       const result = await this.manager.diagnoseWordPressDatabase(diagnosticParams);
+      diagnosticTimer.end();
 
-      // Add credential resolution info to result
-      result.credentialResolution = {
-        success: true,
-        clientInfo: {
-          id: credentialResult.clientInfo?.id,
-          email: credentialResult.clientInfo?.email,
-          name: `${credentialResult.clientInfo?.firstname} ${credentialResult.clientInfo?.lastname}`.trim()
-        },
-        serverInfo: {
-          name: credentialResult.serverInfo?.serverName,
-          hostname: credentialResult.serverInfo?.hostname
-        }
+      // Add performance information
+      const totalTime = Date.now() - startTime;
+      result.performance = {
+        totalTime,
+        cached: false,
+        breakdown: performanceMonitor.getSummary()
       };
 
-      // Return appropriate status code
+      // Cache successful results only
+      if (result.success) {
+        const cacheTimer = performanceMonitor.startTimer('cache_store');
+        diagnosticCache.set(cacheKey, {
+          data: { ...result },
+          timestamp: Date.now()
+        });
+        cacheTimer.end();
+      }
+
+      // Format the response to remove irrelevant items
+      const includeDebugInfo = req.query.debug === 'true' || process.env.NODE_ENV === 'development';
+      const formattedResponse = ResponseFormatter.formatDiagnosticResponse(result, includeDebugInfo);
+      
+      // Sanitize response to remove sensitive information
+      const sanitizedResponse = ResponseFormatter.sanitizeResponse(formattedResponse);
+
       const statusCode = result.success ? 200 : 
                         (result.summary?.status === 'FAILED_GUARDS' ? 412 : 500);
 
-      return res.status(statusCode).json({
-        success: result.success,
-        data: result,
-        message: result.summary?.message || 'Diagnostic completed'
-      });
+      timer.end();
+      return res.status(statusCode).json(sanitizedResponse);
 
     } catch (error) {
-      console.error('WordPress diagnostic error:', error);
-      return res.status(500).json({
+      timer.end();
+      // Minimal error logging in production
+      if (process.env.NODE_ENV !== 'production') {
+        console.error('WordPress diagnostic error:', error);
+      }
+      
+      const errorResponse = {
         success: false,
-        error: 'Internal server error',
-        message: error.message
-      });
+        status: 'SYSTEM_ERROR',
+        message: 'Internal server error occurred during diagnosis',
+        timestamp: new Date().toISOString(),
+        error: {
+          type: 'system',
+          reason: 'INTERNAL_ERROR',
+          message: error.message
+        },
+        performance: {
+          totalTime: Date.now() - startTime,
+          cached: false
+        }
+      };
+      
+      return res.status(500).json(errorResponse);
     }
   }
 
@@ -138,19 +198,19 @@ class WordPressDiagnosticController {
    * Quick connection test (lightweight)
    */
   async quickTest(req, res) {
+    const startTime = Date.now();
+    
     try {
-      // Validate request
+      // Fast validation with pre-compiled schema
       const { error, value } = quickTestSchema.validate(req.body);
       if (error) {
-        return res.status(400).json({
-          success: false,
-          error: 'Validation failed',
-          details: error.details.map(d => d.message)
-        });
+        const formattedError = ResponseFormatter.formatValidationError(
+          error.details.map(d => d.message)
+        );
+        return res.status(400).json(formattedError);
       }
 
-      // Step 1: Resolve cPanel credentials
-      console.log(`🔍 Resolving cPanel credentials for quick test: ${value.domain}`);
+      // Step 1: Resolve cPanel credentials (optimized)
       const credentialResult = await this.credentialResolver.resolveCpanelCredentials(
         value.domain,
         value.email,
@@ -158,45 +218,72 @@ class WordPressDiagnosticController {
       );
 
       if (!credentialResult.success) {
-        return res.status(404).json({
-          success: false,
-          error: 'Unable to resolve cPanel credentials',
-          message: credentialResult.error,
-          type: 'CREDENTIAL_RESOLUTION_ERROR'
-        });
+        const formattedError = ResponseFormatter.formatCredentialError(
+          value.domain,
+          credentialResult.error
+        );
+        formattedError.performance = {
+          totalTime: Date.now() - startTime
+        };
+        return res.status(404).json(formattedError);
       }
 
-      // Step 2: Run quick test with resolved credentials and default settings
+      // Step 2: Run quick test (streamlined parameters)
       const quickTestParams = {
         cpanelHost: credentialResult.cpanelCredentials.host,
         cpanelUsername: credentialResult.cpanelCredentials.username,
         cpanelPassword: credentialResult.cpanelCredentials.password,
         cpanelPort: credentialResult.cpanelCredentials.port,
-        wpConfigPath: 'public_html/wp-config.php' // Use default path
+        wpConfigPath: 'public_html/wp-config.php'
       };
 
       const result = await this.manager.quickConnectionTest(quickTestParams);
 
-      // Add credential resolution info
-      result.credentialResolution = {
-        success: true,
-        clientInfo: credentialResult.clientInfo,
-        serverInfo: credentialResult.serverInfo
+      // Format simplified response for quick test
+      const quickTestResponse = {
+        success: result.success,
+        status: result.success ? 'CONNECTION_SUCCESS' : 'CONNECTION_FAILED',
+        message: result.success ? 'Database connection verified' : 'Database connection failed',
+        timestamp: new Date().toISOString(),
+        domain: value.domain,
+        performance: {
+          totalTime: Date.now() - startTime
+        }
       };
 
-      return res.status(result.success ? 200 : 500).json({
-        success: result.success,
-        data: result,
-        message: result.success ? 'Connection test passed' : 'Connection test failed'
-      });
+      if (!result.success && result.error) {
+        quickTestResponse.error = {
+          type: 'connection',
+          reason: 'CONNECTION_FAILED',
+          message: result.error,
+          details: 'Quick connection test failed'
+        };
+      }
+
+      return res.status(result.success ? 200 : 500).json(quickTestResponse);
 
     } catch (error) {
-      console.error('WordPress quick test error:', error);
-      return res.status(500).json({
+      // Minimal error logging in production
+      if (process.env.NODE_ENV !== 'production') {
+        console.error('WordPress quick test error:', error);
+      }
+      
+      const errorResponse = {
         success: false,
-        error: 'Internal server error',
-        message: error.message
-      });
+        status: 'SYSTEM_ERROR',
+        message: 'Internal server error occurred during quick test',
+        timestamp: new Date().toISOString(),
+        error: {
+          type: 'system',
+          reason: 'INTERNAL_ERROR',
+          message: error.message
+        },
+        performance: {
+          totalTime: Date.now() - startTime
+        }
+      };
+      
+      return res.status(500).json(errorResponse);
     }
   }
 
@@ -205,69 +292,8 @@ class WordPressDiagnosticController {
    */
   async getCapabilities(req, res) {
     try {
-      const capabilities = {
-        guards: {
-          whmcsProductCheck: {
-            description: 'Verify WHMCS product is active',
-            required: false,
-            requiresWhmcsAccess: true
-          },
-          dnsCheck: {
-            description: 'Verify DNS configuration',
-            required: false,
-            requiresExpectedIp: false
-          },
-          wordpressCheck: {
-            description: 'Verify WordPress installation',
-            required: true,
-            requiresCpanelAccess: true
-          }
-        },
-        diagnosis: {
-          connectionTest: {
-            description: 'Test MySQL database connection',
-            required: true
-          },
-          errorMapping: {
-            description: 'Map MySQL errors to root causes',
-            required: true
-          },
-          extendedChecks: {
-            description: 'Check database/user existence',
-            required: false,
-            requiresCpanelAccess: true
-          }
-        },
-        remediation: {
-          privilegeRepair: {
-            description: 'Re-grant database privileges',
-            requiresCpanelAccess: true,
-            destructive: false
-          },
-          serviceRestart: {
-            description: 'Restart MySQL service',
-            requiresWhmAccess: true,
-            destructive: true,
-            requiresApproval: true
-          },
-          tableRepair: {
-            description: 'Repair corrupted database tables',
-            requiresCpanelAccess: true,
-            destructive: true,
-            requiresApproval: true
-          }
-        },
-        security: {
-          passwordMasking: {
-            description: 'All passwords are masked in logs',
-            enabled: true
-          },
-          approvalRequired: {
-            description: 'Destructive actions require approval flags',
-            enabled: true
-          }
-        }
-      };
+      // Static capabilities object - no need to recreate on each request
+      const capabilities = this.getStaticCapabilities();
 
       return res.json({
         success: true,
@@ -276,7 +302,9 @@ class WordPressDiagnosticController {
       });
 
     } catch (error) {
-      console.error('Get capabilities error:', error);
+      if (process.env.NODE_ENV !== 'production') {
+        console.error('Get capabilities error:', error);
+      }
       return res.status(500).json({
         success: false,
         error: 'Internal server error',
@@ -286,19 +314,83 @@ class WordPressDiagnosticController {
   }
 
   /**
+   * Static capabilities object to avoid recreation
+   */
+  getStaticCapabilities() {
+    return {
+      guards: {
+        whmcsProductCheck: {
+          description: 'Verify WHMCS product is active',
+          required: false,
+          requiresWhmcsAccess: true
+        },
+        dnsCheck: {
+          description: 'Verify DNS configuration',
+          required: false,
+          requiresExpectedIp: false
+        },
+        wordpressCheck: {
+          description: 'Verify WordPress installation',
+          required: true,
+          requiresCpanelAccess: true
+        }
+      },
+      diagnosis: {
+        connectionTest: {
+          description: 'Test MySQL database connection',
+          required: true
+        },
+        errorMapping: {
+          description: 'Map MySQL errors to root causes',
+          required: true
+        },
+        extendedChecks: {
+          description: 'Check database/user existence',
+          required: false,
+          requiresCpanelAccess: true
+        }
+      },
+      remediation: {
+        privilegeRepair: {
+          description: 'Re-grant database privileges',
+          requiresCpanelAccess: true,
+          destructive: false
+        },
+        serviceRestart: {
+          description: 'Restart MySQL service',
+          requiresWhmAccess: true,
+          destructive: true,
+          requiresApproval: true
+        },
+        tableRepair: {
+          description: 'Repair corrupted database tables',
+          requiresCpanelAccess: true,
+          destructive: true,
+          requiresApproval: true
+        }
+      },
+      security: {
+        passwordMasking: {
+          description: 'All passwords are masked in logs',
+          enabled: true
+        },
+        approvalRequired: {
+          description: 'Destructive actions require approval flags',
+          enabled: true
+        }
+      }
+    };
+  }
+
+  /**
    * Health check for the diagnostic service
    */
   async healthCheck(req, res) {
     try {
+      // Simplified health check response
       const health = {
         status: 'healthy',
         timestamp: new Date().toISOString(),
-        services: {
-          mysql: 'available',
-          cpanel: 'available',
-          whm: 'optional',
-          whmcs: 'optional'
-        },
         version: '1.0.0'
       };
 
@@ -309,7 +401,9 @@ class WordPressDiagnosticController {
       });
 
     } catch (error) {
-      console.error('Health check error:', error);
+      if (process.env.NODE_ENV !== 'production') {
+        console.error('Health check error:', error);
+      }
       return res.status(500).json({
         success: false,
         error: 'Service unhealthy',

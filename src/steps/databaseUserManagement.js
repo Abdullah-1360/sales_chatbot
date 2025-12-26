@@ -1,20 +1,14 @@
 const winston = require('winston');
 const crypto = require('crypto');
+const silentLogger = require('../utils/silentLogger');
 
 class DatabaseUserManagementStep {
   constructor() {
-    this.logger = winston.createLogger({
-      level: 'info',
-      format: winston.format.combine(
-        winston.format.timestamp(),
-        winston.format.errors({ stack: true }),
-        winston.format.json()
-      ),
-      transports: [
-        new winston.transports.Console({
-          format: winston.format.simple()
-        })
-      ]
+    // Use silent logger in production for performance
+    this.logger = process.env.NODE_ENV === 'production' ? silentLogger : winston.createLogger({
+      level: 'error',
+      format: winston.format.simple(),
+      transports: [new winston.transports.Console()]
     });
   }
 
@@ -67,7 +61,7 @@ class DatabaseUserManagementStep {
     
     const fullUsername = `${prefix}${uniqueSuffix}`;
     
-    this.logger.info(`Generated username: ${fullUsername} (length: ${fullUsername.length})`);
+    // Generate username - no logging for performance
     
     return fullUsername;
   }
@@ -80,8 +74,7 @@ class DatabaseUserManagementStep {
    */
   async checkDatabaseAndUser(cpanelClient, config) {
     try {
-      this.logger.info('=== Step B2: Database and User Verification ===');
-      this.logger.info('Checking if database and user exist in cPanel MySQL...');
+      // Database and user verification - no logging for performance
 
       // Call cPanel UAPI to list databases
       const databases = await cpanelClient.makeApiCall('Mysql', 'list_databases');
@@ -90,7 +83,7 @@ class DatabaseUserManagementStep {
         throw new Error('Invalid response from cPanel MySQL list_databases API');
       }
 
-      this.logger.info(`Found ${databases.length} databases in cPanel`);
+      // Database listing - no logging for performance
 
       // Check if the configured database exists
       const targetDatabase = config.database;
@@ -113,13 +106,13 @@ class DatabaseUserManagementStep {
       };
 
       if (!databaseEntry) {
-        this.logger.warn(`Database '${targetDatabase}' not found in cPanel MySQL databases`);
+        // Database not found - no logging for performance
         result.issue = 'DATABASE_NOT_FOUND';
         result.message = `Database '${targetDatabase}' does not exist in cPanel MySQL`;
         return result;
       }
 
-      this.logger.info(`Database '${targetDatabase}' found with ${databaseEntry.users.length} users`);
+      // Database found - no logging for performance
       
       // Check if the configured user exists in this database
       const userInDatabase = databaseEntry.users.includes(targetUser);
@@ -127,13 +120,13 @@ class DatabaseUserManagementStep {
       result.userInDatabase = userInDatabase;
 
       if (!userInDatabase) {
-        this.logger.warn(`User '${targetUser}' not found in database '${targetDatabase}' users list`);
+        // User not in database - no logging for performance
         result.issue = 'USER_NOT_IN_DATABASE';
         result.message = `User '${targetUser}' is not assigned to database '${targetDatabase}'`;
         return result;
       }
 
-      this.logger.info(`User '${targetUser}' is properly assigned to database '${targetDatabase}'`);
+      // User properly assigned - no logging for performance
       result.issue = null;
       result.message = 'Database and user configuration is valid';
       
@@ -567,119 +560,68 @@ class DatabaseUserManagementStep {
       }
 
       if (checkResult.issue === 'USER_NOT_IN_DATABASE') {
-        this.logger.info('User not found in database - checking if user exists or needs to be created');
+        this.logger.info('User not found in database - creating new user');
 
         // Extract username prefix from cPanel username
         const cpanelUsername = cpanelClient.username;
         const usernamePrefix = `${cpanelUsername}_`;
 
-        // Check if the current user exists but is just not assigned to the database
-        const currentUser = config.user;
-        let userToAssign = currentUser;
-        let passwordToUse = config.password;
-        let needsUserCreation = true;
+        // Always create a new user - no attempt to assign existing users
+        const newUsername = this.generateUniqueUsername(usernamePrefix, 'wp');
+        const newPassword = this.generateStrongPassword();
 
-        // If the current user follows the correct naming convention, try to assign it first
-        if (currentUser.startsWith(usernamePrefix) && currentUser.length <= 16) {
-          this.logger.info(`Current user '${currentUser}' follows naming convention, attempting to assign to database first`);
-          
-          const assignResult = await this.assignUserToDatabase(cpanelClient, currentUser, config.database);
-          
-          if (assignResult.success) {
-            // User exists and was successfully assigned
-            result.userAssigned = true;
-            result.actions.push(`Assign existing user: SUCCESS - ${assignResult.message}`);
-            result.success = true;
-            result.message = `Successfully assigned existing user '${currentUser}' to database '${config.database}'`;
-            return result;
-          } else {
-            this.logger.info(`Failed to assign existing user, will create new user: ${assignResult.error}`);
-            result.actions.push(`Assign existing user: FAILED - ${assignResult.message}`);
-            needsUserCreation = true;
-          }
+        this.logger.info(`Generated new credentials - Username: ${newUsername}`);
+
+        // Check if user already exists before trying to create
+        const userExistsCheck = await this.checkMySQLUserExists(cpanelClient, newUsername);
+        
+        let createResult;
+        if (userExistsCheck.exists) {
+          this.logger.info(`User '${newUsername}' already exists, skipping creation`);
+          createResult = {
+            success: true,
+            username: newUsername,
+            password: newPassword,
+            message: 'User already exists, skipping creation'
+          };
+        } else {
+          createResult = await this.createMySQLUser(cpanelClient, newUsername, newPassword);
+        }
+        
+        result.userCreated = createResult.success;
+        result.actions.push(`Create user: ${createResult.success ? 'SUCCESS' : 'FAILED'} - ${createResult.message}`);
+
+        if (!createResult.success) {
+          result.message = `Failed to create database user: ${createResult.error}`;
+          return result;
         }
 
-        if (needsUserCreation) {
-          // Step 2: Create new user
-          const newUsername = this.generateUniqueUsername(usernamePrefix, 'wp');
-          const newPassword = this.generateStrongPassword();
+        // Step 3: Assign user to database
+        const assignResult = await this.assignUserToDatabase(cpanelClient, newUsername, config.database);
+        result.userAssigned = assignResult.success;
+        result.actions.push(`Assign privileges: ${assignResult.success ? 'SUCCESS' : 'FAILED'} - ${assignResult.message}`);
 
-          this.logger.info(`Generated new credentials - Username: ${newUsername}`);
-
-          // Check if user already exists before trying to create
-          const userExistsCheck = await this.checkMySQLUserExists(cpanelClient, newUsername);
-          
-          let createResult;
-          if (userExistsCheck.exists) {
-            this.logger.info(`User '${newUsername}' already exists, skipping creation`);
-            createResult = {
-              success: true,
-              username: newUsername,
-              password: newPassword,
-              message: 'User already exists, skipping creation'
-            };
-          } else {
-            createResult = await this.createMySQLUser(cpanelClient, newUsername, newPassword);
-          }
-          
-          result.userCreated = createResult.success;
-          result.actions.push(`Create user: ${createResult.success ? 'SUCCESS' : 'FAILED'} - ${createResult.message}`);
-
-          if (!createResult.success) {
-            // If user creation fails, try one more approach: check if the original user exists and can be assigned
-            this.logger.info(`User creation failed, attempting to assign original user '${currentUser}' as fallback`);
-            
-            const fallbackAssignResult = await this.assignUserToDatabase(cpanelClient, currentUser, config.database);
-            
-            if (fallbackAssignResult.success) {
-              result.userAssigned = true;
-              result.actions.push(`Fallback assign original user: SUCCESS - ${fallbackAssignResult.message}`);
-              result.success = true;
-              result.message = `User creation failed, but successfully assigned original user '${currentUser}' to database '${config.database}'`;
-              return result;
-            } else {
-              result.actions.push(`Fallback assign original user: FAILED - ${fallbackAssignResult.message}`);
-              result.message = `Failed to create database user: ${createResult.error}. Fallback assignment also failed: ${fallbackAssignResult.error}`;
-              return result;
-            }
-          }
-
-          userToAssign = newUsername;
-          passwordToUse = newPassword;
+        if (!assignResult.success) {
+          result.message = `Failed to assign user to database: ${assignResult.error}`;
+          return result;
         }
 
-        // Step 3: Assign user to database (if we created a new user)
-        if (needsUserCreation) {
-          const assignResult = await this.assignUserToDatabase(cpanelClient, userToAssign, config.database);
-          result.userAssigned = assignResult.success;
-          result.actions.push(`Assign privileges: ${assignResult.success ? 'SUCCESS' : 'FAILED'} - ${assignResult.message}`);
+        // Step 4: Update wp-config.php
+        const updateResult = await this.updateWpConfigCredentials(cpanelClient, wpConfigPath, newUsername, newPassword, wpConfigContent);
+        result.wpConfigUpdated = updateResult.success;
+        result.actions.push(`Update wp-config.php: ${updateResult.success ? 'SUCCESS' : 'FAILED'} - ${updateResult.message}`);
 
-          if (!assignResult.success) {
-            result.message = `Failed to assign user to database: ${assignResult.error}`;
-            return result;
-          }
+        if (!updateResult.success) {
+          result.message = `Failed to update wp-config.php: ${updateResult.error}`;
+          return result;
         }
 
-        // Step 4: Update wp-config.php (only if we created a new user)
-        if (needsUserCreation) {
-          const updateResult = await this.updateWpConfigCredentials(cpanelClient, wpConfigPath, userToAssign, passwordToUse, wpConfigContent);
-          result.wpConfigUpdated = updateResult.success;
-          result.actions.push(`Update wp-config.php: ${updateResult.success ? 'SUCCESS' : 'FAILED'} - ${updateResult.message}`);
-
-          if (!updateResult.success) {
-            result.message = `Failed to update wp-config.php: ${updateResult.error}`;
-            return result;
-          }
-
-          // Update final credentials
-          result.finalCredentials.username = userToAssign;
-          result.finalCredentials.password = passwordToUse;
-        }
+        // Update final credentials
+        result.finalCredentials.username = newUsername;
+        result.finalCredentials.password = newPassword;
 
         result.success = true;
-        result.message = needsUserCreation 
-          ? `Successfully created user '${userToAssign}' and assigned to database '${config.database}'`
-          : `Successfully assigned existing user '${userToAssign}' to database '${config.database}'`;
+        result.message = `Successfully created user '${newUsername}' and assigned to database '${config.database}'`;
         
         this.logger.info('Database user management completed successfully');
         return result;

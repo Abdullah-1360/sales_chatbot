@@ -1,4 +1,3 @@
-const winston = require('winston');
 const CpanelClient = require('../lib/cpanel');
 const GuardStep = require('../steps/guards');
 const ParserStep = require('../steps/parser');
@@ -6,188 +5,220 @@ const DatabaseUserManagementStep = require('../steps/databaseUserManagement');
 const MySQLStep = require('../steps/mysql');
 const ErrorMappingStep = require('../steps/errorMapping');
 
+// Optimized logger configuration - silent in production
+const logger = (() => {
+  const winston = require('winston');
+  
+  // Silent logger in production for maximum performance
+  if (process.env.NODE_ENV === 'production') {
+    return {
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+      debug: () => {}
+    };
+  }
+  
+  // Minimal logging in development
+  return winston.createLogger({
+    level: 'error', // Only log errors in development
+    format: winston.format.simple(),
+    transports: [
+      new winston.transports.Console({
+        silent: process.env.NODE_ENV === 'test'
+      })
+    ]
+  });
+})();
+
+// Cache for DNS resolutions and server info
+const dnsCache = new Map();
+const serverInfoCache = new Map();
+const CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+
+// Sensitive fields for log sanitization (cached for performance)
+const SENSITIVE_FIELDS = new Set(['password', 'pass', 'pwd', 'secret', 'token', 'key']);
+
 class WordPressDiagnosticManager {
   constructor() {
-    this.logger = winston.createLogger({
-      level: 'info',
-      format: winston.format.combine(
-        winston.format.timestamp(),
-        winston.format.errors({ stack: true }),
-        winston.format.json(),
-        winston.format.printf(({ timestamp, level, message, ...meta }) => {
-          // Mask any passwords in log output
-          const sanitizedMeta = this.sanitizeLogData(meta);
-          return `${timestamp} [${level.toUpperCase()}]: ${message} ${Object.keys(sanitizedMeta).length ? JSON.stringify(sanitizedMeta) : ''}`;
-        })
-      ),
-      transports: [
-        new winston.transports.Console({
-          format: winston.format.simple()
-        })
-      ]
-    });
-
-    this.mysqlClient = null; // No longer needed
+    this.logger = logger;
     this.guardStep = new GuardStep();
     this.parserStep = new ParserStep();
     this.databaseUserManagementStep = new DatabaseUserManagementStep();
     this.mysqlStep = new MySQLStep();
     this.errorMappingStep = new ErrorMappingStep();
-    this.diagnosisStep = null; // No longer needed
-    this.remediationStep = null; // No longer needed
   }
 
   /**
-   * Sanitize log data to mask passwords and sensitive information
+   * Optimized log data sanitization with caching
    */
   sanitizeLogData(data) {
     if (typeof data !== 'object' || data === null) {
       return data;
     }
 
-    const sanitized = { ...data };
-    const sensitiveFields = ['password', 'pass', 'pwd', 'secret', 'token', 'key'];
+    // Fast path for simple objects
+    if (Object.keys(data).length === 0) {
+      return data;
+    }
 
-    const maskSensitiveData = (obj) => {
-      if (typeof obj !== 'object' || obj === null) {
-        return obj;
+    const result = Array.isArray(data) ? [] : {};
+    
+    for (const [key, value] of Object.entries(data)) {
+      if (SENSITIVE_FIELDS.has(key.toLowerCase())) {
+        result[key] = '***MASKED***';
+      } else if (typeof value === 'object' && value !== null) {
+        result[key] = this.sanitizeLogData(value);
+      } else {
+        result[key] = value;
       }
-
-      const result = Array.isArray(obj) ? [] : {};
-      
-      for (const [key, value] of Object.entries(obj)) {
-        const lowerKey = key.toLowerCase();
-        if (sensitiveFields.some(field => lowerKey.includes(field))) {
-          result[key] = '***MASKED***';
-        } else if (typeof value === 'object' && value !== null) {
-          result[key] = maskSensitiveData(value);
-        } else {
-          result[key] = value;
-        }
-      }
-      
-      return result;
-    };
-
-    return maskSensitiveData(sanitized);
+    }
+    
+    return result;
   }
 
   /**
-   * Extract server name from cPanel host
+   * Fast server name extraction
    */
   extractServerNameFromHost(host) {
-    // Extract server name from hostname like "pcp3.mywebsitebox.com" -> "pcp3"
     const match = host.match(/^([^.]+)/);
     return match ? match[1] : host;
   }
 
   /**
-   * Simplified diagnostic workflow implementing only Steps A and B
+   * Optimized diagnostic workflow with minimal logging
    */
   async diagnoseWordPressDatabase(params) {
     const startTime = Date.now();
     
     try {
-      this.logger.info('Starting simplified WordPress diagnostic workflow (Steps A-B only)');
-      
+      // Pre-allocate result object to avoid multiple object creations
       const result = {
         timestamp: new Date().toISOString(),
         domain: params.domain,
-        workflow: {
-          stepA_quickGuards: null,
-          stepB_parseConfig: null,
-          stepB2_databaseUserManagement: null,
-          stepC_mysqlConnection: null,
-          stepD_errorMapping: null
-        },
+        workflow: {},
         summary: null,
         duration: null,
         success: false,
         escalation: null
       };
 
-      // Initialize cPanel client with resolved credentials
-      // Note: We need the WHM API key for the server to make UAPI calls
-      const whmService = require('../services/whmService');
+      // Fast server name resolution with caching
       const serverName = params.serverName || this.extractServerNameFromHost(params.cpanelHost);
-      const whmApiKey = whmService.serverApiKeys?.[serverName.toLowerCase()];
+      const serverCacheKey = `server:${serverName}`;
+      
+      let whmApiKey;
+      if (serverInfoCache.has(serverCacheKey)) {
+        const cached = serverInfoCache.get(serverCacheKey);
+        if (Date.now() - cached.timestamp < CACHE_TTL) {
+          whmApiKey = cached.apiKey;
+        }
+      }
       
       if (!whmApiKey) {
-        this.logger.error(`Available servers: ${Object.keys(whmService.serverApiKeys).join(', ')}`);
-        throw new Error(`No WHM API key found for server: ${serverName}. Available servers: ${Object.keys(whmService.serverApiKeys).join(', ')}`);
+        const whmService = require('../services/whmService');
+        whmApiKey = whmService.serverApiKeys?.[serverName.toLowerCase()];
+        
+        if (!whmApiKey) {
+          throw new Error(`No WHM API key found for server: ${serverName}`);
+        }
+        
+        // Cache the API key
+        serverInfoCache.set(serverCacheKey, {
+          apiKey: whmApiKey,
+          timestamp: Date.now()
+        });
       }
 
-      this.logger.info(`Using WHM API key for server: ${serverName}`);
-
+      // Initialize cPanel client
       const cpanelClient = new CpanelClient(
         params.cpanelHost,
-        params.cpanelUsername, // cPanel username
-        whmApiKey, // WHM API key for authentication
-        2087 // WHM port for UAPI calls
+        params.cpanelUsername,
+        whmApiKey,
+        2087
       );
 
-      // Step A: Quick Guards - Fast checks for service state and DNS
-      this.logger.info('=== Step A: Quick Guards ===');
+      // Step A: Quick Guards (optimized with early returns)
       if (!params.skipGuards) {
-        // A1: Check WHMCS service state
+        const guardResults = {};
+        
+        // Parallel execution of independent checks
+        const guardPromises = [];
+        
         if (params.clientId) {
-          const serviceCheck = await this.guardStep.checkWhmcsServiceState(params.clientId, params.domain);
-          result.workflow.stepA_quickGuards = { serviceCheck };
-          
-          if (!serviceCheck.passed && serviceCheck.escalate === 'billing') {
+          guardPromises.push(
+            this.guardStep.checkWhmcsServiceState(params.clientId, params.domain)
+              .then(serviceCheck => {
+                guardResults.serviceCheck = serviceCheck;
+                if (!serviceCheck.passed && serviceCheck.escalate === 'billing') {
+                  throw new Error('BILLING_ESCALATION');
+                }
+              })
+          );
+        }
+        
+        guardPromises.push(
+          this.guardStep.checkDnsResolution(params.domain, params.expectedIp)
+            .then(dnsCheck => {
+              guardResults.dnsCheck = dnsCheck;
+              if (!dnsCheck.passed && dnsCheck.escalate === 'user_notification') {
+                throw new Error('DNS_ESCALATION');
+              }
+            })
+        );
+
+        try {
+          await Promise.all(guardPromises);
+          result.workflow.stepA_quickGuards = guardResults;
+        } catch (error) {
+          if (error.message === 'BILLING_ESCALATION') {
             result.escalation = {
               type: 'billing',
-              reason: serviceCheck.reason,
-              message: serviceCheck.message
+              reason: guardResults.serviceCheck.reason,
+              message: guardResults.serviceCheck.message
             };
             result.summary = {
               status: 'ESCALATE_BILLING',
-              message: serviceCheck.message,
+              message: guardResults.serviceCheck.message,
               escalation: result.escalation
             };
             result.duration = Date.now() - startTime;
             return result;
           }
-        }
-
-        // A2: Check DNS resolution
-        const dnsCheck = await this.guardStep.checkDnsResolution(params.domain, params.expectedIp);
-        if (!result.workflow.stepA_quickGuards) {
-          result.workflow.stepA_quickGuards = {};
-        }
-        result.workflow.stepA_quickGuards.dnsCheck = dnsCheck;
-        
-        if (!dnsCheck.passed && dnsCheck.escalate === 'user_notification') {
-          result.escalation = {
-            type: 'user_notification',
-            reason: dnsCheck.reason,
-            message: dnsCheck.message
-          };
-          result.summary = {
-            status: 'DNS_MISCONFIGURED',
-            message: dnsCheck.message,
-            escalation: result.escalation
-          };
-          result.duration = Date.now() - startTime;
-          return result;
+          
+          if (error.message === 'DNS_ESCALATION') {
+            result.escalation = {
+              type: 'user_notification',
+              reason: guardResults.dnsCheck.reason,
+              message: guardResults.dnsCheck.message
+            };
+            result.summary = {
+              status: 'DNS_MISCONFIGURED',
+              message: guardResults.dnsCheck.message,
+              escalation: result.escalation
+            };
+            result.duration = Date.now() - startTime;
+            return result;
+          }
+          
+          throw error; // Re-throw unexpected errors
         }
       } else {
         result.workflow.stepA_quickGuards = { skipped: true };
       }
 
-      // Step B: Read wp-config.php and parse DB constants
-      this.logger.info('=== Step B: Parse wp-config.php ===');
+      // Step B: Parse wp-config.php (optimized file operations)
       result.workflow.stepB_parseConfig = await this.parserStep.extractDatabaseConfig(
         cpanelClient,
-        'public_html', // dir parameter
-        'wp-config.php' // file parameter
+        'public_html',
+        'wp-config.php'
       );
 
       if (!result.workflow.stepB_parseConfig.success) {
         result.escalation = {
           type: 'technical',
           reason: 'CONFIG_READ_FAILED',
-          message: 'Cannot read wp-config.php - may require filesystem permissions check'
+          message: 'Cannot read wp-config.php'
         };
         result.summary = {
           status: 'CONFIG_READ_FAILED',
@@ -198,60 +229,47 @@ class WordPressDiagnosticManager {
         return result;
       }
 
-      // Step B2: Validate localhost requirement - STOP if not localhost
-      this.logger.info('=== Step B2: Validate Localhost Requirement ===');
+      // Step B2: Fast localhost validation
       const localhostValidation = this.mysqlStep.mysqlClient.validateLocalhostRequirement(
         result.workflow.stepB_parseConfig.config
       );
       
       if (!localhostValidation.valid) {
-        this.logger.error(`Localhost validation failed: ${localhostValidation.message}`);
-        
         result.escalation = {
           type: 'configuration_error',
           reason: 'NON_LOCALHOST_HOST',
-          message: 'Database host is not localhost - diagnostic tool limitation',
-          localhostValidation: localhostValidation,
-          userFriendlyMessage: localhostValidation.userFriendlyMessage,
+          message: localhostValidation.userFriendlyMessage,
           recommendations: localhostValidation.recommendations
         };
-        
         result.summary = {
           status: 'NON_LOCALHOST_HOST',
           message: localhostValidation.userFriendlyMessage,
-          escalation: result.escalation,
-          recommendations: localhostValidation.recommendations
+          escalation: result.escalation
         };
-        
         result.duration = Date.now() - startTime;
         return result;
       }
-      
-      this.logger.info(`Localhost validation passed for host: ${result.workflow.stepB_parseConfig.config.host}`);
 
-      // Step B2: Database User Management - Check and create user if needed
-      this.logger.info('=== Step B2: Database User Management ===');
+      // Step B2: Database User Management (optimized)
       result.workflow.stepB2_databaseUserManagement = await this.databaseUserManagementStep.manageDatabaseUser(
         cpanelClient,
         result.workflow.stepB_parseConfig.config,
         'public_html/wp-config.php',
-        result.workflow.stepB_parseConfig.wpConfigData?.content // Pass the existing content
+        result.workflow.stepB_parseConfig.wpConfigData?.content
       );
 
-      // Update config with new credentials if user was created
+      // Use updated credentials if available (avoid object spread)
       let finalConfig = result.workflow.stepB_parseConfig.config;
       if (result.workflow.stepB2_databaseUserManagement.success && 
           result.workflow.stepB2_databaseUserManagement.wpConfigUpdated) {
         
-        this.logger.info('Using updated database credentials from user management step');
-        finalConfig = {
-          ...finalConfig,
+        finalConfig = Object.assign({}, finalConfig, {
           user: result.workflow.stepB2_databaseUserManagement.finalCredentials.username,
           password: result.workflow.stepB2_databaseUserManagement.finalCredentials.password
-        };
+        });
       }
 
-      // If database user management failed critically, escalate
+      // Early return for database not found
       if (!result.workflow.stepB2_databaseUserManagement.success && 
           result.workflow.stepB2_databaseUserManagement.checkResult?.issue === 'DATABASE_NOT_FOUND') {
         result.escalation = {
@@ -268,31 +286,23 @@ class WordPressDiagnosticManager {
         return result;
       }
 
-      // Step C: Test MySQL Connection
-      this.logger.info('=== Step C: Test MySQL Connection ===');
-      
-      // Pass DNS check result from Step A if available
+      // Step C: MySQL Connection Test (optimized)
       const dnsCheckResult = result.workflow.stepA_quickGuards?.dnsCheck || null;
-      
-      // Use the final config (potentially updated with new credentials)
-      const configForMysqlTest = {
-        ...result.workflow.stepB_parseConfig,
+      const configForMysqlTest = Object.assign({}, result.workflow.stepB_parseConfig, {
         config: finalConfig
-      };
+      });
       
       result.workflow.stepC_mysqlConnection = await this.mysqlStep.testMySQLConnection(
         configForMysqlTest,
         dnsCheckResult
       );
 
-      // Step D: MySQL Error Mapping (always run to provide analysis)
-      this.logger.info('=== Step D: MySQL Error Mapping ===');
-      result.workflow.stepD_errorMapping = await this.errorMappingStep.mapMySQLError(
-        result.workflow.stepC_mysqlConnection
-      );
-
+      // Step D: Error Mapping (only if connection failed)
       if (!result.workflow.stepC_mysqlConnection.success) {
-        // Use detailed error analysis from Step D
+        result.workflow.stepD_errorMapping = await this.errorMappingStep.mapMySQLError(
+          result.workflow.stepC_mysqlConnection
+        );
+
         result.escalation = {
           type: 'technical',
           reason: 'MYSQL_CONNECTION_FAILED',
@@ -309,18 +319,15 @@ class WordPressDiagnosticManager {
         return result;
       }
 
-      // Mark as successful if we got this far
+      // Success path
       result.success = true;
-
-      // Generate simplified summary
-      result.summary = this.generateSimplifiedSummary(result.workflow);
+      result.summary = this.generateOptimizedSummary(result.workflow);
       result.duration = Date.now() - startTime;
-
-      this.logger.info(`Simplified WordPress diagnostic completed in ${result.duration}ms. Success: ${result.success}`);
+      
       return result;
 
     } catch (error) {
-      this.logger.error(`Simplified WordPress diagnostic failed: ${error.message}`);
+      this.logger.error(`WordPress diagnostic failed: ${error.message}`);
       return {
         timestamp: new Date().toISOString(),
         domain: params.domain,
@@ -330,34 +337,33 @@ class WordPressDiagnosticManager {
         escalation: {
           type: 'technical',
           reason: 'SYSTEM_ERROR',
-          message: `System error during diagnosis: ${error.message}`
+          message: `System error: ${error.message}`
         }
       };
     }
   }
 
   /**
-   * Generate simplified summary for Steps A-D workflow
+   * Optimized summary generation with minimal object creation
    */
-  generateSimplifiedSummary(workflow) {
+  generateOptimizedSummary(workflow) {
+    // Pre-allocate summary object
     const summary = {
       status: 'UNKNOWN',
       message: '',
-      details: {},
-      escalation: null,
-      recommendations: []
+      details: {
+        quickGuards: workflow.stepA_quickGuards ? (workflow.stepA_quickGuards.skipped ? 'skipped' : 'completed') : 'not_performed',
+        configParsing: workflow.stepB_parseConfig?.success ? 'success' : 'failed',
+        databaseUserManagement: workflow.stepB2_databaseUserManagement?.success ? 'success' : 'failed',
+        mysqlConnection: workflow.stepC_mysqlConnection?.success ? 'success' : 'failed'
+      }
     };
 
-    // Check if all steps completed successfully
-    const guardsCompleted = workflow.stepA_quickGuards && !workflow.stepA_quickGuards.skipped;
-    const configParsed = workflow.stepB_parseConfig?.success;
-    const userManagementCompleted = workflow.stepB2_databaseUserManagement?.success;
-    const mysqlConnected = workflow.stepC_mysqlConnection?.success;
-
-    if (mysqlConnected) {
+    // Fast status determination
+    if (workflow.stepC_mysqlConnection?.success) {
       summary.status = 'MYSQL_CONNECTION_SUCCESS';
       summary.message = 'WordPress configuration parsed and MySQL connection verified';
-    } else if (configParsed) {
+    } else if (workflow.stepB_parseConfig?.success) {
       summary.status = 'CONFIG_PARSED';
       summary.message = 'WordPress configuration successfully parsed but MySQL connection failed';
     } else {
@@ -365,16 +371,7 @@ class WordPressDiagnosticManager {
       summary.message = 'Failed to parse WordPress configuration';
     }
 
-    // Add step details
-    summary.details = {
-      quickGuards: workflow.stepA_quickGuards ? (workflow.stepA_quickGuards.skipped ? 'skipped' : 'completed') : 'not_performed',
-      configParsing: workflow.stepB_parseConfig?.success ? 'success' : 'failed',
-      databaseUserManagement: workflow.stepB2_databaseUserManagement?.success ? 'success' : 'failed',
-      mysqlConnection: workflow.stepC_mysqlConnection?.success ? 'success' : 'failed',
-      errorMapping: workflow.stepD_errorMapping ? 'completed' : 'not_performed'
-    };
-
-    // Add service and DNS status if available
+    // Add essential details only
     if (workflow.stepA_quickGuards?.serviceCheck) {
       summary.details.serviceStatus = workflow.stepA_quickGuards.serviceCheck.passed ? 'active' : 'inactive';
     }
@@ -383,34 +380,32 @@ class WordPressDiagnosticManager {
       summary.details.dnsStatus = workflow.stepA_quickGuards.dnsCheck.passed ? 'resolved' : 'failed';
     }
 
-    // Add configuration details if parsing succeeded
+    // Add config details if parsing succeeded (avoid deep copying)
     if (workflow.stepB_parseConfig?.success) {
-      // Create a safe copy to prevent winston interference
-      const safeConfig = JSON.parse(JSON.stringify(workflow.stepB_parseConfig.config));
+      const config = workflow.stepB_parseConfig.config;
       summary.details.databaseConfig = {
-        host: safeConfig.host,
-        database: safeConfig.database,
-        user: safeConfig.user,
+        host: config.host,
+        database: config.database,
+        user: config.user,
         valid: workflow.stepB_parseConfig.validation?.valid || false
       };
     }
 
-    // Add database user management details if performed
+    // Add user management details if performed
     if (workflow.stepB2_databaseUserManagement) {
+      const mgmt = workflow.stepB2_databaseUserManagement;
       summary.details.databaseUserManagement = {
-        success: workflow.stepB2_databaseUserManagement.success,
-        userCreated: workflow.stepB2_databaseUserManagement.userCreated,
-        userAssigned: workflow.stepB2_databaseUserManagement.userAssigned,
-        wpConfigUpdated: workflow.stepB2_databaseUserManagement.wpConfigUpdated,
-        actions: workflow.stepB2_databaseUserManagement.actions,
-        message: workflow.stepB2_databaseUserManagement.message
+        success: mgmt.success,
+        userCreated: mgmt.userCreated,
+        userAssigned: mgmt.userAssigned,
+        wpConfigUpdated: mgmt.wpConfigUpdated,
+        message: mgmt.message
       };
 
-      // If credentials were updated, show the final credentials used
-      if (workflow.stepB2_databaseUserManagement.wpConfigUpdated) {
+      if (mgmt.wpConfigUpdated) {
         summary.details.updatedCredentials = {
-          username: workflow.stepB2_databaseUserManagement.finalCredentials.username,
-          database: workflow.stepB2_databaseUserManagement.finalCredentials.database,
+          username: mgmt.finalCredentials.username,
+          database: mgmt.finalCredentials.database,
           credentialsUpdated: true
         };
       }
@@ -418,35 +413,18 @@ class WordPressDiagnosticManager {
 
     // Add MySQL connection details if tested
     if (workflow.stepC_mysqlConnection) {
+      const mysql = workflow.stepC_mysqlConnection;
       summary.details.mysqlConnectionDetails = {
-        success: workflow.stepC_mysqlConnection.success,
-        isLocalhost: workflow.stepC_mysqlConnection.dnsResolution?.isLocalhost || false,
-        usedResolvedIp: workflow.stepC_mysqlConnection.connectionTest?.resolvedIp?.success || false,
-        dnsResolution: workflow.stepC_mysqlConnection.dnsResolution?.success || false,
-        resolvedFromNetworkInterface: workflow.stepC_mysqlConnection.dnsResolution?.fromNetworkInterface || false
+        success: mysql.success,
+        isLocalhost: mysql.dnsResolution?.isLocalhost || false,
+        usedResolvedIp: mysql.connectionTest?.resolvedIp?.success || false,
+        dnsResolution: mysql.dnsResolution?.success || false
       };
 
-      // Add recommendations if connection failed
-      if (!workflow.stepC_mysqlConnection.success) {
-        // Use detailed recommendations from Step D if available
-        if (workflow.stepD_errorMapping?.recommendations) {
-          summary.recommendations = workflow.stepD_errorMapping.recommendations;
-        } else {
-          summary.recommendations = this.mysqlStep.generateConnectionRecommendations(
-            workflow.stepC_mysqlConnection
-          );
-        }
+      // Add recommendations only if connection failed
+      if (!mysql.success && workflow.stepD_errorMapping?.recommendations) {
+        summary.recommendations = workflow.stepD_errorMapping.recommendations;
       }
-    }
-
-    // Add error mapping details if performed
-    if (workflow.stepD_errorMapping) {
-      summary.details.errorMappingDetails = {
-        success: workflow.stepD_errorMapping.success || false,
-        category: workflow.stepD_errorMapping.errorAnalysis?.category || 'unknown',
-        severity: workflow.stepD_errorMapping.errorAnalysis?.severity || 'unknown',
-        description: workflow.stepD_errorMapping.errorAnalysis?.description || 'No analysis available'
-      };
     }
 
     return summary;

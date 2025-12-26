@@ -1,20 +1,14 @@
 const winston = require('winston');
+const silentLogger = require('../utils/silentLogger');
 
 class DiagnosisStep {
   constructor(mysqlClient) {
     this.mysqlClient = mysqlClient;
-    this.logger = winston.createLogger({
-      level: 'info',
-      format: winston.format.combine(
-        winston.format.timestamp(),
-        winston.format.errors({ stack: true }),
-        winston.format.json()
-      ),
-      transports: [
-        new winston.transports.Console({
-          format: winston.format.simple()
-        })
-      ]
+    // Use silent logger in production for performance
+    this.logger = process.env.NODE_ENV === 'production' ? require('../utils/silentLogger') : winston.createLogger({
+      level: 'error',
+      format: winston.format.simple(),
+      transports: [new winston.transports.Console()]
     });
   }
 

@@ -122,24 +122,24 @@ async function findRelatedUnpaidInvoice(clientId, { domain, serviceId, domainId 
         
         // Match by service ID (for hosting/services)
         if (serviceId && itemRelId === String(serviceId)) {
-          console.log(`→ Found invoice #${id} with matching service ID ${serviceId} (type: ${itemType})`);
+          // Found invoice with matching service ID - no logging for performance
           return detail;
         }
         
         // Match by domain ID (for domain registrations)
         if (domainId && itemRelId === String(domainId)) {
-          console.log(`→ Found invoice #${id} with matching domain ID ${domainId} (type: ${itemType})`);
+          // Found invoice with matching domain ID - no logging for performance
           return detail;
         }
         
         // Fallback: Match by domain name in description
         if (domain && itemDescription.includes(String(domain).toLowerCase())) {
-          console.log(`→ Found invoice #${id} with domain "${domain}" in description`);
+          // Found invoice with domain in description - no logging for performance
           return detail;
         }
       }
     } catch (err) {
-      console.log(`→ Error checking invoice ${id}:`, err.message);
+      // Error checking invoice - no logging for performance
     }
   }
   

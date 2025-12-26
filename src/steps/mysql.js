@@ -1,20 +1,14 @@
 const winston = require('winston');
+const silentLogger = require('../utils/silentLogger');
 const MySQLClient = require('../lib/mysql');
 
 class MySQLStep {
   constructor() {
-    this.logger = winston.createLogger({
-      level: 'info',
-      format: winston.format.combine(
-        winston.format.timestamp(),
-        winston.format.errors({ stack: true }),
-        winston.format.json()
-      ),
-      transports: [
-        new winston.transports.Console({
-          format: winston.format.simple()
-        })
-      ]
+    // Use silent logger in production for performance
+    this.logger = process.env.NODE_ENV === 'production' ? require('../utils/silentLogger') : winston.createLogger({
+      level: 'error',
+      format: winston.format.simple(),
+      transports: [new winston.transports.Console()]
     });
     
     this.mysqlClient = new MySQLClient();
@@ -27,12 +21,12 @@ class MySQLStep {
     try {
       const dns = require('dns').promises;
       
-      this.logger.info(`Resolving hostname: ${hostname}`);
+      // Hostname resolution - no logging for performance
       
       // Handle localhost variations by trying to get the actual server IP
       const localhostVariations = ['localhost', '127.0.0.1', '::1'];
       if (localhostVariations.includes(hostname)) {
-        this.logger.info(`Localhost detected (${hostname}), attempting to resolve to actual server IP`);
+        // Localhost detection - no logging for performance
         
         try {
           // Try to get the actual hostname of the server
@@ -40,12 +34,12 @@ class MySQLStep {
           const serverHostname = os.hostname();
           
           if (serverHostname && serverHostname !== 'localhost') {
-            this.logger.info(`Attempting to resolve server hostname: ${serverHostname}`);
+            // Server hostname resolution - no logging for performance
             const addresses = await dns.resolve4(serverHostname);
             
             if (addresses && addresses.length > 0) {
               const resolvedIp = addresses[0];
-              this.logger.info(`Server hostname ${serverHostname} resolved to IP: ${resolvedIp}`);
+              // IP resolution - no logging for performance
               return {
                 success: true,
                 ip: resolvedIp,
@@ -62,7 +56,7 @@ class MySQLStep {
           const localhostAddresses = await dns.resolve4('localhost');
           if (localhostAddresses && localhostAddresses.length > 0) {
             const resolvedIp = localhostAddresses[0];
-            this.logger.info(`Localhost resolved to IP: ${resolvedIp}`);
+            // Localhost IP resolution - no logging for performance
             return {
               success: true,
               ip: resolvedIp,
@@ -86,7 +80,7 @@ class MySQLStep {
             for (const iface of interfaces) {
               // Look for IPv4 addresses that are not localhost
               if (iface.family === 'IPv4' && !iface.internal && iface.address !== '127.0.0.1') {
-                this.logger.info(`Using network interface IP: ${iface.address}`);
+                // Network interface - no logging for performance
                 return {
                   success: true,
                   ip: iface.address,
@@ -126,7 +120,7 @@ class MySQLStep {
       }
 
       const resolvedIp = addresses[0];
-      this.logger.info(`Hostname ${hostname} resolved to IP: ${resolvedIp}`);
+      // Hostname resolution - no logging for performance
       
       return {
         success: true,
@@ -150,7 +144,7 @@ class MySQLStep {
    */
   async testMySQLConnection(parsedConfig, dnsCheckResult = null) {
     try {
-      this.logger.info('=== Step C: Test MySQL Connection ===');
+      // MySQL connection test - no logging for performance
       
       if (!parsedConfig || !parsedConfig.success) {
         return {
@@ -209,27 +203,27 @@ class MySQLStep {
         };
       }
       
-      this.logger.info(`Localhost validation passed for host: ${config.host}`);
+      // Localhost validation - no logging for performance
       
       // Check if we have a resolved IP from Step A DNS check
       let resolvedIpFromDnsCheck = null;
       
       // Log DNS check result safely without winston interference
-      console.log('DNS Check Result:', JSON.stringify(dnsCheckResult, null, 2));
+      // console.log('DNS Check Result:', JSON.stringify(dnsCheckResult, null, 2));
       
       if (dnsCheckResult?.dnsInfo?.resolvedIps && dnsCheckResult.dnsInfo.resolvedIps.length > 0) {
         resolvedIpFromDnsCheck = dnsCheckResult.dnsInfo.resolvedIps[0];
-        this.logger.info(`Using resolved IP from Step A DNS check: ${resolvedIpFromDnsCheck}`);
+        // Using resolved IP from DNS check - no logging for performance
       } else {
-        console.log('No resolved IP available from Step A DNS check');
+        // console.log('No resolved IP available from Step A DNS check');
         if (dnsCheckResult) {
-          console.log('DNS check result structure:', {
-            passed: dnsCheckResult.passed,
-            hasDnsInfo: !!dnsCheckResult.dnsInfo,
-            dnsInfoKeys: dnsCheckResult.dnsInfo ? Object.keys(dnsCheckResult.dnsInfo) : null
-          });
+          // console.log('DNS check result structure:', {
+          //   passed: dnsCheckResult.passed,
+          //   hasDnsInfo: !!dnsCheckResult.dnsInfo,
+          //   dnsInfoKeys: dnsCheckResult.dnsInfo ? Object.keys(dnsCheckResult.dnsInfo) : null
+          // });
         } else {
-          console.log('DNS check result is null or undefined');
+          // console.log('DNS check result is null or undefined');
         }
       }
       
@@ -237,7 +231,7 @@ class MySQLStep {
       let connectionTestResolved = null;
       
       if (resolvedIpFromDnsCheck) {
-        this.logger.info(`Testing MySQL connection with DNS-resolved IP: ${resolvedIpFromDnsCheck}`);
+        // Testing MySQL connection with DNS-resolved IP - no logging for performance
         connectionTestResolved = await this.mysqlClient.testConnection(config, resolvedIpFromDnsCheck);
       } else {
         // If no resolved IP from DNS check, fail immediately

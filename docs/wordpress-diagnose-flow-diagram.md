@@ -3,7 +3,35 @@
 ## Overview
 The WordPress diagnose endpoint (`/wordpress/diagnose`) implements a comprehensive 4-step diagnostic workflow to analyze WordPress database connectivity issues.
 
-## Complete Flow Diagram
+## PlantUML Diagrams
+
+This documentation includes several PlantUML diagrams that provide different views of the workflow:
+
+### 1. High-Level Overview
+**File**: `wordpress-diagnostic-overview.puml`
+- Shows main decision points and escalation paths
+- Focuses on the four main steps (A, B, B2, C, D)
+- Includes escalation types and destinations
+
+### 2. Detailed Workflow
+**File**: `wordpress-diagnostic-detailed.puml`
+- Complete sequence diagram with all participants
+- Shows internal method calls and API interactions
+- Includes error handling and decision flows
+
+### 3. Main Process Flow
+**File**: `wordpress-diagnostic-workflow.puml`
+- Activity diagram showing the complete process
+- Detailed decision points and error conditions
+- Shows all possible exit points and escalations
+
+### 4. Database User Management Subprocess
+**File**: `database-user-management-flow.puml`
+- Focused on the complex user management logic
+- Shows user creation, privilege assignment, and wp-config updates
+- Includes all validation and error handling steps
+
+## Complete Flow Diagram (Mermaid)
 
 ```mermaid
 flowchart TD

@@ -127,7 +127,7 @@ class MySQLClient {
       };
     }
     
-    this.logger.info(`Database host '${host}' is localhost - proceeding with connection test`);
+    // Localhost validation - no logging for performance
     
     return {
       valid: true,
@@ -564,8 +564,8 @@ class MySQLClient {
         connectionConfig.port = Number(config.port);
       }
       
-      // Log connection config for debugging
-      console.log('Connection Config (Promise):', JSON.stringify(connectionConfig, null, 2));
+      // Log connection config for debugging (disabled for performance)
+      // console.log('Connection Config (Promise):', JSON.stringify(connectionConfig, null, 2));
       
       let connection;
       try {
@@ -575,7 +575,8 @@ class MySQLClient {
         // Test the connection with a simple query
         await connection.execute('SELECT 1 as test');
         
-        this.logger.info("Database credentials are valid (Promise)");
+        // Silent credentials validation logging in production for performance
+        // this.logger.info("Database credentials are valid (Promise)");
         
         // Close the connection
         await connection.end();
@@ -703,8 +704,8 @@ class MySQLClient {
           connectionConfig.port = Number(config.port);
         }
         
-        // Log connection config for debugging (no masking)
-        console.log('Connection Config:', JSON.stringify(connectionConfig, null, 2));
+        // Log connection config for debugging (disabled for performance)
+        // console.log('Connection Config:', JSON.stringify(connectionConfig, null, 2));
         
         const connection = mysql.createConnection(connectionConfig);
         
@@ -729,7 +730,8 @@ class MySQLClient {
               }
             });
           } else {
-            this.logger.info("Database credentials are valid");
+            // Silent credentials validation logging in production for performance
+            // this.logger.info("Database credentials are valid");
             connection.end();
 
             resolve({

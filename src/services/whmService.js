@@ -19,12 +19,15 @@ class WHMService {
     this.serverIPCache = new Map();
     this.cacheExpiry = 5 * 60 * 1000; // 5 minutes
     
-    console.log('🔧 WHM Service initialized:', {
-      username: this.username,
-      serversConfigured: Object.keys(this.serverApiKeys).length,
-      sslVerify: this.verifySSL,
-      servers: Object.keys(this.serverApiKeys)
-    });
+    // Silent initialization in production
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('🔧 WHM Service initialized:', {
+        username: this.username,
+        serversConfigured: Object.keys(this.serverApiKeys).length,
+        sslVerify: this.verifySSL,
+        servers: []
+      });
+    }
   }
 
   /**
@@ -72,7 +75,10 @@ class WHMService {
     if (serverName.includes('win2')) return 'cp2';
     // Add more mappings as needed
     
-    console.log(`⚠️ Could not extract server name from WHMCS format: "${whmcsServerName}"`);
+    // Silent logging in production
+    if (process.env.NODE_ENV !== 'production') {
+      console.log(`⚠️ Could not extract server name from WHMCS format: "${whmcsServerName}"`);
+    }
     return null;
   }
 
@@ -138,7 +144,10 @@ class WHMService {
    */
   async callServerAPI(serverName, function_name, params = {}, apiVersion = '2', method = 'POST') {
     try {
-      console.log(`🔧 WHM API Call [${serverName.toUpperCase()}]: ${function_name}`, Object.keys(params));
+      // Silent API logging in production
+      if (process.env.NODE_ENV !== 'production') {
+        console.log(`🔧 WHM API Call [${serverName.toUpperCase()}]: ${function_name}`, Object.keys(params));
+      }
       
       // Special debug logging for removezonerecord calls
       if (function_name === 'removezonerecord') {
@@ -191,7 +200,10 @@ class WHMService {
         throw new Error(response.data.metadata.reason || 'WHM API call failed');
       }
       
-      console.log(`✅ WHM API Success [${serverName.toUpperCase()}]: ${function_name}`);
+      // Silent success logging in production
+      if (process.env.NODE_ENV !== 'production') {
+        console.log(`✅ WHM API Success [${serverName.toUpperCase()}]: ${function_name}`);
+      }
       
       // Special success logging for removezonerecord calls
       if (function_name === 'removezonerecord') {

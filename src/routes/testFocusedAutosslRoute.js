@@ -27,11 +27,7 @@ router.post('/', async (req, res) => {
       });
     }
     
-    console.log(`🧪 Testing Focused AutoSSL Management Method`);
-    console.log(`→ Server: ${serverName.toUpperCase()}`);
-    console.log(`→ Username: ${username}`);
-    console.log(`→ Domain: ${domain}`);
-    console.log(`→ Method: focusedAutoSSLManagement (new implementation)`);
+    // Testing Focused AutoSSL Management Method - no logging for performance
     
     const whmService = require('../services/whmService');
     
@@ -40,15 +36,7 @@ router.post('/', async (req, res) => {
     const result = await whmService.focusedAutoSSLManagement(serverName, username, domain, {});
     const executionTime = Date.now() - startTime;
     
-    console.log(`\n📊 Focused AutoSSL Test Results:`);
-    console.log(`→ Execution Time: ${executionTime}ms`);
-    console.log(`→ Success: ${result.success ? '✅' : '❌'}`);
-    console.log(`→ Method: ${result.method}`);
-    console.log(`→ Approach: ${result.approach}`);
-    console.log(`→ AutoSSL Triggered: ${result.autoSSLTriggered ? '✅' : '❌'}`);
-    console.log(`→ Domains Removed: ${result.workflowAnalysis?.domainsRemoved || 0}`);
-    console.log(`→ Workflow Success: ${result.workflowAnalysis?.workflowSuccess ? '✅' : '❌'}`);
-    console.log(`→ Complete Success: ${result.workflowAnalysis?.completeSuccess ? '✅' : '❌'}`);
+    // Focused AutoSSL Test Results - no logging for performance
     
     // Return comprehensive test results
     res.json({

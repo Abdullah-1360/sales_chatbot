@@ -1,36 +1,61 @@
 const { getClientsProducts, getClientsDetails } = require('./whmcsService');
 const whmService = require('./whmService');
-const winston = require('winston');
+
+// Optimized logger for credential resolver - silent in production
+const logger = (() => {
+  const winston = require('winston');
+  
+  // Silent logger in production for maximum performance
+  if (process.env.NODE_ENV === 'production') {
+    return {
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+      debug: () => {}
+    };
+  }
+  
+  // Minimal logging in development
+  return winston.createLogger({
+    level: 'error', // Only log errors in development
+    format: winston.format.simple(),
+    transports: [
+      new winston.transports.Console({
+        silent: process.env.NODE_ENV === 'test'
+      })
+    ]
+  });
+})();
+
+// Cache for client lookups and server info
+const clientCache = new Map();
+const serverCache = new Map();
+const dnsCache = new Map();
+const CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+
+// Cache cleanup
+setInterval(() => {
+  const now = Date.now();
+  [clientCache, serverCache, dnsCache].forEach(cache => {
+    for (const [key, value] of cache.entries()) {
+      if (now - value.timestamp > CACHE_TTL) {
+        cache.delete(key);
+      }
+    }
+  });
+}, 60000);
 
 class CpanelCredentialResolver {
   constructor() {
     this.whmService = whmService;
-    this.logger = winston.createLogger({
-      level: 'info',
-      format: winston.format.combine(
-        winston.format.timestamp(),
-        winston.format.errors({ stack: true }),
-        winston.format.json()
-      ),
-      transports: [
-        new winston.transports.Console({
-          format: winston.format.simple()
-        })
-      ]
-    });
+    this.logger = logger;
   }
 
   /**
-   * Resolve cPanel credentials from domain and client identification
-   * @param {string} domain - Domain name
-   * @param {string} email - Client email (optional)
-   * @param {string} phone - Client phone (optional)
-   * @returns {Promise<object>} - Resolved credentials and server info
+   * Optimized credential resolution with minimal logging
    */
   async resolveCpanelCredentials(domain, email = null, phone = null) {
     try {
-      this.logger.info(`Resolving cPanel credentials for domain: ${domain}`);
-      
       const result = {
         success: false,
         domain,
@@ -40,36 +65,54 @@ class CpanelCredentialResolver {
         error: null
       };
 
-      // Step 1: Find the client by email or phone
+      // Step 1: Parallel client lookup with caching
       let clientId = null;
+      const clientPromises = [];
+      
       if (email) {
-        this.logger.info(`Looking up client by email: ${email}`);
-        const clientDetails = await this.findClientByEmail(email);
-        if (clientDetails) {
-          clientId = clientDetails.id;
-          result.clientInfo = clientDetails;
-          this.logger.info(`Found client by email: ${clientId}`);
+        const cacheKey = `client:email:${email}`;
+        const cached = clientCache.get(cacheKey);
+        
+        if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
+          clientId = cached.data.id;
+          result.clientInfo = cached.data;
+        } else {
+          clientPromises.push(
+            this.findClientByEmail(email).then(clientDetails => {
+              if (clientDetails) {
+                clientCache.set(cacheKey, {
+                  data: clientDetails,
+                  timestamp: Date.now()
+                });
+                return clientDetails;
+              }
+              return null;
+            })
+          );
         }
       }
 
-      if (!clientId && phone) {
-        this.logger.info(`Looking up client by phone: ${phone}`);
-        const clientDetails = await this.findClientByPhone(phone);
-        if (clientDetails) {
-          clientId = clientDetails.id;
-          result.clientInfo = clientDetails;
-          this.logger.info(`Found client by phone: ${clientId}`);
+      if (phone && !clientId) {
+        clientPromises.push(this.findClientByPhone(phone));
+      }
+
+      // Execute parallel client lookups
+      if (clientPromises.length > 0) {
+        const clientResults = await Promise.all(clientPromises);
+        const foundClient = clientResults.find(client => client !== null);
+        
+        if (foundClient) {
+          clientId = foundClient.id;
+          result.clientInfo = foundClient;
         }
       }
 
+      // Fallback to domain lookup if no client found
       if (!clientId) {
-        // Try to find client by domain ownership
-        this.logger.info(`Looking up client by domain ownership: ${domain}`);
         const clientDetails = await this.findClientByDomain(domain);
         if (clientDetails) {
           clientId = clientDetails.id;
           result.clientInfo = clientDetails;
-          this.logger.info(`Found client by domain ownership: ${clientId}`);
         }
       }
 
@@ -78,59 +121,60 @@ class CpanelCredentialResolver {
         return result;
       }
 
-      // Step 2: Find hosting service for the domain
-      this.logger.info(`Finding hosting service for domain: ${domain}`);
-      const hostingService = await this.findHostingServiceForDomain(clientId, domain);
+      // Step 2: Find hosting service (with caching)
+      const hostingCacheKey = `hosting:${clientId}:${domain}`;
+      let hostingService = null;
+      
+      const cachedHosting = clientCache.get(hostingCacheKey);
+      if (cachedHosting && (Date.now() - cachedHosting.timestamp < CACHE_TTL)) {
+        hostingService = cachedHosting.data;
+      } else {
+        hostingService = await this.findHostingServiceForDomain(clientId, domain);
+        if (hostingService) {
+          clientCache.set(hostingCacheKey, {
+            data: hostingService,
+            timestamp: Date.now()
+          });
+        }
+      }
       
       if (!hostingService) {
         result.error = `No hosting service found for domain: ${domain}`;
         return result;
       }
 
-      this.logger.info(`Found hosting service: ${hostingService.id} on server: ${hostingService.server || 'undefined'}`);
-      
-      // Enhanced logging for debugging server field issues
-      if (!hostingService.server || hostingService.server === 'undefined') {
-        this.logger.warn(`WHMCS hosting service has undefined server field:`, {
-          serviceId: hostingService.id,
-          domain: hostingService.domain,
-          server: hostingService.server,
-          serverid: hostingService.serverid,
-          servername: hostingService.servername,
-          servertype: hostingService.servertype,
-          status: hostingService.status,
-          product: hostingService.product
-        });
-      }
-
-      // Step 3: Get server information and cPanel credentials
-      const serverInfo = await this.getServerInfo(hostingService.server, domain, clientId);
+      // Step 3: Get server information (with caching)
+      const serverInfo = await this.getServerInfoCached(hostingService.server, domain, clientId);
       if (!serverInfo) {
-        result.error = `Server information not found for: ${hostingService.server}. Unable to resolve server using fallback methods.`;
-        result.details = {
-          domain,
-          clientLookup: 'found',
-          serverLookup: 'not_found',
-          hostingService: {
-            id: hostingService.id,
-            server: hostingService.server,
-            serverid: hostingService.serverid,
-            servername: hostingService.servername
-          }
-        };
+        result.error = `Server information not found for: ${hostingService.server}`;
         return result;
       }
 
       result.serverInfo = serverInfo;
 
-      // Step 5: Get cPanel username from WHM (password setting disabled)
-      const cpanelUsername = await this.getCpanelUsername(domain, serverInfo.serverName);
+      // Step 4: Get cPanel username (with caching)
+      const usernameCacheKey = `username:${domain}:${serverInfo.serverName}`;
+      let cpanelUsername = null;
+      
+      const cachedUsername = serverCache.get(usernameCacheKey);
+      if (cachedUsername && (Date.now() - cachedUsername.timestamp < CACHE_TTL)) {
+        cpanelUsername = cachedUsername.data;
+      } else {
+        cpanelUsername = await this.getCpanelUsername(domain, serverInfo.serverName);
+        if (cpanelUsername) {
+          serverCache.set(usernameCacheKey, {
+            data: cpanelUsername,
+            timestamp: Date.now()
+          });
+        }
+      }
+      
       if (!cpanelUsername) {
         result.error = `cPanel username not found for domain: ${domain}`;
         return result;
       }
 
-      // Note: Password setting has been disabled for security reasons
+      // Build credentials object
       result.cpanelCredentials = {
         host: serverInfo.hostname,
         port: 2083,
@@ -139,7 +183,6 @@ class CpanelCredentialResolver {
       };
 
       result.success = true;
-      this.logger.info(`Successfully resolved cPanel credentials for domain: ${domain}`);
       
       return result;
 
@@ -174,7 +217,7 @@ class CpanelCredentialResolver {
       
       return null;
     } catch (error) {
-      this.logger.warn(`Error finding client by email: ${error.message}`);
+      // Silent error handling in production
       return null;
     }
   }
@@ -184,12 +227,9 @@ class CpanelCredentialResolver {
    */
   async findClientByPhone(phone) {
     try {
-      // WHMCS doesn't have direct phone search, so we'll need to implement
-      // a custom search or use a different approach
-      this.logger.warn('Phone-based client lookup not yet implemented');
+      // WHMCS doesn't have direct phone search
       return null;
     } catch (error) {
-      this.logger.warn(`Error finding client by phone: ${error.message}`);
       return null;
     }
   }
@@ -199,18 +239,15 @@ class CpanelCredentialResolver {
    */
   async findClientByDomain(domain) {
     try {
-      // This would require searching through all clients' products
-      // For now, we'll return null and rely on email/phone lookup
-      this.logger.warn('Domain-based client lookup not yet implemented');
+      // Domain-based client lookup not implemented
       return null;
     } catch (error) {
-      this.logger.warn(`Error finding client by domain: ${error.message}`);
       return null;
     }
   }
 
   /**
-   * Find hosting service for a specific domain
+   * Optimized hosting service lookup with reduced logging
    */
   async findHostingServiceForDomain(clientId, domain) {
     try {
@@ -224,30 +261,12 @@ class CpanelCredentialResolver {
         ? products.products.product 
         : [products.products.product];
 
-      // Look for hosting products that match the domain
+      // Fast lookup for hosting products
       for (const product of productList) {
         if (product.groupname && product.groupname.toLowerCase().includes('hosting')) {
-          // Check if domain matches
           if (product.domain === domain || 
               product.dedicatedip === domain ||
               (product.customfields && this.checkCustomFieldsForDomain(product.customfields, domain))) {
-            
-            this.logger.info(`Found hosting service: ${product.id} on server: ${product.server || 'undefined'}`);
-            
-            // Enhanced logging for debugging server field issues
-            if (!product.server || product.server === 'undefined') {
-              this.logger.warn(`WHMCS product has undefined server field:`, {
-                productId: product.id,
-                domain: product.domain,
-                server: product.server,
-                serverid: product.serverid,
-                servername: product.servername,
-                servertype: product.servertype,
-                status: product.status,
-                productname: product.productname,
-                groupname: product.groupname
-              });
-            }
             
             return {
               id: product.id,
@@ -256,23 +275,12 @@ class CpanelCredentialResolver {
               serverid: product.serverid,
               status: product.status,
               product: product.productname,
-              // Add additional fields for debugging
               servername: product.servername,
               servertype: product.servertype,
               dedicatedip: product.dedicatedip
             };
           }
         }
-      }
-
-      // If no exact match, look for any hosting product for this client
-      // This can help identify if the domain is associated differently
-      const anyHostingProduct = productList.find(product => 
-        product.groupname && product.groupname.toLowerCase().includes('hosting')
-      );
-
-      if (anyHostingProduct) {
-        this.logger.warn(`No exact domain match found, but client has hosting product: ${anyHostingProduct.id} for domain: ${anyHostingProduct.domain}`);
       }
 
       return null;
@@ -300,49 +308,31 @@ class CpanelCredentialResolver {
   }
 
   /**
-   * Get server information from server name with enhanced fallback logic
+   * Optimized server info resolution with reduced fallback attempts
    */
   async getServerInfo(serverName, domain = null, clientId = null) {
     try {
       if (!serverName || serverName === 'undefined' || serverName.trim() === '') {
-        this.logger.warn('Server name is empty or undefined - attempting fallback methods');
-        
-        // Fallback 1: Try to determine server from domain DNS resolution
+        // Fast fallback: try DNS resolution first (most likely to succeed)
         if (domain) {
-          this.logger.info(`Attempting to determine server from domain DNS: ${domain}`);
           const serverFromDNS = await this.getServerFromDomainDNS(domain);
           if (serverFromDNS) {
-            this.logger.info(`Successfully determined server from DNS: ${serverFromDNS.serverName}`);
             return serverFromDNS;
           }
         }
         
-        // Fallback 2: Try to get server from WHMCS servers list
-        if (clientId) {
-          this.logger.info(`Attempting to determine server from WHMCS servers for client: ${clientId}`);
-          const serverFromWHMCS = await this.getServerFromWHMCSList(clientId);
-          if (serverFromWHMCS) {
-            this.logger.info(`Successfully determined server from WHMCS: ${serverFromWHMCS.serverName}`);
-            return serverFromWHMCS;
-          }
-        }
-        
-        // Fallback 3: Use default server (first available server)
-        this.logger.warn('Using default server as fallback');
+        // Fallback to default server
         const defaultServer = await this.getDefaultServer();
         if (defaultServer) {
-          this.logger.info(`Using default server: ${defaultServer.serverName}`);
           return defaultServer;
         }
         
-        this.logger.error('All server resolution methods failed');
         return null;
       }
 
-      // Extract server name from WHMCS format
+      // Fast path for valid server names
       const normalizedServerName = this.whmService.extractServerNameFromWHMCS(serverName);
       if (!normalizedServerName) {
-        this.logger.warn(`Could not normalize server name: ${serverName}`);
         return null;
       }
 
@@ -360,32 +350,73 @@ class CpanelCredentialResolver {
   }
 
   /**
-   * Attempt to determine server from domain DNS resolution
+   * Optimized server info resolution with caching
+   */
+  async getServerInfoCached(serverName, domain = null, clientId = null) {
+    const cacheKey = `serverinfo:${serverName}:${domain || 'nodomain'}`;
+    
+    // Check cache first
+    const cached = serverCache.get(cacheKey);
+    if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
+      return cached.data;
+    }
+    
+    // Get server info
+    const serverInfo = await this.getServerInfo(serverName, domain, clientId);
+    
+    // Cache result
+    if (serverInfo) {
+      serverCache.set(cacheKey, {
+        data: serverInfo,
+        timestamp: Date.now()
+      });
+    }
+    
+    return serverInfo;
+  }
+
+  /**
+   * Optimized DNS resolution with caching
    */
   async getServerFromDomainDNS(domain) {
+    const cacheKey = `dns:${domain}`;
+    
+    // Check cache first
+    const cached = dnsCache.get(cacheKey);
+    if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
+      return cached.data;
+    }
+    
     try {
       const dns = require('dns').promises;
       
-      // Resolve domain to IP address
-      const addresses = await dns.resolve4(domain);
+      // Set timeout for DNS resolution
+      const addresses = await Promise.race([
+        dns.resolve4(domain),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('DNS timeout')), 5000)
+        )
+      ]);
+      
       if (!addresses || addresses.length === 0) {
         return null;
       }
       
       const domainIP = addresses[0];
-      this.logger.info(`Domain ${domain} resolves to IP: ${domainIP}`);
-      
-      // Get available servers and their IPs
       const availableServers = this.whmService.getAvailableServers();
       
-      // Try to match IP to server
-      for (const serverName of availableServers) {
+      // Parallel DNS resolution for servers
+      const serverPromises = availableServers.map(async (serverName) => {
         try {
           const hostname = this.whmService.getServerHostname(serverName);
-          const serverAddresses = await dns.resolve4(hostname);
+          const serverAddresses = await Promise.race([
+            dns.resolve4(hostname),
+            new Promise((_, reject) => 
+              setTimeout(() => reject(new Error('Server DNS timeout')), 3000)
+            )
+          ]);
           
           if (serverAddresses.includes(domainIP)) {
-            this.logger.info(`Matched domain IP ${domainIP} to server ${serverName} (${hostname})`);
             return {
               serverName: serverName,
               hostname: hostname,
@@ -394,15 +425,24 @@ class CpanelCredentialResolver {
               domainIP: domainIP
             };
           }
-        } catch (serverDNSError) {
-          // Continue to next server if DNS resolution fails
-          continue;
+        } catch (error) {
+          // Continue to next server
         }
-      }
+        return null;
+      });
       
-      return null;
+      const results = await Promise.all(serverPromises);
+      const match = results.find(result => result !== null);
+      
+      // Cache result (even if null)
+      dnsCache.set(cacheKey, {
+        data: match || null,
+        timestamp: Date.now()
+      });
+      
+      return match || null;
+      
     } catch (error) {
-      this.logger.warn(`DNS resolution failed for domain ${domain}: ${error.message}`);
       return null;
     }
   }
@@ -446,7 +486,6 @@ class CpanelCredentialResolver {
       
       return null;
     } catch (error) {
-      this.logger.warn(`Failed to get server from WHMCS list: ${error.message}`);
       return null;
     }
   }
@@ -471,7 +510,6 @@ class CpanelCredentialResolver {
         isDefault: true
       };
     } catch (error) {
-      this.logger.warn(`Failed to get default server: ${error.message}`);
       return null;
     }
   }
@@ -495,12 +533,8 @@ class CpanelCredentialResolver {
   async getCpanelPassword(username, serverName) {
     try {
       // Password setting logic has been removed
-      // Return null to indicate no password is available
-      this.logger.info(`Password retrieval skipped for user: ${username} (password setting disabled)`);
       return null;
-
     } catch (error) {
-      this.logger.error(`Error in cPanel password method: ${error.message}`);
       return null;
     }
   }

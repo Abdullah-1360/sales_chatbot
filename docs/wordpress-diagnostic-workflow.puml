@@ -1,0 +1,144 @@
+@startuml WordPress Diagnostic Workflow
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam handwritten false
+skinparam shadowing false
+skinparam roundcorner 10
+skinparam packageStyle rectangle
+
+title WordPress Database Diagnostic Workflow
+
+start
+
+:Initialize Diagnostic Manager;
+:Extract server credentials;
+:Create cPanel client;
+
+partition "Step A: Quick Guards" {
+  if (Skip Guards?) then (no)
+    if (Client ID provided?) then (yes)
+      :Check WHMCS Service State;
+      if (Service Active?) then (no)
+        :Escalate to Billing;
+        stop
+      endif
+    endif
+    
+    :Check DNS Resolution;
+    if (DNS Resolved?) then (no)
+      :Escalate User Notification;
+      stop
+    endif
+  else (yes)
+    :Skip Guards;
+  endif
+}
+
+partition "Step B: Parse Configuration" {
+  :Read wp-config.php from cPanel;
+  if (File Read Success?) then (no)
+    :Escalate Technical - Config Read Failed;
+    stop
+  endif
+  
+  :Parse Database Constants;
+  :Extract DB credentials;
+  
+  :Validate Localhost Requirement;
+  if (Host is localhost?) then (no)
+    :Escalate Configuration Error;
+    note right: Only localhost MySQL supported
+    stop
+  endif
+}
+
+partition "Step B2: Database User Management" {
+  :Check Database and User Status;
+  
+  if (Check Failed?) then (yes)
+    :Return Check Failed;
+    stop
+  endif
+  
+  if (Database Not Found?) then (yes)
+    :Escalate Technical - Database Missing;
+    stop
+  endif
+  
+  if (Configuration Valid?) then (yes)
+    :No Action Needed;
+  else (User Not in Database)
+    :Generate Unique Username;
+    note right: Format: cpanel_user_wpXXXX
+    
+    :Generate Strong Password;
+    
+    :Check if Generated User Exists;
+    if (User Exists?) then (yes)
+      :Skip User Creation;
+    else (no)
+      :Create MySQL User via cPanel API;
+      if (Creation Success?) then (no)
+        :Return Creation Failed;
+        stop
+      endif
+    endif
+    
+    :Assign User Privileges to Database;
+    if (Assignment Success?) then (no)
+      :Return Assignment Failed;
+      stop
+    endif
+    
+    :Update wp-config.php with New Credentials;
+    if (Update Success?) then (no)
+      :Return Update Failed;
+      stop
+    endif
+    
+    :Update Final Config with New Credentials;
+  endif
+}
+
+partition "Step C: MySQL Connection Test" {
+  :Use Final Configuration;
+  note right: May include updated credentials
+  
+  :Test MySQL Connection with mysql2/promise;
+  
+  if (Connection Success?) then (yes)
+    :Log Connection Success;
+  else (no)
+    :Log Connection Failure;
+    :Capture Error Details;
+  endif
+}
+
+partition "Step D: Error Mapping & Analysis" {
+  :Analyze Connection Result;
+  
+  if (Connection Failed?) then (yes)
+    :Map MySQL Error Codes;
+    note right
+      - ER_ACCESS_DENIED_ERROR (1045)
+      - ER_DBACCESS_DENIED_ERROR (1044)
+      - ER_BAD_DB_ERROR (1049)
+      - ECONNREFUSED
+      - ETIMEDOUT
+      - etc.
+    end note
+    
+    :Generate User-Friendly Diagnosis;
+    :Provide Recommendations;
+    :Escalate Technical - MySQL Failed;
+    stop
+  endif
+}
+
+:Generate Success Summary;
+:Calculate Duration;
+:Return Diagnostic Result;
+
+stop
+
+@enduml

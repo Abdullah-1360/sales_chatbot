@@ -288,13 +288,15 @@ class CpanelClient {
         })
       };
 
-      this.logger.info(`Making cPanel UAPI call: ${module}/${function_name} for user: ${this.username}`);
+      // Silent UAPI logging in production for performance
+      // this.logger.info(`Making cPanel UAPI call: ${module}/${function_name} for user: ${this.username}`);
       
       const response = await axios(config);
       
-      this.logger.info(`UAPI Response status: ${response.status}`);
-      this.logger.info(`UAPI Response metadata: ${JSON.stringify(response.data?.metadata, null, 2)}`);
-      this.logger.info(`UAPI Response data: ${JSON.stringify(response.data?.data, null, 2)}`);
+      // Silent UAPI response logging in production for performance
+      // this.logger.info(`UAPI Response status: ${response.status}`);
+      // this.logger.info(`UAPI Response metadata: ${JSON.stringify(response.data?.metadata, null, 2)}`);
+      // this.logger.info(`UAPI Response data: ${JSON.stringify(response.data?.data, null, 2)}`);
       
       // Check the response format as per your example
       if (response.data && response.data.metadata && response.data.metadata.result === 1) {
@@ -331,7 +333,8 @@ class CpanelClient {
       });
       
       if (fileData && fileData.content) {
-        this.logger.info(`Successfully read wp-config.php (${fileData.content.length} characters)`);
+        // Silent file read logging in production for performance
+        // this.logger.info(`Successfully read wp-config.php (${fileData.content.length} characters)`);
         return {
           content: fileData.content,
           path: fileData.path,

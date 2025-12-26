@@ -1,19 +1,13 @@
 const winston = require('winston');
+const silentLogger = require('../utils/silentLogger');
 
 class ParserStep {
   constructor() {
-    this.logger = winston.createLogger({
-      level: 'info',
-      format: winston.format.combine(
-        winston.format.timestamp(),
-        winston.format.errors({ stack: true }),
-        winston.format.json()
-      ),
-      transports: [
-        new winston.transports.Console({
-          format: winston.format.simple()
-        })
-      ]
+    // Use silent logger in production for performance
+    this.logger = process.env.NODE_ENV === 'production' ? silentLogger : winston.createLogger({
+      level: 'error',
+      format: winston.format.simple(),
+      transports: [new winston.transports.Console()]
     });
   }
 
@@ -22,7 +16,7 @@ class ParserStep {
    */
   parseWpConfig(wpConfigContent) {
     try {
-      this.logger.info('Parsing wp-config.php for database credentials');
+      // Parsing wp-config.php - no logging for performance
       
       const config = {
         DB_NAME: null,
@@ -74,9 +68,8 @@ class ParserStep {
         tablePrefix: config.table_prefix || 'wp_'
       };
 
-      // Log parsed config (with masked password)
-      const logConfig = { ...parsedConfig, password: '***MASKED***' };
-      this.logger.info(`Parsed database configuration: ${JSON.stringify(logConfig)}`);
+      // Silent config logging in production (with masked password)
+      // Parsed database configuration - no logging for performance
 
       return {
         success: true,
@@ -142,10 +135,7 @@ class ParserStep {
       validation.warnings.push('Using default table prefix "wp_" (security risk)');
     }
 
-    this.logger.info(`Database configuration validation: ${validation.valid ? 'VALID' : 'INVALID'}`);
-    if (validation.issues.length > 0) {
-      this.logger.warn(`Validation issues: ${validation.issues.join(', ')}`);
-    }
+    // Database configuration validation - no logging for performance
     if (validation.warnings.length > 0) {
       this.logger.warn(`Validation warnings: ${validation.warnings.join(', ')}`);
     }
@@ -158,7 +148,7 @@ class ParserStep {
    */
   async extractDatabaseConfig(cpanelClient, dir = 'public_html', file = 'wp-config.php') {
     try {
-      this.logger.info(`Extracting database configuration from: ${dir}/${file}`);
+      // Extracting database configuration - no logging for performance
       
       // Read wp-config.php content using the new UAPI format
       const wpConfigData = await cpanelClient.readWpConfig(dir, file);

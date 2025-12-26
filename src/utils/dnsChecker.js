@@ -228,7 +228,7 @@ async function getCurrentServerIPs() {
     const serverInfo = await getCurrentServerInfo();
     return serverInfo.serverIPs || [];
   } catch (error) {
-    console.log('⚠️ Failed to get server IPs from cache:', error.message);
+    // Failed to get server IPs - no logging for performance
     return [];
   }
 }
@@ -241,7 +241,7 @@ async function getCurrentMailServers() {
     const serverInfo = await getCurrentServerInfo();
     return serverInfo.mailServers || [];
   } catch (error) {
-    console.log('⚠️ Failed to get mail servers from cache:', error.message);
+    // Failed to get mail servers - no logging for performance
     return [];
   }
 }
@@ -256,7 +256,7 @@ async function getCurrentNameservers() {
     
     // If no nameservers from cache, return default hostbreak.com nameservers
     if (nameservers.length === 0) {
-      console.log('⚠️ No nameservers from cache, using default hostbreak.com nameservers');
+      // No nameservers from cache - no logging for performance
       return [
         'ns1.hostbreak.com',
         'ns2.hostbreak.com', 
@@ -269,7 +269,7 @@ async function getCurrentNameservers() {
     
     return nameservers;
   } catch (error) {
-    console.log('⚠️ Failed to get nameservers from cache:', error.message);
+    // Failed to get nameservers - no logging for performance
     // Return default nameservers as fallback
     return [
       'ns1.hostbreak.com',
@@ -311,25 +311,25 @@ async function getCurrentServerInfo() {
     // Import here to avoid circular dependency
     const { getServerDataOptimized } = require('../services/mongoServerService');
     
-    console.log('📦 Getting server information from MongoDB cache');
+    // Server information loading - no logging for performance
     const serverData = await getServerDataOptimized();
     
-    console.log(`→ Server info loaded: ${serverData.serverIPs.length} IPs, ${serverData.mailServers.length} mail servers, ${serverData.nameservers.length} nameservers (source: ${serverData.source})`);
+    // Server info loaded - no logging for performance
     
     return serverData;
     
   } catch (error) {
-    console.log('⚠️ Failed to get server info from MongoDB cache:', error.message);
+    // Failed to get server info - no logging for performance
     
     // Fallback to in-memory cache if available
     const now = Date.now();
     if (DYNAMIC_SERVER_INFO && LAST_SERVER_UPDATE && (now - LAST_SERVER_UPDATE) < SERVER_CACHE_TTL) {
-      console.log('→ Using in-memory cached server info as fallback');
+      // Using in-memory cached server info as fallback - no logging for performance
       return DYNAMIC_SERVER_INFO;
     }
     
     // No static fallback - return empty arrays if cache fails
-    console.log('→ No server data available - cache and WHMCS both failed');
+    // No server data available - no logging for performance
     return {
       serverIPs: [],
       mailServers: [],
@@ -346,7 +346,7 @@ async function getCurrentServerInfo() {
  * @returns {Object} Complete DNS record information with workflow-based analysis
  */
 async function performComprehensiveDNSLookup(domain) {
-  console.log(`🔍 Performing comprehensive DNS lookup for: ${domain}`);
+    // DNS lookup - no logging for performance
   
   const results = {
     domain: domain,
@@ -377,7 +377,7 @@ async function performComprehensiveDNSLookup(domain) {
   try {
     const nsRecords = await dns.resolveNs(domain);
     results.records.NS = nsRecords;
-    console.log(`→ NS records:`, nsRecords);
+    // NS records - no logging for performance
     
     // Check if NS records match our nameservers (get from MongoDB cache)
     const normalizedNS = nsRecords.map(ns => ns.toLowerCase().replace(/\.$/, ''));
@@ -393,12 +393,12 @@ async function performComprehensiveDNSLookup(domain) {
     results.serverMatches.nsRecordsMatchOurServers = matchingNSRecords.length > 0;
     
     if (matchingNSRecords.length > 0) {
-      console.log(`✅ NS records match our servers:`, matchingNSRecords);
+      // NS records match - no logging for performance
     } else {
-      console.log(`❌ NS records don't match our servers`);
+      // NS records don't match - no logging for performance
     }
   } catch (error) {
-    console.log(`→ NS record lookup failed:`, error.message);
+    // NS record lookup failed - no logging for performance
     results.errors.NS = error.message;
   }
   
@@ -406,7 +406,7 @@ async function performComprehensiveDNSLookup(domain) {
   try {
     const aRecords = await dns.resolve4(domain);
     results.records.A = aRecords;
-    console.log(`→ A records:`, aRecords);
+    // A records - no logging for performance
     
     // Check if A records match our server IPs (dynamic from WHMCS)
     const ourServerIPs = await getCurrentServerIPs();
@@ -415,12 +415,12 @@ async function performComprehensiveDNSLookup(domain) {
     results.serverMatches.aRecordsMatchOurServers = matchingARecords.length > 0;
     
     if (matchingARecords.length > 0) {
-      console.log(`✅ A records match our servers:`, matchingARecords);
+      // A records match - no logging for performance
     } else {
-      console.log(`❌ A records don't match our servers`);
+      // A records don't match - no logging for performance
     }
   } catch (error) {
-    console.log(`→ A record lookup failed:`, error.message);
+    // A record lookup failed - no logging for performance
     results.errors.A = error.message;
   }
   
@@ -440,7 +440,7 @@ async function performComprehensiveDNSLookup(domain) {
     results.workflow.actionRequired = 'check_mx_records';
     results.workflow.registrar = detectedRegistrar;
     results.workflow.message = `Your website points to our servers (${results.serverMatches.matchingARecords.join(', ')}) but your nameservers are managed by ${registrarName}. Please check and update your MX records at ${registrarName} to ensure email delivery works correctly.`;
-    console.log(`🚨 WORKFLOW: A record matches but NS doesn't - recommend checking MX at ${registrarName}`);
+    // Workflow logging disabled for performance
   } else if (nsMatch && !aMatch) {
     // Case 2: Nameserver matches ✅ but A record doesn't ❌  
     // Automatically attempt to fix A record using WHM with correct server IP
@@ -448,7 +448,7 @@ async function performComprehensiveDNSLookup(domain) {
     results.workflow.recommendation = 'auto_update_a_record';
     results.workflow.actionRequired = 'auto_fixing';
     
-    console.log(`🔧 WORKFLOW: NS matches but A record doesn't - attempting automatic A record fix with server-specific IP`);
+    // Workflow logging disabled for performance
   } else if (nsMatch && aMatch && results.records.A.length > 1) {
     // Case 2b: Nameserver matches ✅ and A record matches ✅ but multiple A records exist (duplicates)
     // Check if there are duplicate A records that need cleanup
@@ -461,16 +461,14 @@ async function performComprehensiveDNSLookup(domain) {
       results.workflow.recommendation = 'auto_cleanup_duplicates';
       results.workflow.actionRequired = 'auto_fixing';
       
-      console.log(`🔧 WORKFLOW: NS and A record match but duplicate A records detected - attempting automatic cleanup`);
-      console.log(`   → Correct A records: ${matchingARecords.join(', ')}`);
-      console.log(`   → Duplicate A records: ${nonMatchingARecords.join(', ')}`);
+      // Workflow logging disabled for performance
     } else {
       // All A records are correct, just multiple of the same IP
       results.workflow.step = 'multiple_correct_a_records';
       results.workflow.recommendation = 'none';
       results.workflow.actionRequired = 'none';
       results.workflow.message = `✅ DNS is correctly configured. Multiple A records found but all point to correct servers.`;
-      console.log(`✅ WORKFLOW: Multiple A records found but all are correct - no action needed`);
+      // Workflow logging disabled for performance
       return results;
     }
     
@@ -488,7 +486,7 @@ async function performComprehensiveDNSLookup(domain) {
         const newIP = fixResult.newIP || fixResult.correctIP || 'unknown';
         const oldIP = fixResult.oldIP || fixResult.currentIP || 'unknown';
         results.workflow.message = `✅ A record automatically updated! Your nameservers are correctly set and we've updated your A record from ${oldIP} to ${newIP} on server ${fixResult.server.toUpperCase()}. Your website should now point to the correct server.`;
-        console.log(`✅ WORKFLOW: A record auto-fix successful - ${domain} → ${newIP} (server: ${fixResult.server})`);
+        // Workflow logging disabled for performance
         
         // Update the A records in results to reflect the change
         const newIPs = newIP.includes(',') ? newIP.split(', ') : [newIP];
@@ -505,7 +503,7 @@ async function performComprehensiveDNSLookup(domain) {
         }
         
         results.workflow.message = `⚠️ Automatic A record update failed: ${fixResult.error}${errorDetails}. Your nameservers are correctly set to our servers, but your website points elsewhere (${results.records.A.join(', ')}). Please manually update your A record using cPanel DNS Zone Editor.`;
-        console.log(`❌ WORKFLOW: A record auto-fix failed - ${fixResult.error}`);
+        // Workflow logging disabled for performance
       }
     } catch (error) {
       console.log(`❌ WORKFLOW: A record auto-fix error - ${error.message}`);
