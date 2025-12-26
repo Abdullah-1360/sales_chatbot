@@ -52,7 +52,7 @@ class CpanelCredentialResolver {
   }
 
   /**
-   * Optimized credential resolution with minimal logging
+   * Optimized credential resolution with phone number verification
    */
   async resolveCpanelCredentials(domain, email = null, phone = null) {
     try {
@@ -65,61 +65,69 @@ class CpanelCredentialResolver {
         error: null
       };
 
-      // Step 1: Parallel client lookup with caching
+      // Step 1: Client lookup with multiple strategies
       let clientId = null;
-      const clientPromises = [];
+      let foundClient = null;
       
+      // Strategy 1: Try email lookup first (most reliable)
       if (email) {
         const cacheKey = `client:email:${email}`;
         const cached = clientCache.get(cacheKey);
         
         if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
           clientId = cached.data.id;
-          result.clientInfo = cached.data;
+          foundClient = cached.data;
         } else {
-          clientPromises.push(
-            this.findClientByEmail(email).then(clientDetails => {
-              if (clientDetails) {
-                clientCache.set(cacheKey, {
-                  data: clientDetails,
-                  timestamp: Date.now()
-                });
-                return clientDetails;
-              }
-              return null;
-            })
-          );
+          foundClient = await this.findClientByEmail(email);
+          if (foundClient) {
+            clientId = foundClient.id;
+            clientCache.set(cacheKey, {
+              data: foundClient,
+              timestamp: Date.now()
+            });
+          }
         }
       }
 
-      if (phone && !clientId) {
-        clientPromises.push(this.findClientByPhone(phone));
-      }
-
-      // Execute parallel client lookups
-      if (clientPromises.length > 0) {
-        const clientResults = await Promise.all(clientPromises);
-        const foundClient = clientResults.find(client => client !== null);
-        
+      // Strategy 2: Try phone lookup if no email or email failed
+      if (!foundClient && phone) {
+        foundClient = await this.findClientByPhone(phone);
         if (foundClient) {
           clientId = foundClient.id;
-          result.clientInfo = foundClient;
         }
       }
 
-      // Fallback to domain lookup if no client found
-      if (!clientId) {
-        const clientDetails = await this.findClientByDomain(domain);
-        if (clientDetails) {
-          clientId = clientDetails.id;
-          result.clientInfo = clientDetails;
+      // Strategy 3: Try domain lookup as fallback
+      if (!foundClient) {
+        foundClient = await this.findClientByDomain(domain);
+        if (foundClient) {
+          clientId = foundClient.id;
         }
       }
 
+      // If we found a client but phone was provided, verify phone number
+      if (foundClient && phone && foundClient.phonenumber) {
+        const providedNormalized = this.normalizePhoneNumber(phone);
+        const registeredNormalized = this.normalizePhoneNumber(foundClient.phonenumber);
+        
+        if (providedNormalized !== registeredNormalized) {
+          // Phone number doesn't match - return specific error format
+          result.error = {
+            type: 'phone_verification_failed',
+            message: `Phone number verification failed. Please contact us using the registered number: ${this.maskPhoneNumber(foundClient.phonenumber)}`,
+            registeredPhone: this.maskPhoneNumber(foundClient.phonenumber)
+          };
+          return result;
+        }
+      }
+
+      // If still no client found, return error
       if (!clientId) {
         result.error = 'Client not found with provided email, phone, or domain ownership';
         return result;
       }
+
+      result.clientInfo = foundClient;
 
       // Step 2: Find hosting service (with caching)
       const hostingCacheKey = `hosting:${clientId}:${domain}`;
@@ -227,10 +235,126 @@ class CpanelCredentialResolver {
    */
   async findClientByPhone(phone) {
     try {
-      // WHMCS doesn't have direct phone search
+      // Normalize phone number for comparison
+      const normalizedPhone = this.normalizePhoneNumber(phone);
+      
+      // WHMCS doesn't have direct phone search, so we need to search by phone number
+      // Using GetClientsDetails with phonenumber parameter
+      const clientDetails = await getClientsDetails({ phonenumber: phone });
+      
+      if (clientDetails && clientDetails.client) {
+        return {
+          id: clientDetails.client.id,
+          email: clientDetails.client.email,
+          firstname: clientDetails.client.firstname,
+          lastname: clientDetails.client.lastname,
+          phonenumber: clientDetails.client.phonenumber
+        };
+      }
+      
+      return null;
+    } catch (error) {
+      // If direct phone search fails, try searching all clients (fallback)
+      return await this.findClientByPhoneFallback(phone);
+    }
+  }
+
+  /**
+   * Fallback method to find client by phone number by searching through clients
+   */
+  async findClientByPhoneFallback(phone) {
+    try {
+      const normalizedPhone = this.normalizePhoneNumber(phone);
+      
+      // This is a more expensive operation - search through clients
+      // We'll limit this to avoid performance issues
+      const { getClientsDetails } = require('./whmcsService');
+      
+      // Try searching with different phone number formats
+      const phoneVariations = this.generatePhoneVariations(phone);
+      
+      for (const phoneVariation of phoneVariations) {
+        try {
+          const clientDetails = await getClientsDetails({ phonenumber: phoneVariation });
+          if (clientDetails && clientDetails.client) {
+            return {
+              id: clientDetails.client.id,
+              email: clientDetails.client.email,
+              firstname: clientDetails.client.firstname,
+              lastname: clientDetails.client.lastname,
+              phonenumber: clientDetails.client.phonenumber
+            };
+          }
+        } catch (searchError) {
+          // Continue to next variation
+          continue;
+        }
+      }
+      
       return null;
     } catch (error) {
       return null;
+    }
+  }
+
+  /**
+   * Normalize phone number for comparison
+   */
+  normalizePhoneNumber(phone) {
+    if (!phone) return '';
+    
+    // Remove all non-digit characters except +
+    let normalized = phone.replace(/[^\d+]/g, '');
+    
+    // If it starts with +1, remove the +1 for US numbers
+    if (normalized.startsWith('+1')) {
+      normalized = normalized.substring(2);
+    } else if (normalized.startsWith('1') && normalized.length === 11) {
+      // Remove leading 1 for US numbers
+      normalized = normalized.substring(1);
+    }
+    
+    return normalized;
+  }
+
+  /**
+   * Generate phone number variations for search
+   */
+  generatePhoneVariations(phone) {
+    const normalized = this.normalizePhoneNumber(phone);
+    const variations = [
+      phone, // Original format
+      normalized, // Normalized format
+      `+1${normalized}`, // With +1 prefix
+      `1${normalized}`, // With 1 prefix
+      `(${normalized.substring(0,3)}) ${normalized.substring(3,6)}-${normalized.substring(6)}`, // (123) 456-7890
+      `${normalized.substring(0,3)}-${normalized.substring(3,6)}-${normalized.substring(6)}`, // 123-456-7890
+      `${normalized.substring(0,3)}.${normalized.substring(3,6)}.${normalized.substring(6)}`, // 123.456.7890
+      `${normalized.substring(0,3)} ${normalized.substring(3,6)} ${normalized.substring(6)}` // 123 456 7890
+    ];
+    
+    // Remove duplicates and empty strings
+    return [...new Set(variations.filter(v => v && v.length > 0))];
+  }
+
+  /**
+   * Mask phone number for display (show first 3 and last 2 digits)
+   */
+  maskPhoneNumber(phone) {
+    if (!phone) return '';
+    
+    const normalized = this.normalizePhoneNumber(phone);
+    if (normalized.length < 5) return phone; // Too short to mask meaningfully
+    
+    if (normalized.length === 10) {
+      // US format: 1234567890 -> 123*****90
+      return `${normalized.substring(0, 3)}*****${normalized.substring(8)}`;
+    } else if (normalized.length > 10) {
+      // International format: show first 3 and last 2
+      return `${normalized.substring(0, 3)}*****${normalized.substring(normalized.length - 2)}`;
+    } else {
+      // Shorter numbers: show first 2 and last 2
+      return `${normalized.substring(0, 2)}***${normalized.substring(normalized.length - 2)}`;
     }
   }
 
@@ -239,8 +363,130 @@ class CpanelCredentialResolver {
    */
   async findClientByDomain(domain) {
     try {
-      // Domain-based client lookup not implemented
+      // Search through WHMCS products to find the domain owner
+      const { callApi } = require('./whmcsService');
+      
+      // Method 1: Search for products with this domain and get full details
+      try {
+        // Search for hosting products that match this domain
+        const searchResult = await callApi('GetClientsProducts', { 
+          domain: domain,
+          limitnum: 50,
+          stats: true // Include additional statistics and details
+        });
+        
+        if (searchResult && searchResult.products && searchResult.products.product) {
+          const products = Array.isArray(searchResult.products.product) 
+            ? searchResult.products.product 
+            : [searchResult.products.product];
+          
+          // Find the first active hosting product
+          const hostingProduct = products.find(product => 
+            product.groupname && 
+            product.groupname.toLowerCase().includes('hosting') &&
+            (product.status === 'Active' || product.status === 'Suspended')
+          );
+          
+          if (hostingProduct && (hostingProduct.userid || hostingProduct.clientid)) {
+            const clientId = hostingProduct.userid || hostingProduct.clientid;
+            
+            // Get client details for this user
+            const { getClientsDetails } = require('./whmcsService');
+            const clientDetails = await getClientsDetails({ clientid: clientId });
+            
+            if (clientDetails && clientDetails.client) {
+              return {
+                id: clientDetails.client.id,
+                email: clientDetails.client.email,
+                firstname: clientDetails.client.firstname,
+                lastname: clientDetails.client.lastname,
+                phonenumber: clientDetails.client.phonenumber
+              };
+            }
+          }
+        }
+      } catch (searchError) {
+        // Continue with alternative method
+      }
+      
+      // Method 2: Search through all clients and their products
+      try {
+        // Get a list of clients and check their products
+        const clientsResult = await callApi('GetClients', { 
+          limitnum: 100,
+          limitstart: 0
+        });
+        
+        if (clientsResult && clientsResult.clients && clientsResult.clients.client) {
+          const clients = Array.isArray(clientsResult.clients.client) 
+            ? clientsResult.clients.client 
+            : [clientsResult.clients.client];
+          
+          // Check each client's products for the domain
+          for (const client of clients.slice(0, 20)) { // Limit to first 20 clients for performance
+            try {
+              const clientProducts = await callApi('GetClientsProducts', {
+                clientid: client.id,
+                limitnum: 50
+              });
+              
+              if (clientProducts && clientProducts.products && clientProducts.products.product) {
+                const products = Array.isArray(clientProducts.products.product) 
+                  ? clientProducts.products.product 
+                  : [clientProducts.products.product];
+                
+                const matchingProduct = products.find(product => 
+                  product.domain === domain ||
+                  (product.customfields && this.checkCustomFieldsForDomain(product.customfields, domain))
+                );
+                
+                if (matchingProduct && (matchingProduct.userid || matchingProduct.clientid)) {
+                  const clientId = matchingProduct.userid || matchingProduct.clientid;
+                  
+                  // Get full client details
+                  const { getClientsDetails } = require('./whmcsService');
+                  const clientDetails = await getClientsDetails({ clientid: clientId });
+                  
+                  if (clientDetails && clientDetails.client) {
+                    return {
+                      id: clientDetails.client.id,
+                      email: clientDetails.client.email,
+                      firstname: clientDetails.client.firstname,
+                      lastname: clientDetails.client.lastname,
+                      phonenumber: clientDetails.client.phonenumber
+                    };
+                  }
+                }
+              }
+            } catch (clientError) {
+              // Continue to next client
+              continue;
+            }
+          }
+        }
+      } catch (clientsError) {
+        // Continue to return null
+      }
+      
       return null;
+      
+    } catch (error) {
+      return null;
+    }
+  }
+
+  /**
+   * Fallback method to find client by searching through all active hosting products
+   */
+  async findClientByDomainFallback(domain) {
+    try {
+      // This is expensive - search through clients' products
+      // We'll implement a limited search to avoid performance issues
+      
+      // For now, return null to avoid expensive operations
+      // This can be enhanced later if needed
+      return null;
+      
     } catch (error) {
       return null;
     }

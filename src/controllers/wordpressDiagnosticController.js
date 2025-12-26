@@ -96,6 +96,22 @@ class WordPressDiagnosticController {
 
       if (!credentialResult.success) {
         timer.end();
+        
+        // Check if this is a phone verification error
+        if (credentialResult.error && typeof credentialResult.error === 'object' && 
+            credentialResult.error.type === 'phone_verification_failed') {
+          
+          // Return the specific phone verification error format
+          const phoneErrorResponse = {
+            success: false,
+            error: credentialResult.error.message,
+            registeredPhone: credentialResult.error.registeredPhone
+          };
+          
+          return res.status(400).json(phoneErrorResponse);
+        }
+        
+        // Handle other credential errors
         const formattedError = ResponseFormatter.formatCredentialError(
           value.domain,
           credentialResult.error,
@@ -218,6 +234,21 @@ class WordPressDiagnosticController {
       );
 
       if (!credentialResult.success) {
+        // Check if this is a phone verification error
+        if (credentialResult.error && typeof credentialResult.error === 'object' && 
+            credentialResult.error.type === 'phone_verification_failed') {
+          
+          // Return the specific phone verification error format
+          const phoneErrorResponse = {
+            success: false,
+            error: credentialResult.error.message,
+            registeredPhone: credentialResult.error.registeredPhone
+          };
+          
+          return res.status(400).json(phoneErrorResponse);
+        }
+        
+        // Handle other credential errors
         const formattedError = ResponseFormatter.formatCredentialError(
           value.domain,
           credentialResult.error
