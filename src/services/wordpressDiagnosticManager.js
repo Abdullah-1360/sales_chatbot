@@ -4,13 +4,16 @@ const ParserStep = require('../steps/parser');
 const DatabaseUserManagementStep = require('../steps/databaseUserManagement');
 const MySQLStep = require('../steps/mysql');
 const ErrorMappingStep = require('../steps/errorMapping');
+const RemediationStep = require('../steps/remediation');
+const performanceConfig = require('../config/performance');
 
 // Optimized logger configuration - silent in production
 const logger = (() => {
   const winston = require('winston');
   
-  // Silent logger in production for maximum performance
-  if (process.env.NODE_ENV === 'production') {
+  const logLevel = performanceConfig.logging[process.env.NODE_ENV] || 'error';
+  
+  if (logLevel === 'silent') {
     return {
       info: () => {},
       warn: () => {},
@@ -19,9 +22,8 @@ const logger = (() => {
     };
   }
   
-  // Minimal logging in development
   return winston.createLogger({
-    level: 'error', // Only log errors in development
+    level: logLevel,
     format: winston.format.simple(),
     transports: [
       new winston.transports.Console({
@@ -31,10 +33,39 @@ const logger = (() => {
   });
 })();
 
-// Cache for DNS resolutions and server info
+// Optimized caches with performance config
 const dnsCache = new Map();
 const serverInfoCache = new Map();
-const CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+
+// Cache cleanup with performance config
+let lastCacheCleanup = Date.now();
+
+function cleanupCaches() {
+  const now = Date.now();
+  
+  if (now - lastCacheCleanup < performanceConfig.cache.cleanupInterval) return;
+  
+  [dnsCache, serverInfoCache].forEach(cache => {
+    // Remove expired entries
+    for (const [key, value] of cache.entries()) {
+      const ttl = key.startsWith('dns:') ? performanceConfig.cache.dnsTTL : performanceConfig.cache.credentialTTL;
+      if (now - value.timestamp > ttl) {
+        cache.delete(key);
+      }
+    }
+    
+    // LRU eviction if cache is too large
+    if (cache.size > performanceConfig.memory.maxCacheEntries) {
+      const entries = Array.from(cache.entries())
+        .sort((a, b) => a[1].timestamp - b[1].timestamp);
+      
+      const toRemove = entries.slice(0, cache.size - performanceConfig.memory.maxCacheEntries);
+      toRemove.forEach(([key]) => cache.delete(key));
+    }
+  });
+  
+  lastCacheCleanup = now;
+}
 
 // Sensitive fields for log sanitization (cached for performance)
 const SENSITIVE_FIELDS = new Set(['password', 'pass', 'pwd', 'secret', 'token', 'key']);
@@ -47,6 +78,7 @@ class WordPressDiagnosticManager {
     this.databaseUserManagementStep = new DatabaseUserManagementStep();
     this.mysqlStep = new MySQLStep();
     this.errorMappingStep = new ErrorMappingStep();
+    this.remediationStep = new RemediationStep(this.mysqlStep.mysqlClient);
   }
 
   /**
@@ -86,12 +118,15 @@ class WordPressDiagnosticManager {
   }
 
   /**
-   * Optimized diagnostic workflow with minimal logging
+   * Optimized diagnostic workflow with performance configuration
    */
   async diagnoseWordPressDatabase(params) {
     const startTime = Date.now();
     
     try {
+      // Trigger cache cleanup if needed (non-blocking)
+      cleanupCaches();
+      
       // Pre-allocate result object to avoid multiple object creations
       const result = {
         timestamp: new Date().toISOString(),
@@ -110,7 +145,7 @@ class WordPressDiagnosticManager {
       let whmApiKey;
       if (serverInfoCache.has(serverCacheKey)) {
         const cached = serverInfoCache.get(serverCacheKey);
-        if (Date.now() - cached.timestamp < CACHE_TTL) {
+        if (Date.now() - cached.timestamp < performanceConfig.cache.credentialTTL) {
           whmApiKey = cached.apiKey;
         }
       }
@@ -303,6 +338,104 @@ class WordPressDiagnosticManager {
           result.workflow.stepC_mysqlConnection
         );
 
+        // Add debug info
+        result.debug = result.debug || {};
+        result.debug.errorMapping = {
+          category: result.workflow.stepD_errorMapping.errorAnalysis?.category,
+          enableRemediation: params.enableRemediation
+        };
+
+        // Step E: Remediation (if enabled and connection failed)
+        if (params.enableRemediation) {
+          try {
+            // Add debug info to result
+            result.debug = result.debug || {};
+            result.debug.remediation = {
+              enabled: true,
+              mysqlConnectionSuccess: result.workflow.stepC_mysqlConnection.success,
+              errorMappingCategory: result.workflow.stepD_errorMapping.errorAnalysis?.category
+            };
+            
+            // Prepare remediation parameters
+            const remediationOptions = {
+              approveServiceRestart: params.approveServiceRestart || false,
+              approveTableRepair: params.approveTableRepair || false,
+              approveKillConnections: params.approveKillConnections || false
+            };
+
+            // Get resolved IP from DNS check for remediation
+            const resolvedIp = dnsCheckResult?.dnsInfo?.resolvedIps?.[0] || null;
+
+            // Create diagnosis object for remediation
+            const diagnosisForRemediation = {
+              basicDiagnosis: {
+                rootCause: {
+                  cause: result.workflow.stepD_errorMapping.errorAnalysis?.category === 'authentication' ? 'ACCESS_DENIED' :
+                         result.workflow.stepD_errorMapping.errorAnalysis?.category === 'database_missing' ? 'UNKNOWN_DATABASE' :
+                         result.workflow.stepD_errorMapping.errorAnalysis?.category === 'connection_refused' ? 'CONNECTION_REFUSED' :
+                         result.workflow.stepD_errorMapping.errorAnalysis?.category === 'table_corruption' ? 'TABLE_CORRUPT' :
+                         result.workflow.stepD_errorMapping.errorAnalysis?.category === 'resource_exhaustion' ? 'TOO_MANY_CONNECTIONS' :
+                         'ACCESS_DENIED' // Default to ACCESS_DENIED for credential issues
+                }
+              }
+            };
+
+            result.debug.remediation.diagnosisRootCause = diagnosisForRemediation.basicDiagnosis.rootCause.cause;
+
+            // Perform remediation
+            result.workflow.stepE_remediation = await this.remediationStep.performRemediation(
+              diagnosisForRemediation,
+              finalConfig,
+              cpanelClient,
+              null, // WHM client not available in this context
+              remediationOptions,
+              resolvedIp
+            );
+
+            result.debug.remediation.completed = true;
+            result.debug.remediation.success = result.workflow.stepE_remediation.success;
+            result.debug.remediation.results = result.workflow.stepE_remediation.results;
+            result.debug.remediation.actionsAttempted = result.workflow.stepE_remediation.actionsAttempted;
+
+            // If remediation was successful, re-test the connection
+            if (result.workflow.stepE_remediation.success) {
+              result.workflow.stepF_postRemediationTest = await this.mysqlStep.testMySQLConnection(
+                configForMysqlTest,
+                dnsCheckResult
+              );
+
+              result.debug.remediation.postTestSuccess = result.workflow.stepF_postRemediationTest.success;
+
+              // Update overall success based on post-remediation test
+              if (result.workflow.stepF_postRemediationTest.success) {
+                result.success = true;
+                result.summary = this.generateOptimizedSummary(result.workflow);
+                result.duration = Date.now() - startTime;
+                return result;
+              }
+            }
+          } catch (remediationError) {
+            this.logger.error(`Remediation failed: ${remediationError.message}`);
+            result.workflow.stepE_remediation = {
+              success: false,
+              error: remediationError.message,
+              message: 'Remediation step failed'
+            };
+            result.debug = result.debug || {};
+            result.debug.remediation = {
+              enabled: true,
+              error: remediationError.message,
+              completed: false
+            };
+          }
+        } else {
+          result.debug = result.debug || {};
+          result.debug.remediation = {
+            enabled: false,
+            reason: 'enableRemediation is false'
+          };
+        }
+
         result.escalation = {
           type: 'technical',
           reason: 'MYSQL_CONNECTION_FAILED',
@@ -424,6 +557,28 @@ class WordPressDiagnosticManager {
       // Add recommendations only if connection failed
       if (!mysql.success && workflow.stepD_errorMapping?.recommendations) {
         summary.recommendations = workflow.stepD_errorMapping.recommendations;
+      }
+    }
+
+    // Add remediation details if performed
+    if (workflow.stepE_remediation) {
+      const remediation = workflow.stepE_remediation;
+      summary.details.remediation = {
+        attempted: true,
+        success: remediation.success,
+        actionsAttempted: remediation.actionsAttempted,
+        rootCause: remediation.rootCause,
+        message: remediation.success ? 'Remediation completed successfully' : 'Remediation attempted but failed'
+      };
+
+      // Add post-remediation test results if available
+      if (workflow.stepF_postRemediationTest) {
+        summary.details.postRemediationTest = {
+          success: workflow.stepF_postRemediationTest.success,
+          message: workflow.stepF_postRemediationTest.success ? 
+            'Connection restored after remediation' : 
+            'Connection still failing after remediation'
+        };
       }
     }
 

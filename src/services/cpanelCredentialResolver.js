@@ -27,23 +27,43 @@ const logger = (() => {
   });
 })();
 
-// Cache for client lookups and server info
+// Optimized cache with better memory management
 const clientCache = new Map();
 const serverCache = new Map();
 const dnsCache = new Map();
 const CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+const MAX_CACHE_SIZE = 500; // Prevent memory bloat
 
-// Cache cleanup
-setInterval(() => {
+// Optimized cache cleanup with LRU eviction
+let lastCacheCleanup = Date.now();
+const CACHE_CLEANUP_INTERVAL = 60000; // 1 minute
+
+function cleanupCaches() {
   const now = Date.now();
+  
+  // Only cleanup if interval has passed
+  if (now - lastCacheCleanup < CACHE_CLEANUP_INTERVAL) return;
+  
   [clientCache, serverCache, dnsCache].forEach(cache => {
+    // Remove expired entries
     for (const [key, value] of cache.entries()) {
       if (now - value.timestamp > CACHE_TTL) {
         cache.delete(key);
       }
     }
+    
+    // If cache is still too large, remove oldest entries (LRU)
+    if (cache.size > MAX_CACHE_SIZE) {
+      const entries = Array.from(cache.entries())
+        .sort((a, b) => a[1].timestamp - b[1].timestamp);
+      
+      const toRemove = entries.slice(0, cache.size - MAX_CACHE_SIZE);
+      toRemove.forEach(([key]) => cache.delete(key));
+    }
   });
-}, 60000);
+  
+  lastCacheCleanup = now;
+}
 
 class CpanelCredentialResolver {
   constructor() {
@@ -52,10 +72,13 @@ class CpanelCredentialResolver {
   }
 
   /**
-   * Optimized credential resolution with phone number verification
+   * Optimized credential resolution with phone number verification and timeouts
    */
   async resolveCpanelCredentials(domain, email = null, phone = null) {
     try {
+      // Trigger cache cleanup if needed (non-blocking)
+      cleanupCaches();
+      
       const result = {
         success: false,
         domain,
@@ -65,7 +88,7 @@ class CpanelCredentialResolver {
         error: null
       };
 
-      // Step 1: Client lookup with multiple strategies
+      // Step 1: Client lookup with multiple strategies (parallel where possible)
       let clientId = null;
       let foundClient = null;
       
@@ -78,30 +101,66 @@ class CpanelCredentialResolver {
           clientId = cached.data.id;
           foundClient = cached.data;
         } else {
-          foundClient = await this.findClientByEmail(email);
-          if (foundClient) {
-            clientId = foundClient.id;
-            clientCache.set(cacheKey, {
-              data: foundClient,
-              timestamp: Date.now()
-            });
+          // Add timeout to email lookup
+          try {
+            foundClient = await Promise.race([
+              this.findClientByEmail(email),
+              new Promise((_, reject) => 
+                setTimeout(() => reject(new Error('Email lookup timeout')), 10000)
+              )
+            ]);
+            
+            if (foundClient) {
+              clientId = foundClient.id;
+              if (clientCache.size < MAX_CACHE_SIZE) {
+                clientCache.set(cacheKey, {
+                  data: foundClient,
+                  timestamp: Date.now()
+                });
+              }
+            }
+          } catch (error) {
+            // Continue to next strategy on timeout
+            foundClient = null;
           }
         }
       }
 
       // Strategy 2: Try phone lookup if no email or email failed
       if (!foundClient && phone) {
-        foundClient = await this.findClientByPhone(phone);
-        if (foundClient) {
-          clientId = foundClient.id;
+        try {
+          foundClient = await Promise.race([
+            this.findClientByPhone(phone),
+            new Promise((_, reject) => 
+              setTimeout(() => reject(new Error('Phone lookup timeout')), 10000)
+            )
+          ]);
+          
+          if (foundClient) {
+            clientId = foundClient.id;
+          }
+        } catch (error) {
+          // Continue to next strategy on timeout
+          foundClient = null;
         }
       }
 
-      // Strategy 3: Try domain lookup as fallback
+      // Strategy 3: Try domain lookup as fallback (with timeout)
       if (!foundClient) {
-        foundClient = await this.findClientByDomain(domain);
-        if (foundClient) {
-          clientId = foundClient.id;
+        try {
+          foundClient = await Promise.race([
+            this.findClientByDomain(domain),
+            new Promise((_, reject) => 
+              setTimeout(() => reject(new Error('Domain lookup timeout')), 15000)
+            )
+          ]);
+          
+          if (foundClient) {
+            clientId = foundClient.id;
+          }
+        } catch (error) {
+          // Final fallback failed
+          foundClient = null;
         }
       }
 
@@ -129,7 +188,7 @@ class CpanelCredentialResolver {
 
       result.clientInfo = foundClient;
 
-      // Step 2: Find hosting service (with caching)
+      // Step 2: Find hosting service (with caching and timeout)
       const hostingCacheKey = `hosting:${clientId}:${domain}`;
       let hostingService = null;
       
@@ -137,12 +196,22 @@ class CpanelCredentialResolver {
       if (cachedHosting && (Date.now() - cachedHosting.timestamp < CACHE_TTL)) {
         hostingService = cachedHosting.data;
       } else {
-        hostingService = await this.findHostingServiceForDomain(clientId, domain);
-        if (hostingService) {
-          clientCache.set(hostingCacheKey, {
-            data: hostingService,
-            timestamp: Date.now()
-          });
+        try {
+          hostingService = await Promise.race([
+            this.findHostingServiceForDomain(clientId, domain),
+            new Promise((_, reject) => 
+              setTimeout(() => reject(new Error('Hosting service lookup timeout')), 15000)
+            )
+          ]);
+          
+          if (hostingService && clientCache.size < MAX_CACHE_SIZE) {
+            clientCache.set(hostingCacheKey, {
+              data: hostingService,
+              timestamp: Date.now()
+            });
+          }
+        } catch (error) {
+          hostingService = null;
         }
       }
       
@@ -151,8 +220,19 @@ class CpanelCredentialResolver {
         return result;
       }
 
-      // Step 3: Get server information (with caching)
-      const serverInfo = await this.getServerInfoCached(hostingService.server, domain, clientId);
+      // Step 3: Get server information (with caching and timeout)
+      let serverInfo = null;
+      try {
+        serverInfo = await Promise.race([
+          this.getServerInfoCached(hostingService.server, domain, clientId),
+          new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Server info lookup timeout')), 10000)
+          )
+        ]);
+      } catch (error) {
+        serverInfo = null;
+      }
+      
       if (!serverInfo) {
         result.error = `Server information not found for: ${hostingService.server}`;
         return result;
@@ -160,7 +240,7 @@ class CpanelCredentialResolver {
 
       result.serverInfo = serverInfo;
 
-      // Step 4: Get cPanel username (with caching)
+      // Step 4: Get cPanel username (with caching and timeout)
       const usernameCacheKey = `username:${domain}:${serverInfo.serverName}`;
       let cpanelUsername = null;
       
@@ -168,12 +248,22 @@ class CpanelCredentialResolver {
       if (cachedUsername && (Date.now() - cachedUsername.timestamp < CACHE_TTL)) {
         cpanelUsername = cachedUsername.data;
       } else {
-        cpanelUsername = await this.getCpanelUsername(domain, serverInfo.serverName);
-        if (cpanelUsername) {
-          serverCache.set(usernameCacheKey, {
-            data: cpanelUsername,
-            timestamp: Date.now()
-          });
+        try {
+          cpanelUsername = await Promise.race([
+            this.getCpanelUsername(domain, serverInfo.serverName),
+            new Promise((_, reject) => 
+              setTimeout(() => reject(new Error('Username lookup timeout')), 10000)
+            )
+          ]);
+          
+          if (cpanelUsername && serverCache.size < MAX_CACHE_SIZE) {
+            serverCache.set(usernameCacheKey, {
+              data: cpanelUsername,
+              timestamp: Date.now()
+            });
+          }
+        } catch (error) {
+          cpanelUsername = null;
         }
       }
       

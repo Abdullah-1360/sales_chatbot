@@ -1,57 +1,89 @@
 /**
- * Performance optimization configuration
+ * Performance configuration for WordPress diagnostic endpoints
  */
 
-module.exports = {
+const performanceConfig = {
   // Cache settings
   cache: {
     diagnosticTTL: 5 * 60 * 1000, // 5 minutes
-    clientTTL: 10 * 60 * 1000, // 10 minutes
-    serverTTL: 10 * 60 * 1000, // 10 minutes
-    dnsTTL: 10 * 60 * 1000, // 10 minutes
-    cleanupInterval: 60 * 1000, // 1 minute
+    credentialTTL: 10 * 60 * 1000, // 10 minutes
+    dnsTTL: 5 * 60 * 1000, // 5 minutes
+    maxCacheSize: 1000,
+    cleanupInterval: 60 * 1000 // 1 minute
   },
 
   // Timeout settings
   timeouts: {
+    credentialResolution: 30000, // 30 seconds
+    diagnosticWorkflow: 60000, // 60 seconds
     dnsResolution: 5000, // 5 seconds
-    serverDnsResolution: 3000, // 3 seconds
     mysqlConnection: 10000, // 10 seconds
-    cpanelApi: 15000, // 15 seconds
-    whmcsApi: 10000, // 10 seconds
+    emailLookup: 10000, // 10 seconds
+    phoneLookup: 10000, // 10 seconds
+    domainLookup: 15000, // 15 seconds
+    hostingServiceLookup: 15000, // 15 seconds
+    serverInfoLookup: 10000, // 10 seconds
+    usernameLookup: 10000 // 10 seconds
   },
 
-  // Logging settings
+  // Connection pool settings
+  connectionPool: {
+    connectionLimit: 5,
+    acquireTimeout: 5000,
+    timeout: 10000,
+    reconnect: false,
+    idleTimeout: 30000,
+    poolCleanupInterval: 5 * 60 * 1000 // 5 minutes
+  },
+
+  // Performance monitoring
+  monitoring: {
+    enabled: process.env.NODE_ENV !== 'production',
+    maxMetrics: 100,
+    cleanupInterval: 5 * 60 * 1000, // 5 minutes
+    metricRetentionTime: 10 * 60 * 1000 // 10 minutes
+  },
+
+  // Memory management
+  memory: {
+    maxCacheEntries: 500,
+    gcInterval: 2 * 60 * 1000, // 2 minutes
+    memoryThreshold: 100 * 1024 * 1024 // 100MB
+  },
+
+  // Logging levels by environment
   logging: {
-    level: process.env.NODE_ENV === 'production' ? 'warn' : 'info',
-    enablePerformanceMonitoring: process.env.NODE_ENV !== 'production',
-    enableDetailedErrors: process.env.NODE_ENV !== 'production',
-    enableVerboseLogging: process.env.NODE_ENV === 'development',
+    production: 'silent',
+    development: 'error',
+    test: 'silent'
   },
 
-  // Optimization flags
-  optimizations: {
+  // Feature flags for performance optimizations
+  features: {
     enableCaching: true,
+    enableConnectionPooling: true,
+    enableDnsCache: true,
     enableParallelLookups: true,
-    enableFastValidation: true,
-    enableEarlyReturns: true,
-    enableObjectPooling: false, // Advanced optimization, disabled by default
-    enableConnectionPooling: false, // Advanced optimization, disabled by default
-  },
-
-  // Performance thresholds (in milliseconds)
-  thresholds: {
-    warning: {
-      totalDiagnostic: 10000, // 10 seconds
-      credentialResolution: 3000, // 3 seconds
-      configParsing: 2000, // 2 seconds
-      mysqlConnection: 5000, // 5 seconds
-    },
-    error: {
-      totalDiagnostic: 30000, // 30 seconds
-      credentialResolution: 10000, // 10 seconds
-      configParsing: 5000, // 5 seconds
-      mysqlConnection: 15000, // 15 seconds
-    }
+    enableTimeouts: true,
+    enableMemoryManagement: true
   }
 };
+
+// Environment-specific overrides
+if (process.env.NODE_ENV === 'production') {
+  // Production optimizations
+  performanceConfig.cache.maxCacheSize = 2000;
+  performanceConfig.monitoring.enabled = false;
+  performanceConfig.connectionPool.connectionLimit = 10;
+} else if (process.env.NODE_ENV === 'development') {
+  // Development settings for debugging
+  performanceConfig.timeouts.credentialResolution = 60000; // Longer for debugging
+  performanceConfig.timeouts.diagnosticWorkflow = 120000;
+} else if (process.env.NODE_ENV === 'test') {
+  // Test environment - faster timeouts
+  performanceConfig.timeouts.credentialResolution = 5000;
+  performanceConfig.timeouts.diagnosticWorkflow = 10000;
+  performanceConfig.cache.diagnosticTTL = 1000; // 1 second for testing
+}
+
+module.exports = performanceConfig;

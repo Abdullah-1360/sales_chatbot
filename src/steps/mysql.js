@@ -2,6 +2,39 @@ const winston = require('winston');
 const silentLogger = require('../utils/silentLogger');
 const MySQLClient = require('../lib/mysql');
 
+// DNS resolution cache for better performance
+const dnsResolutionCache = new Map();
+const DNS_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const MAX_DNS_CACHE_SIZE = 200;
+
+// Cleanup DNS cache periodically
+let lastDnsCleanup = Date.now();
+const DNS_CLEANUP_INTERVAL = 60000; // 1 minute
+
+function cleanupDnsCache() {
+  const now = Date.now();
+  
+  if (now - lastDnsCleanup < DNS_CLEANUP_INTERVAL) return;
+  
+  // Remove expired entries
+  for (const [key, value] of dnsResolutionCache.entries()) {
+    if (now - value.timestamp > DNS_CACHE_TTL) {
+      dnsResolutionCache.delete(key);
+    }
+  }
+  
+  // LRU eviction if cache is too large
+  if (dnsResolutionCache.size > MAX_DNS_CACHE_SIZE) {
+    const entries = Array.from(dnsResolutionCache.entries())
+      .sort((a, b) => a[1].timestamp - b[1].timestamp);
+    
+    const toRemove = entries.slice(0, dnsResolutionCache.size - MAX_DNS_CACHE_SIZE);
+    toRemove.forEach(([key]) => dnsResolutionCache.delete(key));
+  }
+  
+  lastDnsCleanup = now;
+}
+
 class MySQLStep {
   constructor() {
     // Use silent logger in production for performance

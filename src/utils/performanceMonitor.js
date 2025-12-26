@@ -1,18 +1,21 @@
 /**
- * Simple performance monitoring utility for WordPress diagnostic endpoints
+ * Optimized performance monitoring utility for WordPress diagnostic endpoints
  */
 
 class PerformanceMonitor {
   constructor() {
     this.metrics = new Map();
     this.enabled = process.env.NODE_ENV !== 'production';
+    this.maxMetrics = 100; // Prevent memory bloat
+    this.lastCleanup = Date.now();
+    this.cleanupInterval = 5 * 60 * 1000; // 5 minutes
   }
 
   /**
-   * Start timing an operation
+   * Start timing an operation (optimized)
    */
   startTimer(operationName) {
-    if (!this.enabled) return null;
+    if (!this.enabled) return { end: () => 0 };
     
     const startTime = process.hrtime.bigint();
     return {
@@ -23,7 +26,7 @@ class PerformanceMonitor {
   }
 
   /**
-   * End timing an operation
+   * End timing an operation (optimized)
    */
   endTimer(operationName, startTime) {
     if (!this.enabled) return 0;
@@ -36,18 +39,27 @@ class PerformanceMonitor {
   }
 
   /**
-   * Record a metric
+   * Record a metric with memory management
    */
   recordMetric(name, value) {
     if (!this.enabled) return;
     
+    // Cleanup old metrics if needed
+    this.cleanupIfNeeded();
+    
     if (!this.metrics.has(name)) {
+      // Don't add new metrics if we're at capacity
+      if (this.metrics.size >= this.maxMetrics) {
+        return;
+      }
+      
       this.metrics.set(name, {
         count: 0,
         total: 0,
         min: Infinity,
         max: 0,
-        avg: 0
+        avg: 0,
+        lastUpdated: Date.now()
       });
     }
     
@@ -57,15 +69,37 @@ class PerformanceMonitor {
     metric.min = Math.min(metric.min, value);
     metric.max = Math.max(metric.max, value);
     metric.avg = metric.total / metric.count;
+    metric.lastUpdated = Date.now();
   }
 
   /**
-   * Get performance summary
+   * Cleanup old metrics to prevent memory leaks
+   */
+  cleanupIfNeeded() {
+    const now = Date.now();
+    
+    if (now - this.lastCleanup < this.cleanupInterval) return;
+    
+    // Remove metrics that haven't been updated in the last 10 minutes
+    const cutoffTime = now - (10 * 60 * 1000);
+    
+    for (const [name, metric] of this.metrics.entries()) {
+      if (metric.lastUpdated < cutoffTime) {
+        this.metrics.delete(name);
+      }
+    }
+    
+    this.lastCleanup = now;
+  }
+
+  /**
+   * Get performance summary (optimized)
    */
   getSummary() {
     if (!this.enabled) return {};
     
-    const summary = {};
+    const summary = Object.create(null); // Faster than {}
+    
     for (const [name, metric] of this.metrics.entries()) {
       summary[name] = {
         count: metric.count,
@@ -75,6 +109,7 @@ class PerformanceMonitor {
         totalMs: Math.round(metric.total * 100) / 100
       };
     }
+    
     return summary;
   }
 
@@ -83,19 +118,20 @@ class PerformanceMonitor {
    */
   reset() {
     this.metrics.clear();
+    this.lastCleanup = Date.now();
   }
 
   /**
-   * Log performance summary
+   * Get memory usage stats
    */
-  logSummary() {
-    if (!this.enabled) return;
+  getMemoryStats() {
+    if (!this.enabled) return {};
     
-    const summary = this.getSummary();
-    if (Object.keys(summary).length > 0) {
-      // Performance summary logging disabled for production performance
-      // console.log('Performance Summary:', JSON.stringify(summary, null, 2));
-    }
+    return {
+      metricsCount: this.metrics.size,
+      maxMetrics: this.maxMetrics,
+      memoryUsage: process.memoryUsage()
+    };
   }
 }
 

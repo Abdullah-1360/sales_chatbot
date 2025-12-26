@@ -2,6 +2,16 @@ const mysql = require('mysql2');
 const mysqlPromise = require('mysql2/promise');
 const winston = require('winston');
 
+// Connection pool for better performance
+const connectionPools = new Map();
+const POOL_CONFIG = {
+  connectionLimit: 5,
+  acquireTimeout: 5000,
+  timeout: 10000,
+  reconnect: false,
+  idleTimeout: 30000
+};
+
 class MySQLClient {
   constructor() {
     this.logger = winston.createLogger({
@@ -17,6 +27,37 @@ class MySQLClient {
         })
       ]
     });
+  }
+
+  /**
+   * Get or create connection pool for host
+   */
+  getConnectionPool(host, config) {
+    const poolKey = `${host}:${config.port || 3306}`;
+    
+    if (!connectionPools.has(poolKey)) {
+      const poolConfig = {
+        ...POOL_CONFIG,
+        host: host,
+        user: config.user,
+        password: config.password,
+        database: config.database,
+        port: config.port || 3306
+      };
+      
+      const pool = mysql.createPool(poolConfig);
+      connectionPools.set(poolKey, pool);
+      
+      // Auto-cleanup pool after 5 minutes of inactivity
+      setTimeout(() => {
+        if (connectionPools.has(poolKey)) {
+          pool.end();
+          connectionPools.delete(poolKey);
+        }
+      }, 5 * 60 * 1000);
+    }
+    
+    return connectionPools.get(poolKey);
   }
 
 
@@ -650,7 +691,7 @@ class MySQLClient {
   }
 
   /**
-   * Test MySQL connection with parsed configuration
+   * Test MySQL connection with parsed configuration (optimized with connection pooling)
    */
   async testConnection(config, resolvedIp = null) {
     return new Promise((resolve) => {
@@ -704,12 +745,38 @@ class MySQLClient {
           connectionConfig.port = Number(config.port);
         }
         
-        // Log connection config for debugging (disabled for performance)
-        // console.log('Connection Config:', JSON.stringify(connectionConfig, null, 2));
+        // Use connection pool for better performance
+        const pool = this.getConnectionPool(connectionHost, connectionConfig);
         
-        const connection = mysql.createConnection(connectionConfig);
+        // Set connection timeout
+        const connectionTimeout = setTimeout(() => {
+          resolve({
+            success: false,
+            error: 'Connection timeout after 10 seconds',
+            errorCode: 'CONNECTION_TIMEOUT',
+            localhostValidation: localhostValidation,
+            rootCause: {
+              cause: 'CONNECTION_TIMEOUT',
+              description: 'Connection to MySQL server timed out',
+              severity: 'HIGH',
+              originalError: 'Connection timeout after 10 seconds',
+              errorCode: 'CONNECTION_TIMEOUT'
+            },
+            connectionDetails: {
+              host: connectionHost,
+              user: config.user,
+              database: config.database,
+              port: config.port,
+              originalHost: config.host,
+              usedResolvedIp: !!resolvedIp,
+              timedOut: true
+            }
+          });
+        }, 10000);
         
-        connection.connect((err) => {
+        pool.getConnection((err, connection) => {
+          clearTimeout(connectionTimeout);
+          
           if (err) {
             this.logger.error(`MySQL connection failed: ${err.message}`);
             const rootCause = this.mapErrorToRootCause(err);
@@ -730,9 +797,8 @@ class MySQLClient {
               }
             });
           } else {
-            // Silent credentials validation logging in production for performance
-            // this.logger.info("Database credentials are valid");
-            connection.end();
+            // Release connection back to pool immediately
+            connection.release();
 
             resolve({
               success: true,
@@ -744,7 +810,8 @@ class MySQLClient {
                 database: config.database,
                 port: config.port,
                 originalHost: config.host,
-                usedResolvedIp: !!resolvedIp
+                usedResolvedIp: !!resolvedIp,
+                usedConnectionPool: true
               }
             });
           }

@@ -516,9 +516,10 @@ class DatabaseUserManagementStep {
    * @param {Object} config - Database configuration from wp-config.php
    * @param {string} wpConfigPath - Path to wp-config.php file
    * @param {string} wpConfigContent - Existing wp-config.php content (optional)
+   * @param {boolean} forceCreateNew - Force creation of new user even if current user exists (optional)
    * @returns {Promise<Object>} Management result
    */
-  async manageDatabaseUser(cpanelClient, config, wpConfigPath = 'public_html/wp-config.php', wpConfigContent = null) {
+  async manageDatabaseUser(cpanelClient, config, wpConfigPath = 'public_html/wp-config.php', wpConfigContent = null, forceCreateNew = false) {
     try {
       this.logger.info('Starting database user management process...');
 
@@ -551,16 +552,20 @@ class DatabaseUserManagementStep {
         return result;
       }
 
-      if (checkResult.issue === null) {
-        // Everything is already configured correctly
+      if (checkResult.issue === null && !forceCreateNew) {
+        // Everything is already configured correctly and we're not forcing new user creation
         result.success = true;
         result.message = 'Database and user are already properly configured';
         result.actions.push('No action needed - configuration is valid');
         return result;
       }
 
-      if (checkResult.issue === 'USER_NOT_IN_DATABASE') {
-        this.logger.info('User not found in database - creating new user');
+      if (checkResult.issue === 'USER_NOT_IN_DATABASE' || forceCreateNew) {
+        if (forceCreateNew) {
+          this.logger.info('Force creating new user due to credential issues');
+        } else {
+          this.logger.info('User not found in database - creating new user');
+        }
 
         // Extract username prefix from cPanel username
         const cpanelUsername = cpanelClient.username;

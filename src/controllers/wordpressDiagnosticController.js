@@ -24,19 +24,39 @@ const diagnosticSchema = Joi.object({
 
 const quickTestSchema = diagnosticSchema; // Reuse same schema
 
-// Simple in-memory cache for diagnostic results (5 minute TTL)
+// Optimized in-memory cache for diagnostic results (5 minute TTL)
 const diagnosticCache = new Map();
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const MAX_CACHE_SIZE = 1000; // Prevent memory bloat
 
-// Cache cleanup interval
-setInterval(() => {
+// Optimized cache cleanup with LRU eviction
+let lastCleanup = Date.now();
+const CLEANUP_INTERVAL = 60000; // 1 minute
+
+function cleanupCache() {
   const now = Date.now();
+  
+  // Only cleanup if interval has passed
+  if (now - lastCleanup < CLEANUP_INTERVAL) return;
+  
+  // Remove expired entries
   for (const [key, value] of diagnosticCache.entries()) {
     if (now - value.timestamp > CACHE_TTL) {
       diagnosticCache.delete(key);
     }
   }
-}, 60000); // Cleanup every minute
+  
+  // If cache is still too large, remove oldest entries (LRU)
+  if (diagnosticCache.size > MAX_CACHE_SIZE) {
+    const entries = Array.from(diagnosticCache.entries())
+      .sort((a, b) => a[1].timestamp - b[1].timestamp);
+    
+    const toRemove = entries.slice(0, diagnosticCache.size - MAX_CACHE_SIZE);
+    toRemove.forEach(([key]) => diagnosticCache.delete(key));
+  }
+  
+  lastCleanup = now;
+}
 
 class WordPressDiagnosticController {
   constructor() {
@@ -70,9 +90,13 @@ class WordPressDiagnosticController {
         return res.status(400).json(formattedError);
       }
 
-      // Check cache first
+      // Check cache first (with optimized cleanup)
       const cacheTimer = performanceMonitor.startTimer('cache_lookup');
       const cacheKey = `${value.domain}:${value.email || value.phone || 'no-id'}`;
+      
+      // Trigger cleanup if needed (non-blocking)
+      cleanupCache();
+      
       const cached = diagnosticCache.get(cacheKey);
       cacheTimer.end();
       
@@ -85,13 +109,23 @@ class WordPressDiagnosticController {
         return res.status(formattedResponse.success ? 200 : 500).json(formattedResponse);
       }
 
-      // Step 1: Resolve cPanel credentials (optimized with reduced logging)
+      // Step 1: Resolve cPanel credentials (optimized with timeout)
       const credentialTimer = performanceMonitor.startTimer('credential_resolution');
-      const credentialResult = await this.credentialResolver.resolveCpanelCredentials(
+      
+      // Add timeout to credential resolution to prevent hanging
+      const credentialPromise = this.credentialResolver.resolveCpanelCredentials(
         value.domain,
         value.email,
         value.phone
       );
+      
+      const credentialResult = await Promise.race([
+        credentialPromise,
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Credential resolution timeout')), 30000)
+        )
+      ]);
+      
       credentialTimer.end();
 
       if (!credentialResult.success) {
@@ -127,8 +161,8 @@ class WordPressDiagnosticController {
         return res.status(404).json(formattedError);
       }
 
-      // Step 2: Prepare diagnostic parameters (streamlined object creation)
-      const diagnosticParams = {
+      // Step 2: Prepare diagnostic parameters (pre-allocated object for performance)
+      const diagnosticParams = Object.assign(Object.create(null), {
         domain: value.domain,
         clientId: credentialResult.clientInfo?.id,
         cpanelHost: credentialResult.cpanelCredentials.host,
@@ -145,11 +179,20 @@ class WordPressDiagnosticController {
         approveTableRepair: false,
         approveKillConnections: false,
         whmcsService: req.whmcsService
-      };
+      });
 
-      // Step 3: Run diagnostic workflow
+      // Step 3: Run diagnostic workflow (with timeout)
       const diagnosticTimer = performanceMonitor.startTimer('diagnostic_workflow');
-      const result = await this.manager.diagnoseWordPressDatabase(diagnosticParams);
+      
+      // Add timeout to diagnostic workflow to prevent hanging
+      const diagnosticPromise = this.manager.diagnoseWordPressDatabase(diagnosticParams);
+      const result = await Promise.race([
+        diagnosticPromise,
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Diagnostic workflow timeout')), 60000)
+        )
+      ]);
+      
       diagnosticTimer.end();
 
       // Add performance information
@@ -160,8 +203,8 @@ class WordPressDiagnosticController {
         breakdown: performanceMonitor.getSummary()
       };
 
-      // Cache successful results only
-      if (result.success) {
+      // Cache successful results only (with size limit check)
+      if (result.success && diagnosticCache.size < MAX_CACHE_SIZE) {
         const cacheTimer = performanceMonitor.startTimer('cache_store');
         diagnosticCache.set(cacheKey, {
           data: { ...result },
