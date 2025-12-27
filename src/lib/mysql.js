@@ -645,7 +645,7 @@ class MySQLClient {
         };
       }
       
-      this.logger.info(`Testing MySQL connection (Promise) to ${config.host}:${config.port}`);
+      // Testing MySQL connection - no logging for security
       
       // Determine the connection host
       let connectionHost = config.host;
@@ -806,7 +806,7 @@ class MySQLClient {
           return;
         }
         
-        this.logger.info(`Testing MySQL connection to ${config.host}:${config.port}`);
+        // Testing MySQL connection - no logging for security
         
         // Determine the connection host
         let connectionHost = config.host;

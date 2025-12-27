@@ -57,14 +57,11 @@ class CpanelClient {
         })
       };
 
-      this.logger.info(`Making cPanel JSON API v3 call: ${module}/${function_name} for user: ${this.username}`);
-      this.logger.info(`Request URL: ${url}`);
-      this.logger.info(`Request data: ${formData.toString()}`);
+      // Making cPanel JSON API v3 call - no logging for security
       
       const response = await axios(config);
       
-      this.logger.info(`Response status: ${response.status}`);
-      this.logger.info(`Response data: ${JSON.stringify(response.data, null, 2)}`);
+      // Response received - no logging for security
       
       // cPanel JSON API v3 response format analysis
       // The response can have different structures depending on the API call
@@ -86,12 +83,11 @@ class CpanelClient {
         throw new Error('Empty or invalid response from cPanel API');
       }
       
-      this.logger.info(`Parsed result: ${JSON.stringify(result, null, 2)}`);
+      // Result parsed - no logging for security
       
       // Check if the operation was successful
       if (result.status === 1 || result.status === '1') {
-        // Success
-        this.logger.info(`cPanel API call successful: ${module}/${function_name}`);
+        // Success - no logging
         return result;
       } else if (result.status === 0 || result.status === '0') {
         // Failure - extract error information
@@ -443,13 +439,13 @@ class CpanelClient {
    */
   async addMySQLHost(host) {
     try {
-      this.logger.info(`Adding MySQL host: ${host} for user: ${this.username}`);
+      // Adding MySQL host - minimal logging
       
       const response = await this.makeJsonApiCall('Mysql', 'add_host', {
         host: host
       });
       
-      this.logger.info(`Successfully added MySQL host: ${host}`);
+      // MySQL host added successfully - no logging
       return response;
     } catch (error) {
       this.logger.error(`Failed to add MySQL host ${host}: ${error.message}`);
