@@ -140,7 +140,7 @@ config/production.json
 # Documentation build
 docs/build/
 docs/_build/
-
+docs/
 # Lock files (uncomment if you want to ignore them)
 # package-lock.json
 # yarn.lock

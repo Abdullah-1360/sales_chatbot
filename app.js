@@ -21,6 +21,7 @@ const { connectDB } = require('./src/config/database');
 const { syncAllProducts, scheduleSync } = require('./src/services/whmcsSync');
 const { upsertAllTldPricing } = require('./src/services/tldPricing');
 const { scheduleLeadCleanup } = require('./src/services/leadCleanup');
+const jobScheduler = require('./src/services/jobScheduler');
 const cfg = require('./src/config');
 
 // WebSocket initialization (disabled for cPanel/Passenger)
@@ -110,6 +111,16 @@ if (process.env.ENABLE_WEBSOCKET === 'true') {
       // Schedule automatic lead cleanup (lightweight operation)
       scheduleLeadCleanup();
       console.log('🧹 Lead cleanup scheduled (runs every hour)');
+      
+      // Initialize job scheduler for cPHulk IP removal
+      try {
+        await jobScheduler.initialize();
+        await jobScheduler.startPeriodicCleanup();
+        console.log('⏰ Job scheduler initialized for cPHulk IP removal');
+      } catch (error) {
+        console.warn('⚠️  Job scheduler initialization failed:', error.message);
+        console.warn('⚠️  cPHulk IP removal scheduling will use fallback logging');
+      }
     }
 
   } catch (error) {

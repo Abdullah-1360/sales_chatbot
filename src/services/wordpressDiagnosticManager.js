@@ -3,6 +3,7 @@ const GuardStep = require('../steps/guards');
 const ParserStep = require('../steps/parser');
 const DatabaseUserManagementStep = require('../steps/databaseUserManagement');
 const MySQLStep = require('../steps/mysql');
+const MySQLHostManagementStep = require('../steps/mysqlHostManagement');
 const ErrorMappingStep = require('../steps/errorMapping');
 const RemediationStep = require('../steps/remediation');
 const performanceConfig = require('../config/performance');
@@ -77,6 +78,7 @@ class WordPressDiagnosticManager {
     this.parserStep = new ParserStep();
     this.databaseUserManagementStep = new DatabaseUserManagementStep();
     this.mysqlStep = new MySQLStep();
+    this.mysqlHostManagementStep = new MySQLHostManagementStep();
     this.errorMappingStep = new ErrorMappingStep();
     this.remediationStep = new RemediationStep(this.mysqlStep.mysqlClient);
   }
@@ -264,33 +266,15 @@ class WordPressDiagnosticManager {
         return result;
       }
 
-      // Step B2: Fast localhost validation
-      const localhostValidation = this.mysqlStep.mysqlClient.validateLocalhostRequirement(
-        result.workflow.stepB_parseConfig.config
-      );
-      
-      if (!localhostValidation.valid) {
-        result.escalation = {
-          type: 'configuration_error',
-          reason: 'NON_LOCALHOST_HOST',
-          message: localhostValidation.userFriendlyMessage,
-          recommendations: localhostValidation.recommendations
-        };
-        result.summary = {
-          status: 'NON_LOCALHOST_HOST',
-          message: localhostValidation.userFriendlyMessage,
-          escalation: result.escalation
-        };
-        result.duration = Date.now() - startTime;
-        return result;
-      }
+      // Step B2: Skip early localhost validation - we'll do it after host management
+      // This allows us to modify the config to use server IP before validation
 
       // Step B2: Database User Management (optimized)
       result.workflow.stepB2_databaseUserManagement = await this.databaseUserManagementStep.manageDatabaseUser(
         cpanelClient,
         result.workflow.stepB_parseConfig.config,
         'public_html/wp-config.php',
-        result.workflow.stepB_parseConfig.wpConfigData?.content
+        result.workflow.stepB_parseConfig.wpConfigData?.content // Pass existing content to avoid re-reading
       );
 
       // Use updated credentials if available (avoid object spread)
@@ -326,6 +310,49 @@ class WordPressDiagnosticManager {
       const configForMysqlTest = Object.assign({}, result.workflow.stepB_parseConfig, {
         config: finalConfig
       });
+      
+      // Step C1: MySQL Host Management (add client IP for remote access)
+      result.workflow.stepC1_mysqlHostManagement = await this.mysqlHostManagementStep.executeHostManagement(
+        cpanelClient,
+        params.req,
+        params.cpanelHost,
+        {
+          scheduleCleanup: true,
+          cleanupDelay: 5 * 60 * 1000 // 5 minutes
+        }
+      );
+      
+      // Log host management result
+      if (result.workflow.stepC1_mysqlHostManagement.success) {
+        // Host management successful - minimal logging
+      } else {
+        logger.warn(`MySQL host management failed: ${result.workflow.stepC1_mysqlHostManagement.error}`);
+      }
+      
+      // Modify config to use server IP if host management was successful
+      if (result.workflow.stepC1_mysqlHostManagement.success && result.workflow.stepC1_mysqlHostManagement.serverIP) {
+        // Replace localhost with server IP for remote connection
+        const remoteConfig = Object.assign({}, configForMysqlTest.config, {
+          host: result.workflow.stepC1_mysqlHostManagement.serverIP,
+          serverIP: result.workflow.stepC1_mysqlHostManagement.serverIP // Pass server IP for MySQL client
+        });
+        
+        configForMysqlTest.config = remoteConfig;
+      } else {
+        // Even if host management failed, try to pass server IP from cPanel host
+        if (params.cpanelHost) {
+          try {
+            const dns = require('dns').promises;
+            const addresses = await dns.resolve4(params.cpanelHost);
+            if (addresses && addresses.length > 0) {
+              const serverIP = addresses[0];
+              configForMysqlTest.config.serverIP = serverIP;
+            }
+          } catch (dnsError) {
+            // Silent DNS error
+          }
+        }
+      }
       
       result.workflow.stepC_mysqlConnection = await this.mysqlStep.testMySQLConnection(
         configForMysqlTest,

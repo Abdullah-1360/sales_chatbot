@@ -177,8 +177,6 @@ class MySQLStep {
    */
   async testMySQLConnection(parsedConfig, dnsCheckResult = null) {
     try {
-      // MySQL connection test - no logging for performance
-      
       if (!parsedConfig || !parsedConfig.success) {
         return {
           success: false,
@@ -190,135 +188,34 @@ class MySQLStep {
       // Create a deep copy of the config to prevent winston interference
       const config = JSON.parse(JSON.stringify(parsedConfig.config));
       
-      // FIRST: Validate localhost requirement using MySQLClient validation
-      const localhostValidation = this.mysqlClient.validateLocalhostRequirement(config);
-      
-      if (!localhostValidation.valid) {
-        this.logger.error(`Localhost validation failed: ${localhostValidation.message}`);
-        
-        return {
-          success: false,
-          error: localhostValidation.message,
-          errorCode: 'NON_LOCALHOST_HOST',
-          localhostValidation: localhostValidation,
-          connectionTest: {
-            originalHost: null,
-            resolvedIp: null
-          },
-          dnsResolution: {
-            success: false,
-            ip: null,
-            hostname: config.host,
-            fromDnsCheck: false,
-            error: 'Localhost validation failed'
-          },
-          finalResult: {
-            success: false,
-            error: localhostValidation.message,
-            errorCode: 'NON_LOCALHOST_HOST',
-            localhostValidation: localhostValidation,
-            connectionDetails: {
-              host: config.host,
-              user: config.user,
-              database: config.database,
-              port: config.port,
-              originalHost: config.host,
-              usedResolvedIp: false,
-              localhostValidationFailed: true
-            }
-          },
-          config: {
-            host: config.host,
-            user: config.user,
-            database: config.database,
-            port: config.port
-          }
-        };
+      // Check if we have a server IP from host management step
+      let serverIP = null;
+      if (config.serverIP) {
+        serverIP = config.serverIP;
       }
       
-      // Localhost validation - no logging for performance
-      
-      // Check if we have a resolved IP from Step A DNS check
-      let resolvedIpFromDnsCheck = null;
-      
-      // Log DNS check result safely without winston interference
-      // console.log('DNS Check Result:', JSON.stringify(dnsCheckResult, null, 2));
-      
-      if (dnsCheckResult?.dnsInfo?.resolvedIps && dnsCheckResult.dnsInfo.resolvedIps.length > 0) {
-        resolvedIpFromDnsCheck = dnsCheckResult.dnsInfo.resolvedIps[0];
-        // Using resolved IP from DNS check - no logging for performance
-      } else {
-        // console.log('No resolved IP available from Step A DNS check');
-        if (dnsCheckResult) {
-          // console.log('DNS check result structure:', {
-          //   passed: dnsCheckResult.passed,
-          //   hasDnsInfo: !!dnsCheckResult.dnsInfo,
-          //   dnsInfoKeys: dnsCheckResult.dnsInfo ? Object.keys(dnsCheckResult.dnsInfo) : null
-          // });
-        } else {
-          // console.log('DNS check result is null or undefined');
-        }
+      // For localhost connections, we need to use the server IP
+      let connectionHost = config.host;
+      if ((config.host === 'localhost' || config.host === '127.0.0.1') && serverIP) {
+        connectionHost = serverIP;
       }
       
-      // Only test connection with resolved IP - no localhost fallback
-      let connectionTestResolved = null;
-      
-      if (resolvedIpFromDnsCheck) {
-        // Testing MySQL connection with DNS-resolved IP - no logging for performance
-        connectionTestResolved = await this.mysqlClient.testConnection(config, resolvedIpFromDnsCheck);
-      } else {
-        // If no resolved IP from DNS check, fail immediately
-        return {
-          success: false,
-          error: 'No resolved IP available from DNS check and localhost connections are not supported',
-          localhostValidation: localhostValidation,
-          connectionTest: {
-            originalHost: null,
-            resolvedIp: null
-          },
-          dnsResolution: {
-            success: false,
-            ip: null,
-            hostname: config.host,
-            fromDnsCheck: false,
-            error: 'No resolved IP from DNS check'
-          },
-          finalResult: {
-            success: false,
-            error: 'No resolved IP available from DNS check'
-          },
-          config: {
-            host: config.host,
-            user: config.user,
-            database: config.database,
-            port: config.port
-          }
-        };
-      }
-      
-      // Use the resolved IP test result as the final result
-      const finalResult = connectionTestResolved;
-      const overallSuccess = connectionTestResolved?.success || false;
+      // Test connection directly with server IP (no localhost validation needed)
+      const connectionResult = await this.mysqlClient.testConnectionPromise(config, serverIP);
       
       return {
-        success: overallSuccess,
-        localhostValidation: localhostValidation,
-        connectionTest: {
-          originalHost: null, // No localhost testing
-          resolvedIp: connectionTestResolved
-        },
-        dnsResolution: {
-          success: !!resolvedIpFromDnsCheck,
-          ip: resolvedIpFromDnsCheck,
-          hostname: config.host,
-          fromDnsCheck: !!resolvedIpFromDnsCheck
-        },
-        finalResult,
+        success: connectionResult.success,
+        error: connectionResult.error,
+        errorCode: connectionResult.errorCode,
+        localhostValidation: connectionResult.localhostValidation,
+        mappedError: connectionResult.mappedError,
+        connectionDetails: connectionResult.connectionDetails,
         config: {
           host: config.host,
           user: config.user,
           database: config.database,
-          port: config.port
+          port: config.port,
+          serverIP: serverIP
         }
       };
 

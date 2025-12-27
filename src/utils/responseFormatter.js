@@ -159,11 +159,8 @@ class ResponseFormatter {
    */
   static formatCachedResponse(cachedData, cacheAge) {
     const formatted = this.formatDiagnosticResponse(cachedData, false);
-    formatted.performance = {
-      totalTime: formatted.performance?.totalTime || 0,
-      cached: true,
-      cacheAge: cacheAge
-    };
+    // Remove performance data for cleaner response
+    delete formatted.performance;
     formatted.message += ' (cached)';
     return formatted;
   }
@@ -226,6 +223,8 @@ class ResponseFormatter {
           whitelisted: result.whitelisted,
           flushed: result.flushed,
           ticketCreated: result.ticketCreated,
+          ticketId: result.ticketId, // WHMCS ticket ID
+          ticketNumber: result.ticketNumber, // WHMCS ticket number (TID)
           scheduledRemoval: result.scheduledRemoval
         };
 

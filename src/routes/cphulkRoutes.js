@@ -62,4 +62,31 @@ router.get('/capabilities', cphulkController.getCapabilities);
  */
 router.get('/health', cphulkController.healthCheck);
 
+/**
+ * GET /cphulk/scheduled-removals
+ * 
+ * Get scheduled IP removals from the job scheduler
+ * Query Parameters:
+ * - ip (optional): Filter by specific IP address
+ * - server (optional): Filter by specific server name
+ */
+router.get('/scheduled-removals', cphulkController.getScheduledRemovals);
+
+/**
+ * POST /cphulk/cancel-scheduled-removal
+ * 
+ * Cancel a scheduled IP removal
+ * Body Parameters:
+ * - ip (required): IP address to cancel removal for
+ * - server (required): Server name to cancel removal for
+ */
+router.post('/cancel-scheduled-removal', cphulkController.cancelScheduledRemoval);
+
+/**
+ * GET /cphulk/scheduler-stats
+ * 
+ * Get job scheduler statistics including total jobs, scheduled, running, completed, and failed
+ */
+router.get('/scheduler-stats', cphulkController.getSchedulerStats);
+
 module.exports = router;

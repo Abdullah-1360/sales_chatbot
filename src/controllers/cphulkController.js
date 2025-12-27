@@ -73,20 +73,20 @@ class CphulkController {
     this.whitelistIP = this.whitelistIP.bind(this);
     this.getCapabilities = this.getCapabilities.bind(this);
     this.healthCheck = this.healthCheck.bind(this);
+    this.getScheduledRemovals = this.getScheduledRemovals.bind(this);
+    this.cancelScheduledRemoval = this.cancelScheduledRemoval.bind(this);
+    this.getSchedulerStats = this.getSchedulerStats.bind(this);
   }
 
   /**
    * Check failed login attempts for an IP address
    */
   async checkFailedLogins(req, res) {
-    const timer = performanceMonitor.startTimer('check_failed_logins_total');
     const startTime = Date.now();
     
     try {
-      // Validation
-      const validationTimer = performanceMonitor.startTimer('validation');
+      // Fast validation
       const { error, value } = checkFailedLoginsSchema.validate(req.body);
-      validationTimer.end();
       
       if (error) {
         const formattedError = ResponseFormatter.formatValidationError(
@@ -96,16 +96,16 @@ class CphulkController {
       }
 
       // Check cache first
-      const cacheTimer = performanceMonitor.startTimer('cache_lookup');
       const cacheKey = `failed_logins:${value.ip}:${value.domain || 'no-domain'}`;
       const cached = cphulkCache.get(cacheKey);
-      cacheTimer.end();
       
       if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
         const cacheAge = Date.now() - cached.timestamp;
         const formattedResponse = ResponseFormatter.formatCachedResponse(cached.data, cacheAge);
         
-        timer.end();
+        // Remove performance data from cached response
+        delete formattedResponse.performance;
+        
         return res.status(formattedResponse.success ? 200 : 500).json(formattedResponse);
       }
 
@@ -115,17 +115,13 @@ class CphulkController {
       // If domain is provided, resolve client credentials and validate service status
       if (value.domain) {
         // Step 1: Resolve client credentials
-        const credentialTimer = performanceMonitor.startTimer('credential_resolution');
         const credentialResult = await this.credentialResolver.resolveCpanelCredentials(
           value.domain,
           value.email,
           value.phone
         );
-        credentialTimer.end();
 
         if (!credentialResult.success) {
-          timer.end();
-          
           // Check if this is a phone verification error
           if (credentialResult.error && typeof credentialResult.error === 'object' && 
               credentialResult.error.type === 'phone_verification_failed') {
@@ -144,55 +140,35 @@ class CphulkController {
             value.domain,
             credentialResult.error
           );
-          formattedError.performance = {
-            totalTime: Date.now() - startTime,
-            cached: false
-          };
           return res.status(404).json(formattedError);
         }
 
         clientInfo = credentialResult.clientInfo;
         serverInfo = credentialResult.serverInfo;
 
-        // Step 2: Validate service/domain status
-        const statusTimer = performanceMonitor.startTimer('status_validation');
-        const statusValidation = await this.validateServiceStatus(clientInfo.id, value.domain);
-        statusTimer.end();
+        // Step 2: Validate service/domain status (optimized - skip in production unless requested)
+        if (process.env.NODE_ENV !== 'production' || req.query.validateService === 'true') {
+          const statusValidation = await this.validateServiceStatus(clientInfo.id, value.domain);
 
-        if (!statusValidation.valid) {
-          timer.end();
-          
-          const statusErrorResponse = {
-            success: false,
-            status: 'SERVICE_UNAVAILABLE',
-            message: statusValidation.message,
-            timestamp: new Date().toISOString(),
-            domain: value.domain,
-            serviceStatus: statusValidation.serviceStatus,
-            performance: {
-              totalTime: Date.now() - startTime,
-              cached: false
-            }
-          };
-          
-          return res.status(412).json(statusErrorResponse); // 412 Precondition Failed
+          if (!statusValidation.valid) {
+            const statusErrorResponse = {
+              success: false,
+              status: 'SERVICE_UNAVAILABLE',
+              message: statusValidation.message,
+              timestamp: new Date().toISOString(),
+              domain: value.domain,
+              serviceStatus: statusValidation.serviceStatus
+            };
+            
+            return res.status(412).json(statusErrorResponse); // 412 Precondition Failed
+          }
         }
       }
 
       // Step 3: Check failed logins
-      const cphulkTimer = performanceMonitor.startTimer('cphulk_check');
       const result = await this.manager.getFailedLogins(value.ip, serverInfo?.serverName);
-      cphulkTimer.end();
 
-      // Add performance information
-      const totalTime = Date.now() - startTime;
-      result.performance = {
-        totalTime,
-        cached: false,
-        breakdown: performanceMonitor.getSummary()
-      };
-
-      // Add client and domain information if available
+      // Add client and domain information if available (minimal data)
       if (clientInfo) {
         result.clientInfo = {
           id: clientInfo.id,
@@ -214,27 +190,25 @@ class CphulkController {
 
       // Cache successful results
       if (result.success) {
-        const cacheTimer = performanceMonitor.startTimer('cache_store');
         cphulkCache.set(cacheKey, {
           data: { ...result },
           timestamp: Date.now()
         });
-        cacheTimer.end();
       }
 
-      // Format the response
-      const includeDebugInfo = req.query.debug === 'true' || process.env.NODE_ENV === 'development';
+      // Format the response (no debug info in production for performance)
+      const includeDebugInfo = req.query.debug === 'true' && process.env.NODE_ENV === 'development';
       const formattedResponse = ResponseFormatter.formatCphulkResponse(result, includeDebugInfo);
       
       // Sanitize response to remove sensitive information
       const sanitizedResponse = ResponseFormatter.sanitizeResponse(formattedResponse);
 
-      timer.end();
+      // Remove performance data from response
+      delete sanitizedResponse.performance;
+
       return res.status(result.success ? 200 : 500).json(sanitizedResponse);
 
     } catch (error) {
-      timer.end();
-      
       if (process.env.NODE_ENV !== 'production') {
         console.error('cPHulk check failed logins error:', error);
       }
@@ -248,10 +222,6 @@ class CphulkController {
           type: 'system',
           reason: 'INTERNAL_ERROR',
           message: error.message
-        },
-        performance: {
-          totalTime: Date.now() - startTime,
-          cached: false
         }
       };
       
@@ -263,14 +233,11 @@ class CphulkController {
    * Whitelist an IP address in cPHulk with intelligent workflow based on authservice
    */
   async whitelistIP(req, res) {
-    const timer = performanceMonitor.startTimer('whitelist_ip_total');
     const startTime = Date.now();
     
     try {
-      // Validation
-      const validationTimer = performanceMonitor.startTimer('validation');
+      // Fast validation without performance monitoring
       const { error, value } = whitelistIPSchema.validate(req.body);
-      validationTimer.end();
       
       if (error) {
         const formattedError = ResponseFormatter.formatValidationError(
@@ -282,20 +249,16 @@ class CphulkController {
       let clientInfo = null;
       let serverInfo = null;
 
-      // If domain is provided, resolve client credentials and validate service status
+      // If domain is provided, resolve client credentials and validate service status in parallel where possible
       if (value.domain) {
         // Step 1: Resolve client credentials
-        const credentialTimer = performanceMonitor.startTimer('credential_resolution');
         const credentialResult = await this.credentialResolver.resolveCpanelCredentials(
           value.domain,
           value.email,
           value.phone
         );
-        credentialTimer.end();
 
         if (!credentialResult.success) {
-          timer.end();
-          
           // Check if this is a phone verification error
           if (credentialResult.error && typeof credentialResult.error === 'object' && 
               credentialResult.error.type === 'phone_verification_failed') {
@@ -314,43 +277,32 @@ class CphulkController {
             value.domain,
             credentialResult.error
           );
-          formattedError.performance = {
-            totalTime: Date.now() - startTime,
-            cached: false
-          };
           return res.status(404).json(formattedError);
         }
 
         clientInfo = credentialResult.clientInfo;
         serverInfo = credentialResult.serverInfo;
 
-        // Step 2: Validate service/domain status
-        const statusTimer = performanceMonitor.startTimer('status_validation');
-        const statusValidation = await this.validateServiceStatus(clientInfo.id, value.domain);
-        statusTimer.end();
+        // Step 2: Validate service/domain status (optimized - skip detailed checks in production)
+        if (process.env.NODE_ENV !== 'production' || req.query.validateService === 'true') {
+          const statusValidation = await this.validateServiceStatus(clientInfo.id, value.domain);
 
-        if (!statusValidation.valid) {
-          timer.end();
-          
-          const statusErrorResponse = {
-            success: false,
-            status: 'SERVICE_UNAVAILABLE',
-            message: statusValidation.message,
-            timestamp: new Date().toISOString(),
-            domain: value.domain,
-            serviceStatus: statusValidation.serviceStatus,
-            performance: {
-              totalTime: Date.now() - startTime,
-              cached: false
-            }
-          };
-          
-          return res.status(412).json(statusErrorResponse); // 412 Precondition Failed
+          if (!statusValidation.valid) {
+            const statusErrorResponse = {
+              success: false,
+              status: 'SERVICE_UNAVAILABLE',
+              message: statusValidation.message,
+              timestamp: new Date().toISOString(),
+              domain: value.domain,
+              serviceStatus: statusValidation.serviceStatus
+            };
+            
+            return res.status(412).json(statusErrorResponse); // 412 Precondition Failed
+          }
         }
       }
 
       // Step 3: Execute intelligent whitelisting workflow based on authservice
-      const cphulkTimer = performanceMonitor.startTimer('cphulk_intelligent_whitelist');
       const result = await this.manager.intelligentWhitelistWorkflow(
         value.ip, 
         serverInfo?.serverName, 
@@ -358,17 +310,8 @@ class CphulkController {
         value.domain,
         value.reason || 'Client request via API'
       );
-      cphulkTimer.end();
 
-      // Add performance information
-      const totalTime = Date.now() - startTime;
-      result.performance = {
-        totalTime,
-        cached: false,
-        breakdown: performanceMonitor.getSummary()
-      };
-
-      // Add client and domain information if available
+      // Add client and domain information if available (minimal data)
       if (clientInfo) {
         result.clientInfo = {
           id: clientInfo.id,
@@ -392,19 +335,19 @@ class CphulkController {
       const cacheKey = `failed_logins:${value.ip}:${value.domain || 'no-domain'}`;
       cphulkCache.delete(cacheKey);
 
-      // Format the response
-      const includeDebugInfo = req.query.debug === 'true' || process.env.NODE_ENV === 'development';
+      // Format the response (no debug info in production for performance)
+      const includeDebugInfo = req.query.debug === 'true' && process.env.NODE_ENV === 'development';
       const formattedResponse = ResponseFormatter.formatCphulkResponse(result, includeDebugInfo);
       
       // Sanitize response to remove sensitive information
       const sanitizedResponse = ResponseFormatter.sanitizeResponse(formattedResponse);
 
-      timer.end();
+      // Remove performance data from response for better performance and cleaner output
+      delete sanitizedResponse.performance;
+
       return res.status(result.success ? 200 : 500).json(sanitizedResponse);
 
     } catch (error) {
-      timer.end();
-      
       if (process.env.NODE_ENV !== 'production') {
         console.error('cPHulk whitelist IP error:', error);
       }
@@ -418,10 +361,6 @@ class CphulkController {
           type: 'system',
           reason: 'INTERNAL_ERROR',
           message: error.message
-        },
-        performance: {
-          totalTime: Date.now() - startTime,
-          cached: false
         }
       };
       
@@ -631,6 +570,197 @@ class CphulkController {
         }
       }
     };
+  }
+
+  /**
+   * Get scheduled IP removal jobs
+   */
+  async getScheduledRemovals(req, res) {
+    try {
+      const { ip, serverName } = req.query;
+      const jobScheduler = require('../services/jobScheduler');
+      
+      const jobs = await jobScheduler.getScheduledJobs(ip, serverName);
+      
+      return res.json({
+        success: true,
+        data: {
+          scheduledJobs: jobs,
+          totalJobs: jobs.length
+        },
+        message: 'Scheduled IP removal jobs retrieved successfully'
+      });
+
+    } catch (error) {
+      if (process.env.NODE_ENV !== 'production') {
+        console.error('Get scheduled removals error:', error);
+      }
+      return res.status(500).json({
+        success: false,
+        error: 'Internal server error',
+        message: error.message
+      });
+    }
+  }
+
+  /**
+   * Cancel scheduled IP removal
+   */
+  async cancelScheduledRemoval(req, res) {
+    const timer = performanceMonitor.startTimer('cancel_scheduled_removal');
+    
+    try {
+      const { ip, serverName } = req.body;
+      
+      if (!ip || !serverName) {
+        return res.status(400).json({
+          success: false,
+          error: 'Missing required parameters',
+          message: 'Both ip and serverName are required'
+        });
+      }
+
+      const jobScheduler = require('../services/jobScheduler');
+      const result = await jobScheduler.cancelIPRemoval(ip, serverName);
+      
+      timer.end();
+      return res.json({
+        success: true,
+        data: result,
+        message: `Cancelled ${result.cancelledJobs} scheduled removal jobs for IP ${ip}`
+      });
+
+    } catch (error) {
+      timer.end();
+      
+      if (process.env.NODE_ENV !== 'production') {
+        console.error('Cancel scheduled removal error:', error);
+      }
+      return res.status(500).json({
+        success: false,
+        error: 'Internal server error',
+        message: error.message
+      });
+    }
+  }
+
+  /**
+   * Get job scheduler statistics
+   */
+  async getSchedulerStats(req, res) {
+    try {
+      const jobScheduler = require('../services/jobScheduler');
+      const stats = await jobScheduler.getStats();
+      
+      return res.json({
+        success: true,
+        data: stats,
+        message: 'Job scheduler statistics retrieved successfully'
+      });
+
+    } catch (error) {
+      if (process.env.NODE_ENV !== 'production') {
+        console.error('Get scheduler stats error:', error);
+      }
+      return res.status(500).json({
+        success: false,
+        error: 'Internal server error',
+        message: error.message
+      });
+    }
+  }
+
+  /**
+   * Get scheduled IP removals
+   */
+  async getScheduledRemovals(req, res) {
+    try {
+      const { ip, server } = req.query;
+      const jobScheduler = require('../services/jobScheduler');
+      
+      const jobs = await jobScheduler.getScheduledJobs(ip, server);
+      
+      return res.json({
+        success: true,
+        data: {
+          scheduledRemovals: jobs,
+          totalJobs: jobs.length
+        },
+        message: 'Scheduled IP removals retrieved successfully'
+      });
+
+    } catch (error) {
+      if (process.env.NODE_ENV !== 'production') {
+        console.error('Get scheduled removals error:', error);
+      }
+      return res.status(500).json({
+        success: false,
+        error: 'Internal server error',
+        message: error.message
+      });
+    }
+  }
+
+  /**
+   * Cancel scheduled IP removal
+   */
+  async cancelScheduledRemoval(req, res) {
+    try {
+      const { ip, server } = req.body;
+      
+      if (!ip || !server) {
+        return res.status(400).json({
+          success: false,
+          error: 'Missing required parameters',
+          message: 'Both ip and server are required'
+        });
+      }
+
+      const jobScheduler = require('../services/jobScheduler');
+      const result = await jobScheduler.cancelIPRemoval(ip, server);
+      
+      return res.json({
+        success: true,
+        data: result,
+        message: `Cancelled ${result.cancelledJobs} scheduled removal(s) for IP ${ip}`
+      });
+
+    } catch (error) {
+      if (process.env.NODE_ENV !== 'production') {
+        console.error('Cancel scheduled removal error:', error);
+      }
+      return res.status(500).json({
+        success: false,
+        error: 'Internal server error',
+        message: error.message
+      });
+    }
+  }
+
+  /**
+   * Get job scheduler statistics
+   */
+  async getSchedulerStats(req, res) {
+    try {
+      const jobScheduler = require('../services/jobScheduler');
+      const stats = await jobScheduler.getStats();
+      
+      return res.json({
+        success: true,
+        data: stats,
+        message: 'Job scheduler statistics retrieved successfully'
+      });
+
+    } catch (error) {
+      if (process.env.NODE_ENV !== 'production') {
+        console.error('Get scheduler stats error:', error);
+      }
+      return res.status(500).json({
+        success: false,
+        error: 'Internal server error',
+        message: error.message
+      });
+    }
   }
 
   /**

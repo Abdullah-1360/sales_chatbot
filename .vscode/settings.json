@@ -1,2 +1,5 @@
 {
+    "terminal.integrated.suggest.enabled": true,
+    "terminal.integrated.defaultProfile.linux": "bash",
+    "terminal.integrated.tabs.defaultColor": "terminal.ansiBlack"
 }

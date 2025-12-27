@@ -24,9 +24,9 @@ const diagnosticSchema = Joi.object({
 
 const quickTestSchema = diagnosticSchema; // Reuse same schema
 
-// Optimized in-memory cache for diagnostic results (5 minute TTL)
+// Optimized in-memory cache for diagnostic results (2 minute TTL)
 const diagnosticCache = new Map();
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const CACHE_TTL = 2 * 60 * 1000; // 2 minutes
 const MAX_CACHE_SIZE = 1000; // Prevent memory bloat
 
 // Optimized cache cleanup with LRU eviction
@@ -90,24 +90,14 @@ class WordPressDiagnosticController {
         return res.status(400).json(formattedError);
       }
 
-      // Check cache first (with optimized cleanup)
+      // Cache disabled - always run fresh diagnostic
       const cacheTimer = performanceMonitor.startTimer('cache_lookup');
       const cacheKey = `${value.domain}:${value.email || value.phone || 'no-id'}`;
+      const bypassCache = true; // Always bypass cache
       
-      // Trigger cleanup if needed (non-blocking)
-      cleanupCache();
-      
-      const cached = diagnosticCache.get(cacheKey);
+      // Skip cache cleanup since cache is disabled
+      const cached = null; // Cache disabled
       cacheTimer.end();
-      
-      if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
-        // Return cached result with updated timestamp
-        const cacheAge = Date.now() - cached.timestamp;
-        const formattedResponse = ResponseFormatter.formatCachedResponse(cached.data, cacheAge);
-        
-        timer.end();
-        return res.status(formattedResponse.success ? 200 : 500).json(formattedResponse);
-      }
 
       // Step 1: Resolve cPanel credentials (optimized with timeout)
       const credentialTimer = performanceMonitor.startTimer('credential_resolution');
@@ -178,7 +168,8 @@ class WordPressDiagnosticController {
         approveServiceRestart: false,
         approveTableRepair: false,
         approveKillConnections: false,
-        whmcsService: req.whmcsService
+        whmcsService: req.whmcsService,
+        req: req // Pass request object for IP detection
       });
 
       // Step 3: Run diagnostic workflow (with timeout)
@@ -203,15 +194,15 @@ class WordPressDiagnosticController {
         breakdown: performanceMonitor.getSummary()
       };
 
-      // Cache successful results only (with size limit check)
-      if (result.success && diagnosticCache.size < MAX_CACHE_SIZE) {
-        const cacheTimer = performanceMonitor.startTimer('cache_store');
-        diagnosticCache.set(cacheKey, {
-          data: { ...result },
-          timestamp: Date.now()
-        });
-        cacheTimer.end();
-      }
+      // Cache disabled - no caching of results
+      // if (result.success && diagnosticCache.size < MAX_CACHE_SIZE && !bypassCache) {
+      //   const cacheTimer = performanceMonitor.startTimer('cache_store');
+      //   diagnosticCache.set(cacheKey, {
+      //     data: { ...result },
+      //     timestamp: Date.now()
+      //   });
+      //   cacheTimer.end();
+      // }
 
       // Format the response to remove irrelevant items
       const includeDebugInfo = req.query.debug === 'true' || process.env.NODE_ENV === 'development';

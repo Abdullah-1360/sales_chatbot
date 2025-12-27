@@ -365,29 +365,22 @@ class DatabaseUserManagementStep {
    * @param {string} wpConfigPath - Path to wp-config.php
    * @param {string} newUsername - New database username
    * @param {string} newPassword - New database password
-   * @param {string} existingContent - Existing wp-config.php content (optional, will read if not provided)
+   * @param {string} existingContent - Existing wp-config.php content (REQUIRED - will not read file if not provided)
    * @returns {Promise<Object>} Update result
    */
   async updateWpConfigCredentials(cpanelClient, wpConfigPath, newUsername, newPassword, existingContent = null) {
     try {
       this.logger.info(`Updating wp-config.php with new credentials...`);
 
-      let currentContent = existingContent;
-      
-      // Only read the file if content wasn't provided
-      if (!currentContent) {
-        this.logger.info('No existing content provided, reading wp-config.php from file');
-        currentContent = await cpanelClient.readFile(wpConfigPath);
-      } else {
-        this.logger.info('Using existing wp-config.php content from previous step');
+      // REQUIRE existing content to avoid multiple file reads
+      if (!existingContent) {
+        throw new Error('Existing wp-config.php content is required to avoid multiple file reads');
       }
       
-      if (!currentContent) {
-        throw new Error('Could not read wp-config.php file');
-      }
-
+      this.logger.info('Using provided wp-config.php content from previous step (avoiding duplicate file read)');
+      
       // Update DB_USER and DB_PASSWORD
-      let updatedContent = currentContent;
+      let updatedContent = existingContent;
       
       // Update DB_USER
       const originalContent = updatedContent;

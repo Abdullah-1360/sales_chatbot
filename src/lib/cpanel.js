@@ -176,7 +176,7 @@ class CpanelClient {
       }
       
       if (fileData && fileData.content) {
-        this.logger.info(`Successfully read file ${filePath} (${fileData.content.length} characters)`);
+        // File read successful - no logging for security
         return fileData.content;
       } else {
         throw new Error('No content returned from file');
@@ -301,7 +301,7 @@ class CpanelClient {
       // Check the response format as per your example
       if (response.data && response.data.metadata && response.data.metadata.result === 1) {
         const resultData = response.data.data?.uapi?.data;
-        this.logger.info(`UAPI call successful, returning data: ${JSON.stringify(resultData, null, 2)}`);
+        // UAPI call successful - no logging of sensitive data
         return resultData;
       } else {
         const errorMsg = response.data?.data?.uapi?.errors?.[0] || 
@@ -325,7 +325,7 @@ class CpanelClient {
    */
   async readWpConfig(dir = 'public_html', file = 'wp-config.php') {
     try {
-      this.logger.info(`Reading wp-config.php from ${dir}/${file} for user: ${this.username}`);
+      // Reading wp-config.php - no logging for security
       
       const fileData = await this.makeApiCall('Fileman', 'get_file_content', {
         dir: dir,
@@ -436,6 +436,68 @@ class CpanelClient {
       return null;
     }
   }
+
+  /**
+   * Add host to MySQL remote access list
+   * Uses cPanel JSON API v3 MySQL add_host function
+   */
+  async addMySQLHost(host) {
+    try {
+      this.logger.info(`Adding MySQL host: ${host} for user: ${this.username}`);
+      
+      const response = await this.makeJsonApiCall('Mysql', 'add_host', {
+        host: host
+      });
+      
+      this.logger.info(`Successfully added MySQL host: ${host}`);
+      return response;
+    } catch (error) {
+      this.logger.error(`Failed to add MySQL host ${host}: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Remove host from MySQL remote access list
+   * Uses cPanel JSON API v3 MySQL delete_host function
+   */
+  async removeMySQLHost(host) {
+    try {
+      this.logger.info(`Removing MySQL host: ${host} for user: ${this.username}`);
+      
+      const response = await this.makeJsonApiCall('Mysql', 'delete_host', {
+        host: host
+      });
+      
+      this.logger.info(`Successfully removed MySQL host: ${host}`);
+      return response;
+    } catch (error) {
+      this.logger.error(`Failed to remove MySQL host ${host}: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * List MySQL remote access hosts
+   * Uses cPanel JSON API v3 MySQL list_hosts function
+   * NOTE: This function is not available in most cPanel installations
+   * Commented out to prevent API errors
+   */
+  /*
+  async listMySQLHosts() {
+    try {
+      this.logger.info(`Listing MySQL hosts for user: ${this.username}`);
+      
+      const response = await this.makeJsonApiCall('Mysql', 'list_hosts');
+      
+      this.logger.info(`Successfully retrieved MySQL hosts list`);
+      return response;
+    } catch (error) {
+      this.logger.error(`Failed to list MySQL hosts: ${error.message}`);
+      throw error;
+    }
+  }
+  */
 }
 
 module.exports = CpanelClient;

@@ -17,6 +17,7 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "agenda": "^5.0.0",
     "axios": "^1.13.2",
     "compression": "^1.8.1",
     "cors": "^2.8.5",

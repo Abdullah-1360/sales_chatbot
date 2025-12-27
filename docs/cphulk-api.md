@@ -406,9 +406,39 @@ The cPHulk API follows the same patterns as other endpoints in the system:
 - Uses the same response formatting and error handling patterns
 - Integrates with existing WHM service infrastructure
 
-## Server Requirements
+## WHM API Endpoints Used
 
-- WHM API access with appropriate permissions
-- cPHulk enabled on target servers
-- Valid API keys configured for target servers
-- WHMCS integration for client and service validation
+The cPHulk API uses the following WHM API endpoints:
+
+### For Checking Failed Logins:
+- **Endpoint**: `get_cphulk_failed_logins`
+- **Method**: GET
+- **API Version**: 1
+- **Parameters**: 
+  - `api.filter.a.field=ip`
+  - `api.filter.a.arg0={ip_address}`
+  - `api.filter.a.type=eq`
+  - `api.filter.enable=1`
+
+### For Whitelisting IPs:
+- **Endpoint**: `create_cphulk_record`
+- **Method**: POST
+- **API Version**: 1
+- **Parameters**:
+  - `ip={ip_address}`
+  - `list_name=white`
+
+### For Removing IPs from Whitelist:
+- **Endpoint**: `delete_cphulk_record`
+- **Method**: POST
+- **API Version**: 1
+- **Parameters**:
+  - `ip={ip_address}`
+  - `list_name=white`
+
+### For Flushing Login History:
+- **Endpoint**: `flush_cphulk_login_history_for_ips`
+- **Method**: GET
+- **API Version**: 1
+- **Parameters**:
+  - `ip={ip_address}`

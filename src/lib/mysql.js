@@ -126,13 +126,14 @@ class MySQLClient {
   }
 
   /**
-   * Validate if the database host is localhost/127.0.0.1
-   * If not, prevent further processing and inform user
+   * Validate if the database host is localhost/127.0.0.1 or a valid remote IP
+   * Now supports remote connections when host management is active
    * 
    * @param {Object} config - Database configuration
+   * @param {boolean} allowRemote - Allow remote IP connections (default: false)
    * @returns {Object} Validation result
    */
-  validateLocalhostRequirement(config) {
+  validateLocalhostRequirement(config, allowRemote = false) {
     const host = config.host ? String(config.host).toLowerCase().trim() : '';
     
     // Check if host is localhost or 127.0.0.1
@@ -143,45 +144,95 @@ class MySQLClient {
                        host.startsWith('127.') ||
                        host === '';
     
-    if (!isLocalhost) {
-      this.logger.warn(`Database host '${host}' is not localhost - stopping further processing`);
-      
+    // Check if it's a valid IP address (for remote connections)
+    const isValidIP = /^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/.test(host);
+    
+    // If it's localhost, always allow
+    if (isLocalhost) {
       return {
-        valid: false,
+        valid: true,
         host: host,
-        reason: 'NON_LOCALHOST_HOST',
-        message: 'Database host is not localhost',
-        userFriendlyMessage: `The database host '${host}' is not configured for localhost. This diagnostic tool only works with localhost MySQL configurations.`,
-        severity: 'HIGH',
-        category: 'configuration_error',
-        recommendations: [
-          'Verify the DB_HOST value in wp-config.php is set to "localhost" or "127.0.0.1"',
-          'If using a remote database server, this diagnostic tool cannot test the connection',
-          'For remote databases, use your hosting provider\'s database management tools',
-          'Contact technical support if you need help with remote database configuration'
-        ],
+        reason: 'LOCALHOST_DETECTED',
+        message: 'Database host is localhost - can proceed with testing',
+        userFriendlyMessage: `Database is configured for localhost (${host}) - connection testing can proceed.`,
+        severity: 'INFO',
+        category: 'configuration_valid',
+        isRemote: false,
+        recommendations: [],
         technicalDetails: {
           configuredHost: host,
-          expectedHosts: ['localhost', '127.0.0.1', '::1'],
-          isRemoteDatabase: true
+          isLocalhost: true,
+          allowRemote: allowRemote
         }
       };
     }
     
-    // Localhost validation - no logging for performance
+    // If it's not localhost but allowRemote is true, check if it's a valid IP
+    if (allowRemote) {
+      if (isValidIP) {
+        return {
+          valid: true,
+          host: host,
+          reason: 'REMOTE_HOST_ALLOWED',
+          message: 'Database host is remote IP - can proceed with testing (host management active)',
+          userFriendlyMessage: `Database is configured for remote connection (${host}) - connection testing can proceed with host management.`,
+          severity: 'INFO',
+          category: 'configuration_valid',
+          isRemote: true,
+          recommendations: [],
+          technicalDetails: {
+            configuredHost: host,
+            isLocalhost: false,
+            allowRemote: allowRemote,
+            isValidIP: true
+          }
+        };
+      } else {
+        this.logger.warn(`Database host '${host}' is not a valid IP address for remote connection`);
+        
+        return {
+          valid: false,
+          host: host,
+          reason: 'INVALID_REMOTE_HOST',
+          message: 'Database host is not a valid IP address for remote connection',
+          userFriendlyMessage: `The database host '${host}' is not a valid IP address for remote connection.`,
+          severity: 'HIGH',
+          category: 'configuration_error',
+          recommendations: [
+            'Ensure the database host is a valid IP address',
+            'Check if the server IP was resolved correctly',
+            'Contact technical support if you need help with remote database configuration'
+          ],
+          technicalDetails: {
+            configuredHost: host,
+            allowRemote: allowRemote,
+            isValidIP: false
+          }
+        };
+      }
+    }
+    
+    // Not localhost and remote not allowed
+    this.logger.warn(`Database host '${host}' is not localhost - stopping further processing`);
     
     return {
-      valid: true,
+      valid: false,
       host: host,
-      reason: 'LOCALHOST_DETECTED',
-      message: 'Database host is localhost - can proceed with testing',
-      userFriendlyMessage: `Database is configured for localhost (${host}) - connection testing can proceed.`,
-      severity: 'INFO',
-      category: 'configuration_valid',
-      recommendations: [],
+      reason: 'NON_LOCALHOST_HOST',
+      message: 'Database host is not localhost',
+      userFriendlyMessage: `The database host '${host}' is not configured for localhost. This diagnostic tool only works with localhost MySQL configurations.`,
+      severity: 'HIGH',
+      category: 'configuration_error',
+      recommendations: [
+        'Verify the DB_HOST value in wp-config.php is set to "localhost" or "127.0.0.1"',
+        'If using a remote database server, this diagnostic tool cannot test the connection',
+        'For remote databases, use your hosting provider\'s database management tools',
+        'Contact technical support if you need help with remote database configuration'
+      ],
       technicalDetails: {
         configuredHost: host,
-        isLocalhost: true
+        expectedHosts: ['localhost', '127.0.0.1', '::1'],
+        isRemoteDatabase: true
       }
     };
   }
@@ -554,8 +605,15 @@ class MySQLClient {
    */
   async testConnectionPromise(config, resolvedIp = null) {
     try {
-      // First, validate if host is localhost
-      const localhostValidation = this.validateLocalhostRequirement(config);
+      // Determine if we should allow remote connections
+      const isRemoteConnection = resolvedIp || 
+                                (config.host !== 'localhost' && 
+                                 config.host !== '127.0.0.1' && 
+                                 config.host !== '::1' && 
+                                 config.host !== '');
+      
+      // Validate localhost requirement with remote connection support
+      const localhostValidation = this.validateLocalhostRequirement(config, true); // Always allow remote now
       
       if (!localhostValidation.valid) {
         this.logger.error(`Localhost validation failed: ${localhostValidation.message}`);
@@ -589,12 +647,26 @@ class MySQLClient {
       
       this.logger.info(`Testing MySQL connection (Promise) to ${config.host}:${config.port}`);
       
-      // Use resolved IP if available, otherwise use the host from config
-      const connectionHost = resolvedIp || config.host;
+      // Determine the connection host
+      let connectionHost = config.host;
+      
+      // If we have a resolved IP, use it (this is the server IP from host management)
+      if (resolvedIp) {
+        connectionHost = resolvedIp;
+      } else if (config.serverIP) {
+        // Use server IP from config if available
+        connectionHost = config.serverIP;
+      } else if (config.host === 'localhost' || config.host === '127.0.0.1') {
+        // For localhost, try to use server IP if available
+        // Keep original host if no server IP available
+      }
+      
+      // Use resolved IP if available, otherwise use the connection host
+      const finalHost = resolvedIp || connectionHost;
       
       // Create connection object with completely isolated values
       const connectionConfig = {
-        host: connectionHost,
+        host: finalHost,
         user: config.user ? String(config.user) : '',
         password: config.password ? String(config.password) : '',
         database: config.database ? String(config.database) : ''
@@ -696,8 +768,15 @@ class MySQLClient {
   async testConnection(config, resolvedIp = null) {
     return new Promise((resolve) => {
       try {
-        // First, validate if host is localhost
-        const localhostValidation = this.validateLocalhostRequirement(config);
+        // Determine if we should allow remote connections
+        const isRemoteConnection = resolvedIp || 
+                                  (config.host !== 'localhost' && 
+                                   config.host !== '127.0.0.1' && 
+                                   config.host !== '::1' && 
+                                   config.host !== '');
+        
+        // Validate localhost requirement with remote connection support
+        const localhostValidation = this.validateLocalhostRequirement(config, true); // Always allow remote now
         
         if (!localhostValidation.valid) {
           this.logger.error(`Localhost validation failed: ${localhostValidation.message}`);
@@ -729,12 +808,26 @@ class MySQLClient {
         
         this.logger.info(`Testing MySQL connection to ${config.host}:${config.port}`);
         
-        // Use resolved IP if available, otherwise use the host from config
-        const connectionHost = resolvedIp || config.host;
+        // Determine the connection host
+        let connectionHost = config.host;
+        
+        // If we have a resolved IP, use it (this is the server IP from host management)
+        if (resolvedIp) {
+          connectionHost = resolvedIp;
+        } else if (config.serverIP) {
+          // Use server IP from config if available
+          connectionHost = config.serverIP;
+        } else if (config.host === 'localhost' || config.host === '127.0.0.1') {
+          // For localhost, try to use server IP if available
+          // Keep original host if no server IP available
+        }
+        
+        // Use resolved IP if available, otherwise use the connection host
+        const finalHost = resolvedIp || connectionHost;
         
         // Create connection object with completely isolated values to prevent winston interference
         const connectionConfig = {
-          host: connectionHost,
+          host: finalHost,
           user: config.user ? String(config.user) : '',
           password: config.password ? String(config.password) : '',
           database: config.database ? String(config.database) : ''
@@ -746,7 +839,7 @@ class MySQLClient {
         }
         
         // Use connection pool for better performance
-        const pool = this.getConnectionPool(connectionHost, connectionConfig);
+        const pool = this.getConnectionPool(finalHost, connectionConfig);
         
         // Set connection timeout
         const connectionTimeout = setTimeout(() => {
