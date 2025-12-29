@@ -1,0 +1,154 @@
+@startuml cPHulk Whitelist IP Workflow
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam handwritten false
+skinparam shadowing false
+skinparam roundcorner 10
+skinparam packageStyle rectangle
+
+title cPHulk IP Whitelisting Workflow
+
+start
+
+:Receive Whitelist Request;
+:Validate Input Parameters;
+note right: ip (required), domain, email, phone, reason
+
+if (Validation Failed?) then (yes)
+  :Return 400 Bad Request;
+  stop
+endif
+
+:Check Cache for Recent Results;
+if (Cache Hit?) then (yes)
+  :Return Cached Response;
+  stop
+endif
+
+partition "Step A: Client Authentication" {
+  if (Domain Provided?) then (yes)
+    :Resolve Client Credentials;
+    if (Email Provided?) then (yes)
+      :Lookup Client by Email;
+    elseif (Phone Provided?) then (yes)
+      :Lookup Client by Phone;
+    else (no contact info)
+      :Lookup Client by Domain Ownership;
+    endif
+    
+    if (Client Found?) then (no)
+      :Return 404 Client Not Found;
+      stop
+    endif
+    
+    if (Phone Verification Required?) then (yes)
+      :Normalize Phone Numbers;
+      :Compare Provided vs Registered;
+      if (Phone Match?) then (no)
+        :Mask Registered Phone;
+        :Return 400 Phone Verification Failed;
+        note right: Phone verification failed
+        stop
+      endif
+    endif
+    
+    :Validate Service Status;
+    if (Service Active?) then (no)
+      :Return 412 Service Unavailable;
+      note right: Expired/Terminated/Suspended services not allowed
+      stop
+    endif
+  endif
+}
+
+partition "Step B: Analyze Failed Logins" {
+  :Query cPHulk for Failed Logins;
+  note right: 10-second timeout protection
+  
+  if (API Timeout?) then (yes)
+    :Execute Default Workflow;
+    note right: Fallback to prevent hanging
+  else (no)
+    :Extract Authentication Services;
+    note right: cpaneld, webmaild, dovecot, pure-ftpd
+    :Determine Workflow Type;
+  endif
+}
+
+partition "Step C: Execute Intelligent Workflow" {
+  if (No Failed Logins?) then (yes)
+    :Preventive Whitelist (24hrs);
+    :Schedule Auto-Removal;
+    :Create Support Ticket;
+    note right: Preventive measure
+  elseif (cpaneld Detected?) then (yes)
+    :Flush cPHulk Login History;
+    :Whitelist IP (24hrs);
+    note right: done by bot comment
+    :Schedule Auto-Removal;
+    :Create Support Ticket;
+    note right: cPanel access issues
+  elseif (Mail Service Detected?) then (yes)
+    :Extract Unique Mail Users;
+    note right: webmaild/dovecot failures
+    :Analyze User Details;
+    :Flush cPHulk Login History;
+    :Whitelist IP (24hrs);
+    :Schedule Auto-Removal;
+    :Create Detailed Support Ticket;
+    note right: Include affected email accounts
+  elseif (FTP Service Detected?) then (yes)
+    :Flush cPHulk Login History;
+    :Whitelist IP (24hrs);
+    :Schedule Auto-Removal;
+    :Create Support Ticket;
+    note right: pure-ftpd issues
+  else (Unknown Service)
+    :Whitelist IP (24hrs);
+    :Schedule Auto-Removal;
+    :Create Support Ticket;
+    note right: Default workflow
+  endif
+}
+
+partition "Step D: Support Ticket Creation" {
+  :Format Ticket Subject;
+  note right: cPHulk IP Whitelisting - IP (domain)
+  
+  :Compile Ticket Content;
+  note right: Includes timestamp, actions, affected accounts
+  
+  :Submit Ticket Async;
+  note right: Non-blocking operation
+}
+
+partition "Step E: Job Scheduling" {
+  :Create Removal Job;
+  note right: Agenda job scheduler (MongoDB)
+  
+  :Set 24-Hour Delay;
+  :Store Job Metadata;
+  note right: IP, server, reason, scheduled time
+  
+  if (Scheduling Failed?) then (yes)
+    :Log Manual Cleanup Required;
+    note right: Fallback logging
+  endif
+}
+
+partition "Step F: Cleanup & Response" {
+  :Clear Failed Login Records;
+  note right: Optional cleanup
+  :Add Performance Metrics;
+  :Add Client Information;
+  :Clear Cache Entry;
+  :Format Response;
+  :Remove Sensitive Data;
+}
+
+:Return 200 Success Response;
+note right: Response includes workflow results and actions taken
+
+stop
+
+@enduml

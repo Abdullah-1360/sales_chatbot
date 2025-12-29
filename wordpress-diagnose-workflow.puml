@@ -1,0 +1,224 @@
+@startuml WordPress Diagnose Workflow
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam handwritten false
+skinparam shadowing false
+skinparam roundcorner 10
+skinparam packageStyle rectangle
+
+title WordPress Database Diagnostic Workflow
+
+start
+
+:Receive Diagnose Request;
+:Validate Input Parameters;
+note right: domain (required), email, phone
+
+if (Validation Failed?) then (yes)
+  :Return 400 Bad Request;
+  stop
+endif
+
+:Check Cache for Recent Results;
+if (Cache Hit?) then (yes)
+  :Return Cached Response;
+  stop
+endif
+
+partition "Step A: Credential Resolution" {
+  :Resolve cPanel Credentials;
+  if (Email Provided?) then (yes)
+    :Lookup Client by Email;
+  elseif (Phone Provided?) then (yes)
+    :Lookup Client by Phone;
+  else (no contact info)
+    :Lookup Client by Domain Ownership;
+  endif
+  
+  if (Client Found?) then (no)
+    :Return 404 Client Not Found;
+    stop
+  endif
+  
+  :Get cPanel Host & Credentials;
+  :Initialize cPanel Client;
+}
+
+partition "Step B: Quick Guards (Optional)" {
+  if (Skip Guards?) then (no)
+    :Check WHMCS Service State;
+    if (Service Active?) then (no)
+      :Return 412 Service Invalid;
+      note right: Expired/Terminated/Suspended services
+      stop
+    endif
+    
+    :Check DNS Resolution;
+    if (DNS Valid?) then (no)
+      :Return DNS Misconfigured;
+      stop
+    endif
+  endif
+}
+
+partition "Step C: Parse wp-config.php" {
+  :Read wp-config.php File;
+  if (File Found?) then (no)
+    :Return 500 Config Read Failed;
+    stop
+  endif
+  
+  :Extract Database Credentials;
+  note right: DB_HOST, DB_USER, DB_PASSWORD, DB_NAME
+  
+  if (Parse Successful?) then (no)
+    :Return 500 Config Parse Error;
+    stop
+  endif
+}
+
+partition "Step D: Database User Management" {
+  :List Existing Databases;
+  :List Database Users;
+  :Check Database Exists;
+  
+  if (Database Found?) then (no)
+    :Return 500 Database Not Found;
+    note right: Escalate to technical support
+    stop
+  endif
+  
+  if (User Valid?) then (no)
+    :Generate Strong Password;
+    note right: 16 chars, mixed case, numbers, symbols
+    :Generate Unique Username;
+    :Create Database User;
+    :Grant Privileges;
+    :Update wp-config.php;
+    :Update Final Config;
+  endif
+}
+
+partition "Step E: MySQL Host Management" {
+  :Get Client IP Address;
+  note right: Fixed: 115.186.130.67 for development
+  :Resolve Server IP from cPanel Host;
+  :Add Client IP to MySQL Remote Hosts;
+  
+  if (Host Management Successful?) then (yes)
+    :Schedule Cleanup (5 minutes);
+    :Replace localhost with Server IP;
+  else (no)
+    :Try DNS Fallback for Server IP;
+  endif
+}
+
+partition "Step F: MySQL Connection Test" {
+  :Attempt UNIX Socket Connection;
+  if (Socket Success?) then (yes)
+    :Return Connection Success;
+    note right: Method: UNIX Socket
+  else (no)
+    :Attempt TCP Connection (Server IP);
+    if (TCP Success?) then (yes)
+      :Return Connection Success;
+      note right: Method: TCP with Server IP
+    else (no)
+      :Attempt Localhost Connection;
+      if (Localhost Success?) then (yes)
+        :Return Connection Success;
+        note right: Method: Localhost fallback
+      else (no)
+        :All Connection Methods Failed;
+      endif
+    endif
+  endif
+}
+
+if (Connection Successful?) then (yes)
+  :Compile Success Results;
+  :Format Response;
+  :Return 200 OK;
+  note right
+  {
+    "success": true,
+    "workflow": {...},
+    "summary": "Connection successful",
+    "duration": "2.5s"
+  }
+  end note
+  stop
+endif
+
+partition "Step G: Error Analysis & Remediation" {
+  :Map MySQL Error to Root Cause;
+  note right
+  ACCESS_DENIED → authentication
+  UNKNOWN_DATABASE → database_missing
+  CONNECTION_REFUSED → service_down
+  ETIMEDOUT → network/firewall
+  HOST_NOT_FOUND → dns_failure
+  TABLE_CORRUPT → corruption
+  TOO_MANY_CONNECTIONS → resource_exhaustion
+  end note
+  
+  if (Remediation Enabled?) then (yes)
+    if (Root Cause = ACCESS_DENIED?) then (yes)
+      :Repair User Privileges;
+    elseif (Root Cause = UNKNOWN_DATABASE?) then (yes)
+      :Create Missing Database;
+    elseif (Root Cause = CONNECTION_REFUSED?) then (yes)
+      if (Approve Service Restart?) then (yes)
+        :Restart MySQL Service;
+      else (no)
+        :Service Restart Requires Approval;
+      endif
+    elseif (Root Cause = TABLE_CORRUPT?) then (yes)
+      if (Approve Table Repair?) then (yes)
+        :Repair Corrupted Tables;
+      else (no)
+        :Table Repair Requires Approval;
+      endif
+    elseif (Root Cause = TOO_MANY_CONNECTIONS?) then (yes)
+      if (Approve Kill Connections?) then (yes)
+        :Kill Idle Connections;
+      else (no)
+        :Connection Kill Requires Approval;
+      endif
+    endif
+    
+    :Perform Remediation Actions;
+    
+    if (Remediation Successful?) then (yes)
+      :Re-test MySQL Connection;
+      if (Post-Remediation Success?) then (yes)
+        :Return 200 OK (Remediated);
+        note right: Connection restored after remediation
+        stop
+      endif
+    endif
+  endif
+}
+
+partition "Step H: Final Error Response" {
+  :Set Technical Escalation;
+  :Add Error Analysis;
+  :Add Recommendations;
+  :Format Error Response;
+  :Return 500 MySQL Connection Failed;
+  note right
+  {
+    "success": false,
+    "escalation": {
+      "type": "technical",
+      "reason": "MYSQL_CONNECTION_FAILED"
+    },
+    "errorAnalysis": {...},
+    "recommendations": [...]
+  }
+  end note
+}
+
+stop
+
+@enduml
