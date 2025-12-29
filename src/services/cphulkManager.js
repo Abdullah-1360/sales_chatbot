@@ -92,7 +92,8 @@ class CphulkManager {
       console.log(`→ cPHulk API response received:`, {
         hasResponse: !!response,
         hasData: !!(response && response.data),
-        dataKeys: response && response.data ? Object.keys(response.data) : []
+        dataKeys: response && response.data ? Object.keys(response.data) : [],
+        failedLoginsCount: response && response.data && response.data.failed_logins ? response.data.failed_logins.length : 0
       });
 
       if (!response || !response.data) {
@@ -101,19 +102,33 @@ class CphulkManager {
         return result;
       }
 
+      // Debug: Log first few failed login entries to understand the structure
+      if (response.data.failed_logins && response.data.failed_logins.length > 0) {
+        console.log(`→ Sample failed login entry:`, JSON.stringify(response.data.failed_logins[0], null, 2));
+      }
+
       // Process the response
       const failedLogins = response.data.failed_logins || [];
       result.failedLogins = failedLogins;
       result.totalAttempts = failedLogins.length;
+      result.totalFailures = failedLogins.length; // Add totalFailures for compatibility
+      result.hasFailedLogins = failedLogins.length > 0; // Add hasFailedLogins flag
 
       if (failedLogins.length > 0) {
         // Extract unique users
         const uniqueUsers = new Set(failedLogins.map(login => login.user));
         result.uniqueUsers = uniqueUsers.size;
 
-        // Extract unique services
+        // Extract unique services (for backward compatibility)
         const uniqueServices = new Set(failedLogins.map(login => login.service));
         result.services = Array.from(uniqueServices);
+
+        // Extract unique authservices (this is what the intelligent workflow expects)
+        const uniqueAuthServices = new Set(failedLogins.map(login => login.authservice));
+        result.authServices = Array.from(uniqueAuthServices);
+
+        console.log(`→ Detected authservices: ${result.authServices.join(', ')}`);
+        console.log(`→ Detected services: ${result.services.join(', ')}`);
 
         // Extract unique countries
         const uniqueCountries = new Set(
@@ -167,6 +182,127 @@ class CphulkManager {
         countries: [],
         timeRange: null,
         error: error.message || 'Failed to retrieve failed login data'
+      };
+    }
+  }
+
+  /**
+   * Intelligent whitelist workflow using existing cPHulk analysis (avoids duplicate API calls)
+   * @param {string} ip - IP address to whitelist
+   * @param {string} serverName - Server name (optional, will use default if not provided)
+   * @param {Object} clientInfo - Client information for ticket creation
+   * @param {string} domain - Domain for context
+   * @param {string} reason - Reason for whitelisting
+   * @param {Object} existingAnalysis - Existing cPHulk analysis result
+   * @returns {Promise<Object>} Whitelisting workflow result
+   */
+  async intelligentWhitelistWorkflowWithAnalysis(ip, serverName = null, clientInfo = null, domain = null, reason = 'API request', existingAnalysis = null) {
+    const startTime = Date.now();
+    
+    try {
+      console.log(`→ Starting intelligent whitelist workflow with existing analysis for IP: ${ip}`);
+      
+      const result = {
+        success: false,
+        ip: ip,
+        serverName: serverName,
+        workflow: 'intelligent_whitelist_with_analysis',
+        whitelisted: false,
+        flushed: false,
+        ticketCreated: false,
+        scheduledRemoval: false,
+        error: null,
+        steps: [],
+        timestamp: new Date().toISOString()
+      };
+
+      // Use existing analysis or fallback to new analysis
+      let failedLoginsResult;
+      if (existingAnalysis && existingAnalysis.success) {
+        console.log(`→ Using existing cPHulk analysis (avoiding duplicate API call)`);
+        failedLoginsResult = existingAnalysis;
+      } else {
+        console.log(`→ No valid existing analysis, performing new cPHulk analysis`);
+        failedLoginsResult = await this.getFailedLogins(ip, serverName);
+      }
+
+      if (!failedLoginsResult.success) {
+        result.error = failedLoginsResult.error;
+        result.message = `Failed to analyze IP ${ip}: ${failedLoginsResult.error}`;
+        console.log(`❌ Failed logins analysis failed: ${failedLoginsResult.error}`);
+        return result;
+      }
+
+      // Continue with the same logic as intelligentWhitelistWorkflow
+      result.serverName = failedLoginsResult.serverName;
+      result.hasFailedLogins = failedLoginsResult.hasFailedLogins;
+      result.totalFailures = failedLoginsResult.totalFailures;
+      result.authServices = failedLoginsResult.authServices;
+
+      if (failedLoginsResult.hasFailedLogins) {
+        console.log(`→ Failed logins detected: ${failedLoginsResult.totalFailures} failures across ${failedLoginsResult.authServices.length} services`);
+        
+        // Determine workflow based on authentication services
+        if (failedLoginsResult.authServices.includes('cpaneld')) {
+          await this.executeCpaneldWorkflow(ip, result.serverName, clientInfo, domain, reason, result);
+        } else if (failedLoginsResult.authServices.some(service => ['dovecot', 'courier-imap', 'courier-pop'].includes(service))) {
+          await this.executeMailServiceWorkflow(ip, result.serverName, clientInfo, domain, reason, result, failedLoginsResult.failedLogins);
+        } else if (failedLoginsResult.authServices.includes('proftpd') || failedLoginsResult.authServices.includes('pure-ftpd')) {
+          await this.executeFtpdWorkflow(ip, result.serverName, clientInfo, domain, reason, result);
+        } else {
+          await this.executeDefaultWorkflow(ip, result.serverName, clientInfo, domain, reason, result);
+        }
+      } else {
+        console.log(`→ No failed logins detected for IP ${ip} - executing preventive workflow`);
+        
+        // Preventive whitelisting
+        result.steps.push('No failed logins detected - executing preventive whitelisting');
+        const whitelistResult = await this.whitelistIPTemporary(ip, serverName, `${reason} (preventive) - 24hr temporary`, 24);
+        
+        if (whitelistResult.success) {
+          result.whitelisted = true;
+          result.success = true;
+          result.steps.push('IP whitelisted preventively for 24 hours');
+          
+          // Schedule removal
+          const jobScheduler = require('./jobScheduler');
+          await jobScheduler.scheduleIPRemoval(ip, serverName, 24);
+          result.scheduledRemoval = true;
+          result.steps.push('IP removal scheduled for 24 hours');
+          
+          // Create ticket for no failed logins case (async for performance)
+          this.createWorkflowTicketAsync(clientInfo, domain, ip, result, 'No failed logins found - preventive whitelisting');
+          result.ticketCreated = true; // Assume success for response speed
+          result.steps.push('Support ticket creation initiated');
+          
+          result.message = 'No failed logins found: IP whitelisted (24hrs), removal scheduled, and ticket created';
+        } else {
+          result.error = whitelistResult.error;
+          result.message = `Failed to whitelist IP ${ip}: ${whitelistResult.error}`;
+        }
+      }
+
+      const endTime = Date.now();
+      result.executionTime = endTime - startTime;
+      
+      console.log(`→ Intelligent whitelist workflow with analysis completed in ${result.executionTime}ms: ${result.success ? 'SUCCESS' : 'FAILED'}`);
+      
+      return result;
+
+    } catch (error) {
+      this.logger.error(`Error in intelligent whitelist workflow with analysis for IP ${ip}:`, error);
+      
+      return {
+        success: false,
+        ip: ip,
+        serverName: serverName,
+        workflow: 'intelligent_whitelist_with_analysis',
+        whitelisted: false,
+        flushed: false,
+        ticketCreated: false,
+        scheduledRemoval: false,
+        error: error.message || 'Failed to execute intelligent whitelist workflow with analysis',
+        timestamp: new Date().toISOString()
       };
     }
   }
