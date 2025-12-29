@@ -49,11 +49,14 @@ class CpanelClient {
         data: formData.toString(),
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
-          'Authorization': `whm root:${this.password}` // WHM API key format
+          'Authorization': `whm root:${this.password}`, // WHM API key format
+          'Connection': 'keep-alive' // Reuse connections
         },
-        timeout: 30000,
+        timeout: 15000, // Reduced from 30s to 15s for faster failure detection
         httpsAgent: new (require('https').Agent)({
-          rejectUnauthorized: false // For self-signed certificates
+          rejectUnauthorized: false, // For self-signed certificates
+          keepAlive: true, // Enable connection reuse for better performance
+          maxSockets: 10 // Limit concurrent connections
         })
       };
 
@@ -220,26 +223,29 @@ class CpanelClient {
       }
       
       this.logger.info(`Successfully wrote file ${filePath}`);
-      this.logger.info(`Write API result: ${JSON.stringify(result, null, 2)}`);
+      // Reduced logging for better performance
       
-      // Immediate verification - try to read the file back to confirm write
-      try {
-        this.logger.info('Performing immediate write verification...');
-        const verifyContent = await this.readFile(filePath);
-        if (verifyContent && verifyContent.length > 0) {
-          this.logger.info(`✓ Write verification successful - file contains ${verifyContent.length} characters`);
-          
-          // Check if our content is actually in the file
-          if (verifyContent.includes(content.substring(0, Math.min(100, content.length)))) {
-            this.logger.info('✓ Content verification successful - written content found in file');
+      // Skip verification in production for better performance
+      if (process.env.NODE_ENV !== 'production') {
+        // Immediate verification - try to read the file back to confirm write
+        try {
+          this.logger.info('Performing immediate write verification...');
+          const verifyContent = await this.readFile(filePath);
+          if (verifyContent && verifyContent.length > 0) {
+            this.logger.info(`✓ Write verification successful - file contains ${verifyContent.length} characters`);
+            
+            // Quick content verification (first 100 chars only)
+            if (verifyContent.includes(content.substring(0, Math.min(100, content.length)))) {
+              this.logger.info('✓ Content verification successful - written content found in file');
+            } else {
+              this.logger.warn('⚠ Content verification failed - written content not found in file');
+            }
           } else {
-            this.logger.warn('⚠ Content verification failed - written content not found in file');
+            this.logger.warn('⚠ Write verification failed - file appears empty after write');
           }
-        } else {
-          this.logger.warn('⚠ Write verification failed - file appears empty after write');
+        } catch (verifyError) {
+          this.logger.warn(`Write verification failed: ${verifyError.message}`);
         }
-      } catch (verifyError) {
-        this.logger.warn(`Write verification failed: ${verifyError.message}`);
       }
       
       // For save_file_content, a successful call might return null/empty data

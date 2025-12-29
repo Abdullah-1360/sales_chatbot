@@ -305,53 +305,82 @@ class WordPressDiagnosticManager {
         return result;
       }
 
-      // Step C: MySQL Connection Test (optimized)
+      // Step C: Parallel execution of MySQL Host Management and DNS resolution
       const dnsCheckResult = result.workflow.stepA_quickGuards?.dnsCheck || null;
       const configForMysqlTest = Object.assign({}, result.workflow.stepB_parseConfig, {
         config: finalConfig
       });
       
-      // Step C1: MySQL Host Management (add client IP for remote access)
-      result.workflow.stepC1_mysqlHostManagement = await this.mysqlHostManagementStep.executeHostManagement(
-        cpanelClient,
-        params.req,
-        params.cpanelHost,
-        {
-          scheduleCleanup: true,
-          cleanupDelay: 5 * 60 * 1000 // 5 minutes
-        }
+      const parallelOperations = [];
+      
+      // Operation 1: MySQL Host Management (add local machine IP for remote access)
+      parallelOperations.push(
+        this.mysqlHostManagementStep.executeHostManagement(
+          cpanelClient,
+          params.req,
+          params.cpanelHost,
+          {
+            scheduleCleanup: true,
+            cleanupDelay: 5 * 60 * 1000 // 5 minutes
+          }
+        ).then(result => ({ type: 'hostManagement', result }))
       );
       
-      // Log host management result
-      if (result.workflow.stepC1_mysqlHostManagement.success) {
-        // Host management successful - minimal logging
-      } else {
-        logger.warn(`MySQL host management failed: ${result.workflow.stepC1_mysqlHostManagement.error}`);
+      // Operation 2: DNS resolution for server IP (parallel to host management)
+      parallelOperations.push(
+        (async () => {
+          if (params.cpanelHost) {
+            try {
+              const dns = require('dns').promises;
+              const addresses = await dns.resolve4(params.cpanelHost);
+              return { 
+                type: 'dnsResolution', 
+                result: { success: true, serverIP: addresses?.[0] || null }
+              };
+            } catch (dnsError) {
+              return { 
+                type: 'dnsResolution', 
+                result: { success: false, error: dnsError.message }
+              };
+            }
+          }
+          return { 
+            type: 'dnsResolution', 
+            result: { success: false, error: 'No cPanel host provided' }
+          };
+        })()
+      );
+      
+      // Execute operations in parallel
+      const parallelResults = await Promise.all(parallelOperations);
+      
+      // Extract results
+      const hostManagementResult = parallelResults.find(r => r.type === 'hostManagement')?.result;
+      const dnsResolutionResult = parallelResults.find(r => r.type === 'dnsResolution')?.result;
+      
+      result.workflow.stepC1_mysqlHostManagement = hostManagementResult;
+      
+      // Log host management result (minimal logging for performance)
+      if (!hostManagementResult?.success) {
+        logger.warn(`MySQL host management failed: ${hostManagementResult?.error}`);
       }
       
-      // Modify config to use server IP if host management was successful
-      if (result.workflow.stepC1_mysqlHostManagement.success && result.workflow.stepC1_mysqlHostManagement.serverIP) {
+      // Modify config to use server IP
+      let serverIP = null;
+      if (hostManagementResult?.success && hostManagementResult.serverIP) {
+        serverIP = hostManagementResult.serverIP;
+      } else if (dnsResolutionResult?.success && dnsResolutionResult.serverIP) {
+        serverIP = dnsResolutionResult.serverIP;
+      }
+      
+      if (serverIP) {
         // Replace localhost with server IP for remote connection
         const remoteConfig = Object.assign({}, configForMysqlTest.config, {
-          host: result.workflow.stepC1_mysqlHostManagement.serverIP,
-          serverIP: result.workflow.stepC1_mysqlHostManagement.serverIP // Pass server IP for MySQL client
+          host: serverIP,
+          serverIP: serverIP // Pass server IP for MySQL client
         });
         
         configForMysqlTest.config = remoteConfig;
-      } else {
-        // Even if host management failed, try to pass server IP from cPanel host
-        if (params.cpanelHost) {
-          try {
-            const dns = require('dns').promises;
-            const addresses = await dns.resolve4(params.cpanelHost);
-            if (addresses && addresses.length > 0) {
-              const serverIP = addresses[0];
-              configForMysqlTest.config.serverIP = serverIP;
-            }
-          } catch (dnsError) {
-            // Silent DNS error
-          }
-        }
       }
       
       result.workflow.stepC_mysqlConnection = await this.mysqlStep.testMySQLConnection(

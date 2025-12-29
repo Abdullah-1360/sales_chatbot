@@ -1,4 +1,5 @@
 const winston = require('winston');
+const localIPCache = require('../services/localIPCache');
 
 class MySQLHostManagementStep {
   constructor() {
@@ -12,12 +13,40 @@ class MySQLHostManagementStep {
   }
 
   /**
-   * Get the client's IP address that needs MySQL access (your PC's IP)
+   * Get the local machine's public IP address (where this code is running)
+   * Uses cached IP from server startup for better performance
    */
-  getClientIP(req) {
-    // For development/testing, use your fixed local PC IP
-    const CLIENT_IP = '115.186.130.67';
-    return CLIENT_IP;
+  async getLocalMachineIP() {
+    try {
+      // Try to get cached IP first (much faster)
+      const cachedIP = localIPCache.getCachedIP();
+      
+      if (cachedIP) {
+        this.logger.info(`Using cached local machine IP: ${cachedIP}`);
+        return cachedIP;
+      }
+      
+      // If not cached, get it (this should rarely happen after server startup)
+      this.logger.info('No cached IP found, detecting local machine IP...');
+      const ip = await localIPCache.getIP();
+      
+      if (ip && this.isPublicIP(ip)) {
+        this.logger.info(`Detected local machine public IP: ${ip}`);
+        return ip;
+      } else {
+        throw new Error(`Invalid IP detected: ${ip}`);
+      }
+    } catch (error) {
+      this.logger.error(`Failed to get local machine IP: ${error.message}`);
+      throw new Error('Could not get local machine IP address for MySQL host management');
+    }
+  }
+
+  /**
+   * Check if an IP address is a public IP (not private/localhost)
+   */
+  isPublicIP(ip) {
+    return localIPCache.isPublicIP(ip);
   }
 
   /**
@@ -43,24 +72,29 @@ class MySQLHostManagementStep {
   }
 
   /**
-   * Add client IP to MySQL remote access hosts
+   * Add local machine IP to MySQL remote access hosts
    */
-  async addClientIPToMySQLHosts(cpanelClient, req) {
+  async addLocalMachineIPToMySQLHosts(cpanelClient) {
     try {
-      const clientIP = this.getClientIP(req);
+      // Get the local machine's public IP (where this code is running)
+      const localIP = await this.getLocalMachineIP();
+      
+      if (!localIP) {
+        throw new Error('Could not determine local machine IP address');
+      }
+      
+      this.logger.info(`Adding local machine IP to MySQL hosts: ${localIP}`);
       const startTime = Date.now();
       
-      // Skip the host existence check since list_hosts API doesn't exist
-      // Just try to add the host directly - cPanel will handle duplicates gracefully
-      
-      const addResult = await cpanelClient.addMySQLHost(clientIP);
+      // Add the local machine IP to MySQL remote access hosts
+      const addResult = await cpanelClient.addMySQLHost(localIP);
       
       if (addResult && (addResult.status === 1 || addResult.status === '1')) {
         return {
           success: true,
           action: 'added',
-          ip: clientIP,
-          message: 'Client IP added to MySQL remote access hosts',
+          ip: localIP,
+          message: 'Local machine IP added to MySQL remote access hosts',
           executionTime: Date.now() - startTime,
           cpanelResponse: addResult
         };
@@ -73,35 +107,42 @@ class MySQLHostManagementStep {
       }
 
     } catch (error) {
-      this.logger.error(`Error adding client IP to MySQL hosts: ${error.message}`);
+      this.logger.error(`Error adding local machine IP to MySQL hosts: ${error.message}`);
       
       return {
         success: false,
         action: 'add_failed',
-        ip: this.getClientIP(req),
+        ip: 'unknown',
         error: error.message,
-        message: 'Failed to add client IP to MySQL remote access hosts',
+        message: 'Failed to add local machine IP to MySQL remote access hosts',
         executionTime: Date.now() - startTime
       };
     }
   }
 
   /**
-   * Remove client IP from MySQL remote access hosts (cleanup)
+   * Remove local machine IP from MySQL remote access hosts (cleanup)
    */
-  async removeClientIPFromMySQLHosts(cpanelClient, req) {
+  async removeLocalMachineIPFromMySQLHosts(cpanelClient) {
     try {
-      const clientIP = this.getClientIP(req);
+      // Get the local machine's public IP (where this code is running)
+      const localIP = await this.getLocalMachineIP();
+      
+      if (!localIP) {
+        throw new Error('Could not determine local machine IP address for removal');
+      }
+      
+      this.logger.info(`Removing local machine IP from MySQL hosts: ${localIP}`);
       const startTime = Date.now();
       
-      const removeResult = await cpanelClient.removeMySQLHost(clientIP);
+      const removeResult = await cpanelClient.removeMySQLHost(localIP);
       
       if (removeResult && (removeResult.status === 1 || removeResult.status === '1')) {
         return {
           success: true,
           action: 'removed',
-          ip: clientIP,
-          message: 'Client IP removed from MySQL remote access hosts',
+          ip: localIP,
+          message: 'Local machine IP removed from MySQL remote access hosts',
           executionTime: Date.now() - startTime,
           cpanelResponse: removeResult
         };
@@ -114,39 +155,64 @@ class MySQLHostManagementStep {
       }
 
     } catch (error) {
-      this.logger.error(`Error removing client IP from MySQL hosts: ${error.message}`);
+      this.logger.error(`Error removing local machine IP from MySQL hosts: ${error.message}`);
       
       return {
         success: false,
         action: 'remove_failed',
-        ip: this.getClientIP(req),
+        ip: 'unknown',
         error: error.message,
-        message: 'Failed to remove client IP from MySQL remote access hosts',
+        message: 'Failed to remove local machine IP from MySQL remote access hosts',
         executionTime: Date.now() - startTime
       };
     }
   }
 
   /**
-   * Execute MySQL host management workflow
+   * Execute MySQL host management workflow (optimized with parallel operations)
    */
   async executeHostManagement(cpanelClient, req, cpanelHost, options = {}) {
     try {
       const startTime = Date.now();
-      const clientIP = this.getClientIP(req);
-
-      // Step 1: Get server IP where MySQL is running
-      let serverIP;
-      try {
-        serverIP = await this.getServerIP(cpanelHost);
-      } catch (error) {
-        serverIP = cpanelHost; // Fallback to hostname
+      
+      // Parallel execution: Get local IP (cached) and resolve server IP simultaneously
+      const parallelTasks = [];
+      
+      // Task 1: Get local machine IP (should be fast since it's cached)
+      parallelTasks.push(
+        this.getLocalMachineIP().then(ip => ({ type: 'localIP', result: ip }))
+      );
+      
+      // Task 2: Resolve server IP (DNS lookup)
+      parallelTasks.push(
+        this.getServerIP(cpanelHost)
+          .then(ip => ({ type: 'serverIP', result: ip }))
+          .catch(error => ({ type: 'serverIP', result: cpanelHost, error: error.message }))
+      );
+      
+      // Execute both tasks in parallel
+      const results = await Promise.all(parallelTasks);
+      
+      // Extract results
+      const localIPResult = results.find(r => r.type === 'localIP');
+      const serverIPResult = results.find(r => r.type === 'serverIP');
+      
+      const localIP = localIPResult?.result;
+      const serverIP = serverIPResult?.result;
+      
+      if (!localIP) {
+        return {
+          success: false,
+          error: 'Failed to get local machine IP',
+          message: 'Could not detect local machine IP for MySQL host management',
+          executionTime: Date.now() - startTime
+        };
       }
 
-      // Step 2: Add client IP to MySQL hosts
-      const addResult = await this.addClientIPToMySQLHosts(cpanelClient, req);
+      // Add local machine IP to MySQL hosts
+      const addResult = await this.addLocalMachineIPToMySQLHosts(cpanelClient);
       
-      // Step 3: If cleanup is requested and add was successful, schedule cleanup
+      // Schedule cleanup if requested and add was successful
       let cleanupScheduled = false;
       if (options.scheduleCleanup && addResult.success && addResult.action === 'added') {
         try {
@@ -155,7 +221,7 @@ class MySQLHostManagementStep {
           
           setTimeout(async () => {
             try {
-              await this.removeClientIPFromMySQLHosts(cpanelClient, req);
+              await this.removeLocalMachineIPFromMySQLHosts(cpanelClient);
             } catch (cleanupError) {
               // Silent cleanup failure
             }
@@ -169,14 +235,14 @@ class MySQLHostManagementStep {
 
       return {
         success: addResult.success,
-        clientIP: clientIP,
+        localIP: localIP,
         serverIP: serverIP,
         hostManagement: addResult,
         cleanupScheduled: cleanupScheduled,
         executionTime: Date.now() - startTime,
         message: addResult.success 
-          ? 'MySQL remote access configured successfully for client'
-          : 'Failed to configure MySQL remote access for client'
+          ? `MySQL remote access configured successfully for local machine IP: ${localIP}`
+          : 'Failed to configure MySQL remote access for local machine'
       };
 
     } catch (error) {

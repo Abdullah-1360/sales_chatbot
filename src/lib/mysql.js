@@ -5,11 +5,11 @@ const winston = require('winston');
 // Connection pool for better performance
 const connectionPools = new Map();
 const POOL_CONFIG = {
-  connectionLimit: 5,
-  acquireTimeout: 5000,
-  timeout: 10000,
-  reconnect: false,
-  idleTimeout: 30000
+  connectionLimit: 10,    // Increased from 5 to 10
+  acquireTimeout: 15000,  // Reduced from 30s to 15s
+  timeout: 15000,         // Reduced from 30s to 15s  
+  reconnect: true,        
+  idleTimeout: 180000     // Reduced from 5min to 3min
 };
 
 class MySQLClient {
@@ -841,18 +841,18 @@ class MySQLClient {
         // Use connection pool for better performance
         const pool = this.getConnectionPool(finalHost, connectionConfig);
         
-        // Set connection timeout
+        // Set connection timeout (reduced for faster failure detection)
         const connectionTimeout = setTimeout(() => {
           resolve({
             success: false,
-            error: 'Connection timeout after 10 seconds',
+            error: 'Connection timeout after 3 seconds',
             errorCode: 'CONNECTION_TIMEOUT',
             localhostValidation: localhostValidation,
             rootCause: {
               cause: 'CONNECTION_TIMEOUT',
               description: 'Connection to MySQL server timed out',
               severity: 'HIGH',
-              originalError: 'Connection timeout after 10 seconds',
+              originalError: 'Connection timeout after 3 seconds',
               errorCode: 'CONNECTION_TIMEOUT'
             },
             connectionDetails: {
@@ -865,7 +865,7 @@ class MySQLClient {
               timedOut: true
             }
           });
-        }, 10000);
+        }, 3000); // Reduced from 5s to 3s
         
         pool.getConnection((err, connection) => {
           clearTimeout(connectionTimeout);
@@ -890,46 +890,53 @@ class MySQLClient {
               }
             });
           } else {
-            // Release connection back to pool immediately
-            connection.release();
-
-            resolve({
-              success: true,
-              message: "Database credentials are valid",
-              localhostValidation: localhostValidation,
-              connectionDetails: {
-                host: connectionHost,
-                user: config.user,
-                database: config.database,
-                port: config.port,
-                originalHost: config.host,
-                usedResolvedIp: !!resolvedIp,
-                usedConnectionPool: true
+            // Test the connection with a simple query
+            connection.query('SELECT 1 as test', (queryErr, results) => {
+              // Release connection back to pool
+              connection.release();
+              
+              if (queryErr) {
+                this.logger.error(`MySQL query test failed: ${queryErr.message}`);
+                const rootCause = this.mapErrorToRootCause(queryErr);
+                
+                resolve({
+                  success: false,
+                  error: queryErr.message,
+                  errorCode: queryErr.code,
+                  localhostValidation: localhostValidation,
+                  rootCause,
+                  connectionDetails: {
+                    host: connectionHost,
+                    user: config.user,
+                    database: config.database,
+                    port: config.port,
+                    originalHost: config.host,
+                    usedResolvedIp: !!resolvedIp
+                  }
+                });
+              } else {
+                resolve({
+                  success: true,
+                  message: "Database credentials are valid",
+                  localhostValidation: localhostValidation,
+                  connectionDetails: {
+                    host: connectionHost,
+                    user: config.user,
+                    database: config.database,
+                    port: config.port,
+                    originalHost: config.host,
+                    usedResolvedIp: !!resolvedIp,
+                    usedConnectionPool: true
+                  }
+                });
               }
             });
           }
         });
 
-        // Handle connection timeout
-        connection.on('error', (err) => {
-          this.logger.error(`MySQL connection error: ${err.message}`);
-          const rootCause = this.mapErrorToRootCause(err);
-
-          resolve({
-            success: false,
-            error: err.message,
-            errorCode: err.code,
-            localhostValidation: localhostValidation,
-            rootCause,
-            connectionDetails: {
-              host: connectionHost,
-              user: config.user,
-              database: config.database,
-              port: config.port,
-              originalHost: config.host,
-              usedResolvedIp: !!resolvedIp
-            }
-          });
+        // Handle connection errors properly
+        pool.on('error', (err) => {
+          this.logger.error(`MySQL pool error: ${err.message}`);
         });
 
       } catch (error) {

@@ -20,7 +20,7 @@ async function basicDiagnoseWithHostAddition() {
     console.log('=== Example 1: Basic WordPress Diagnose with Host Addition ===');
     console.log('Making request to WordPress diagnose endpoint...');
     console.log('The system will automatically:');
-    console.log('1. Use your local development IP (115.186.130.67)');
+    console.log('1. Use the cached local machine IP (detected at server startup)');
     console.log('2. Add it to MySQL remote access hosts');
     console.log('3. Test the MySQL connection');
     console.log('4. Schedule cleanup after 5 minutes\n');
@@ -45,7 +45,7 @@ async function basicDiagnoseWithHostAddition() {
       console.log(`Cleanup Scheduled: ${hostMgmt.cleanupScheduled ? 'YES' : 'NO'}`);
       
       if (hostMgmt.success) {
-        console.log('✓ Your local development IP (115.186.130.67) has been added to MySQL remote access hosts');
+        console.log('✓ Cached local machine IP has been added to MySQL remote access hosts');
         console.log('✓ MySQL connection should now work without timeout');
       }
     }
@@ -75,7 +75,7 @@ async function demonstrateCpanelAPICall() {
   console.log('  cpanel_jsonapi_apiversion=3');
   console.log('  cpanel_jsonapi_module=Mysql');
   console.log('  cpanel_jsonapi_func=add_host');
-  console.log('  host=115.186.130.67  # Your detected IP');
+  console.log('  host=<CACHED_LOCAL_IP>  # IP cached at server startup');
   console.log('');
   console.log('This is the exact API call mentioned in your original issue.');
 }
@@ -199,7 +199,7 @@ async function main() {
     
     console.log('\n=== Examples Complete ===');
     console.log('The MySQL host addition feature should resolve the 17-second timeout');
-    console.log('by automatically adding your local development IP (115.186.130.67) to MySQL remote access hosts.');
+    console.log('by using the cached local machine IP (detected at server startup) for MySQL remote access hosts.');
     
   } catch (error) {
     console.error('\nExamples failed:', error.message);

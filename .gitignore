@@ -136,7 +136,7 @@ config/production.json
 *.key
 *.crt
 *.csr
-
+.env.example
 # Documentation build
 docs/build/
 docs/_build/

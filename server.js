@@ -12,6 +12,7 @@ const { syncAllProducts, scheduleSync } = require('./src/services/whmcsSync');
 const { upsertAllTldPricing } = require('./src/services/tldPricing');
 const { initializeWebSocket } = require('./src/services/websocket');
 const { scheduleLeadCleanup } = require('./src/services/leadCleanup');
+const localIPCache = require('./src/services/localIPCache');
 const cfg = require('./src/config');
 
 const PORT = process.env.PORT || 3000;
@@ -21,6 +22,14 @@ const httpServer = http.createServer(app);
 
 async function startServer() {
   try {
+    // Initialize local machine IP detection at startup
+    try {
+      await localIPCache.initialize();
+    } catch (error) {
+      console.warn(`⚠️  Local IP detection failed: ${error.message}`);
+      console.warn('⚠️  MySQL host management may not work properly');
+    }
+    
     // Connect to MongoDB if enabled
     if (cfg.USE_MONGODB) {
       await connectDB();
@@ -96,8 +105,10 @@ async function startServer() {
     }
     
     httpServer.listen(PORT, () => {
+      const localIP = localIPCache.getCachedIP();
       console.log(`🚀 API running on :${PORT}`);
       console.log(`🔌 WebSocket server initialized`);
+      console.log(`🌐 Local machine IP: ${localIP || 'not detected'}`);
       console.log(`📦 MongoDB: ${cfg.USE_MONGODB ? 'enabled' : 'disabled'}`);
       console.log(`🔄 Auto-sync: ${cfg.AUTO_SYNC_ON_STARTUP ? 'enabled' : 'disabled'}`);
       if (cfg.SYNC_INTERVAL_HOURS > 0) {

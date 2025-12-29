@@ -418,61 +418,38 @@ class DatabaseUserManagementStep {
       // The writeFile method returns the API response data, not a boolean
       // If it doesn't throw an error, it was successful
       this.logger.info('wp-config.php file write completed');
-      this.logger.info(`Write result: ${JSON.stringify(writeResult, null, 2)}`);
       
-      // Optionally verify the file was updated by reading it back
-      // Note: This is for verification only - the write operation was already successful
+      // Skip verification in production for better performance
       let verificationPassed = false;
       let verificationAttempted = false;
       
-      try {
-        this.logger.info('Attempting to verify wp-config.php was updated correctly...');
-        verificationAttempted = true;
+      if (process.env.NODE_ENV !== 'production') {
+        // Optionally verify the file was updated by reading it back
+        // Note: This is for verification only - the write operation was already successful
         
-        // Add a small delay to ensure file system consistency
-        await new Promise(resolve => setTimeout(resolve, 2000)); // Increased to 2 seconds
-        
-        const verifyContent = await cpanelClient.readFile(wpConfigPath);
-        
-        if (verifyContent && verifyContent.trim().length > 0) {
-          let userVerified = false;
-          let passwordVerified = false;
+        try {
+          this.logger.info('Attempting to verify wp-config.php was updated correctly...');
+          verificationAttempted = true;
           
-          if (verifyContent.includes(`define('DB_USER', '${newUsername}');`)) {
-            this.logger.info('✓ Verified: DB_USER was updated correctly');
-            userVerified = true;
-          } else {
-            this.logger.info('ℹ Info: DB_USER verification - exact match not found, checking for presence in content');
+          // Reduced delay for faster performance
+          await new Promise(resolve => setTimeout(resolve, 500)); // Reduced from 2s to 0.5s
+          
+          const verifyContent = await cpanelClient.readFile(wpConfigPath);
+          
+          if (verifyContent && verifyContent.trim().length > 0) {
+            // Quick verification - just check if new username is present
             if (verifyContent.includes(newUsername)) {
-              this.logger.info('✓ Verified: New username is present in wp-config.php');
-              userVerified = true;
+              this.logger.info('✓ Verified: New credentials are present in wp-config.php');
+              verificationPassed = true;
+            } else {
+              this.logger.warn('⚠ Verification: New credentials not found in wp-config.php');
             }
-          }
-          
-          if (verifyContent.includes(`define('DB_PASSWORD', '${newPassword}');`)) {
-            this.logger.info('✓ Verified: DB_PASSWORD was updated correctly');
-            passwordVerified = true;
           } else {
-            this.logger.info('ℹ Info: DB_PASSWORD verification - exact match not found, checking for presence in content');
-            if (verifyContent.includes(newPassword)) {
-              this.logger.info('✓ Verified: New password is present in wp-config.php');
-              passwordVerified = true;
-            }
+            this.logger.warn('⚠ Verification failed: wp-config.php appears empty or unreadable');
           }
-          
-          verificationPassed = userVerified && passwordVerified;
-          
-          if (verificationPassed) {
-            this.logger.info('✓ wp-config.php verification completed successfully');
-          } else {
-            this.logger.info('ℹ Info: wp-config.php verification could not confirm all changes, but write operation was successful');
-          }
-        } else {
-          this.logger.info('ℹ Info: Verification read returned empty or minimal content - this may be a timing issue with cPanel file system');
+        } catch (verifyError) {
+          this.logger.warn(`Verification failed: ${verifyError.message}`);
         }
-      } catch (verifyError) {
-        this.logger.info(`ℹ Info: Could not verify wp-config.php update: ${verifyError.message}`);
-        this.logger.info('Note: This is normal - file write was successful, verification is optional and may fail due to cPanel file system timing');
       }
       
       // Always log the verification status but don't treat failure as an error

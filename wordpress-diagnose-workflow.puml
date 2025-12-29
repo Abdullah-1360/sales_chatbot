@@ -25,26 +25,7 @@ if (Cache Hit?) then (yes)
   stop
 endif
 
-partition "Step A: Credential Resolution" {
-  :Resolve cPanel Credentials;
-  if (Email Provided?) then (yes)
-    :Lookup Client by Email;
-  elseif (Phone Provided?) then (yes)
-    :Lookup Client by Phone;
-  else (no contact info)
-    :Lookup Client by Domain Ownership;
-  endif
-  
-  if (Client Found?) then (no)
-    :Return 404 Client Not Found;
-    stop
-  endif
-  
-  :Get cPanel Host & Credentials;
-  :Initialize cPanel Client;
-}
-
-partition "Step B: Quick Guards (Optional)" {
+partition "Step A: Quick Guards (Optional)" {
   if (Skip Guards?) then (no)
     :Check WHMCS Service State;
     if (Service Active?) then (no)
@@ -61,7 +42,9 @@ partition "Step B: Quick Guards (Optional)" {
   endif
 }
 
-partition "Step C: Parse wp-config.php" {
+partition "Step B: Parse wp-config.php" {
+  :Get Username for Domain;
+  note right: WHM API call to find cPanel username
   :Read wp-config.php File;
   if (File Found?) then (no)
     :Return 500 Config Read Failed;
@@ -77,9 +60,7 @@ partition "Step C: Parse wp-config.php" {
   endif
 }
 
-partition "Step D: Database User Management" {
-  :List Existing Databases;
-  :List Database Users;
+partition "Step B2: Database User Management" {
   :Check Database Exists;
   
   if (Database Found?) then (no)
@@ -88,50 +69,48 @@ partition "Step D: Database User Management" {
     stop
   endif
   
+  :Check User Exists & Has Privileges;
+  
   if (User Valid?) then (no)
     :Generate Strong Password;
     note right: 16 chars, mixed case, numbers, symbols
     :Generate Unique Username;
     :Create Database User;
-    :Grant Privileges;
+    :Grant ALL Privileges;
     :Update wp-config.php;
+    note right: Write new credentials to file
     :Update Final Config;
   endif
 }
 
-partition "Step E: MySQL Host Management" {
-  :Get Client IP Address;
-  note right: Fixed: 115.186.130.67 for development
-  :Resolve Server IP from cPanel Host;
-  :Add Client IP to MySQL Remote Hosts;
+partition "Step C1: MySQL Host Management (Parallel)" {
+  :Get Cached Local Machine IP;
+  note right: IP cached at server startup (110.93.226.228)
+  
+  fork
+    :Resolve Server IP from cPanel Host;
+    note right: DNS lookup for server IP
+  fork again
+    :Add Local Machine IP to MySQL Hosts;
+    note right: cPanel MySQL remote access
+  end fork
   
   if (Host Management Successful?) then (yes)
     :Schedule Cleanup (5 minutes);
-    :Replace localhost with Server IP;
+    :Use Server IP for Connection;
   else (no)
-    :Try DNS Fallback for Server IP;
+    :Use Fallback Server IP;
   endif
 }
 
-partition "Step F: MySQL Connection Test" {
-  :Attempt UNIX Socket Connection;
-  if (Socket Success?) then (yes)
-    :Return Connection Success;
-    note right: Method: UNIX Socket
+partition "Step C: MySQL Connection Test" {
+  :Test MySQL Connection;
+  note right: Using server IP and updated credentials
+  
+  if (Connection Successful?) then (yes)
+    :Connection Success;
   else (no)
-    :Attempt TCP Connection (Server IP);
-    if (TCP Success?) then (yes)
-      :Return Connection Success;
-      note right: Method: TCP with Server IP
-    else (no)
-      :Attempt Localhost Connection;
-      if (Localhost Success?) then (yes)
-        :Return Connection Success;
-        note right: Method: Localhost fallback
-      else (no)
-        :All Connection Methods Failed;
-      endif
-    endif
+    :Connection Failed;
   endif
 }
 
@@ -142,15 +121,20 @@ if (Connection Successful?) then (yes)
   note right
   {
     "success": true,
-    "workflow": {...},
-    "summary": "Connection successful",
-    "duration": "2.5s"
+    "status": "MYSQL_CONNECTION_SUCCESS",
+    "result": {
+      "connectionStatus": "success",
+      "databaseHost": "localhost",
+      "serviceStatus": "active",
+      "credentialsUpdated": true
+    },
+    "duration": "5-8s (optimized)"
   }
   end note
   stop
 endif
 
-partition "Step G: Error Analysis & Remediation" {
+partition "Step D: Error Analysis" {
   :Map MySQL Error to Root Cause;
   note right
   ACCESS_DENIED → authentication
@@ -161,7 +145,9 @@ partition "Step G: Error Analysis & Remediation" {
   TABLE_CORRUPT → corruption
   TOO_MANY_CONNECTIONS → resource_exhaustion
   end note
-  
+}
+
+partition "Step E: Remediation (Optional)" {
   if (Remediation Enabled?) then (yes)
     if (Root Cause = ACCESS_DENIED?) then (yes)
       :Repair User Privileges;
@@ -200,7 +186,7 @@ partition "Step G: Error Analysis & Remediation" {
   endif
 }
 
-partition "Step H: Final Error Response" {
+partition "Step F: Final Error Response" {
   :Set Technical Escalation;
   :Add Error Analysis;
   :Add Recommendations;
