@@ -40,6 +40,8 @@ class CphulkManager {
    */
   async getFailedLogins(ip, serverName = null) {
     try {
+      console.log(`→ cPHulk getFailedLogins called with IP: ${ip}, serverName: ${serverName}`);
+      
       const result = {
         success: false,
         ip: ip,
@@ -56,10 +58,12 @@ class CphulkManager {
       // Determine which server to use
       const targetServer = serverName || this.getDefaultServer();
       if (!targetServer) {
+        console.log(`❌ No server available for cPHulk API call`);
         result.error = 'No server available for cPHulk API call';
         return result;
       }
 
+      console.log(`→ Using server for cPHulk API: ${targetServer}`);
       result.serverName = targetServer;
 
       // Make API call to get failed logins
@@ -70,15 +74,29 @@ class CphulkManager {
         'api.filter.enable': '1'
       };
 
-      const response = await this.whmService.callServerAPI(
-        targetServer,
-        'get_cphulk_failed_logins',
-        apiParams,
-        '1', // API version 1
-        'GET'
-      );
+      console.log(`→ Making cPHulk API call to ${targetServer} with params:`, apiParams);
+
+      const response = await Promise.race([
+        this.whmService.callServerAPI(
+          targetServer,
+          'get_cphulk_failed_logins',
+          apiParams,
+          '1', // API version 1
+          'GET'
+        ),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('cPHulk API call timeout')), 15000)
+        )
+      ]);
+
+      console.log(`→ cPHulk API response received:`, {
+        hasResponse: !!response,
+        hasData: !!(response && response.data),
+        dataKeys: response && response.data ? Object.keys(response.data) : []
+      });
 
       if (!response || !response.data) {
+        console.log(`❌ Invalid response from cPHulk API`);
         result.error = 'Invalid response from cPHulk API';
         return result;
       }
@@ -135,6 +153,7 @@ class CphulkManager {
       return result;
 
     } catch (error) {
+      console.log(`❌ Error in cPHulk getFailedLogins: ${error.message}`);
       this.logger.error(`Error getting failed logins for IP ${ip}:`, error);
       
       return {
@@ -651,8 +670,15 @@ class CphulkManager {
         };
       }
 
-      // Prepare ticket content
-      const ticketSubject = `cPHulk IP Whitelisting - ${ip} ${domain ? `(${domain})` : ''}`;
+      // Prepare ticket content with improved keywords
+      let ticketSubject;
+      if (workflowResult.csfAnalysis?.csf?.inDenyList) {
+        // CSF issue detected - use Firewall System terminology
+        ticketSubject = `Firewall System IP Whitelisting - ${ip} ${domain ? `(${domain})` : ''}`;
+      } else {
+        // cPHulk issue - use Anti-Brute Force System terminology
+        ticketSubject = `Anti-Brute Force System IP Whitelisting - ${ip} ${domain ? `(${domain})` : ''}`;
+      }
       const ticketContent = this.generateTicketContent(clientInfo, domain, ip, workflowResult, context);
       
       // Use WHMCS OpenTicket API to create the ticket
@@ -711,13 +737,21 @@ class CphulkManager {
   }
 
   /**
-   * Generate ticket content with workflow summary for WHMCS
+   * Generate enhanced ticket content with CSF analysis and workflow summary for WHMCS
    */
   generateTicketContent(clientInfo, domain, ip, workflowResult, context) {
     const timestamp = new Date().toISOString();
     
     let content = `Dear ${clientInfo.firstname} ${clientInfo.lastname},\n\n`;
-    content += `This ticket has been automatically created to inform you about cPHulk IP whitelisting actions taken on your account.\n\n`;
+    
+    // Enhanced greeting based on CSF analysis with improved keywords
+    if (workflowResult.csfAnalysis?.csf?.inDenyList) {
+      content += `This ticket has been automatically created to inform you about a Firewall System security issue that has been resolved on your account.\n\n`;
+      content += `🔒 FIREWALL SECURITY ALERT RESOLVED\n`;
+      content += `Your IP address was temporarily blocked by our Firewall System due to suspicious activity, but we have automatically resolved this issue.\n\n`;
+    } else {
+      content += `This ticket has been automatically created to inform you about Anti-Brute Force System IP whitelisting actions taken on your account.\n\n`;
+    }
     
     content += `SUMMARY:\n`;
     content += `========\n`;
@@ -727,9 +761,80 @@ class CphulkManager {
     content += `Server: ${workflowResult.serverName}\n`;
     content += `Context: ${context}\n\n`;
     
+    // Add Firewall System Analysis Section (improved keywords)
+    if (workflowResult.csfAnalysis?.csf) {
+      const csf = workflowResult.csfAnalysis.csf;
+      content += `FIREWALL SYSTEM ANALYSIS:\n`;
+      content += `=========================\n`;
+      
+      if (csf.inDenyList) {
+        content += `🚫 IP Status: BLOCKED by Firewall System (ConfigServer Security & Firewall)\n`;
+        content += `📍 Block Type: ${csf.blockType || 'Unknown'}\n`;
+        content += `🔍 Block Source: ${csf.blockSource || 'Unknown'}\n`;
+        
+        if (csf.blockReasons && csf.blockReasons.length > 0) {
+          content += `📋 Block Reasons:\n`;
+          csf.blockReasons.forEach((reason, index) => {
+            content += `   ${index + 1}. ${reason}\n`;
+          });
+        }
+        
+        if (csf.blockDate) {
+          content += `📅 Block Date: ${csf.blockDate}\n`;
+        }
+        
+        if (csf.location) {
+          content += `🌍 Location: ${csf.location.country} (${csf.location.countryCode})\n`;
+        }
+        
+        // Remediation actions with improved keywords
+        content += `\n🔧 AUTOMATIC FIREWALL SYSTEM REMEDIATION PERFORMED:\n`;
+        if (workflowResult.csfAnalysis.unblockAttempt?.success) {
+          content += `   ✅ IP successfully unblocked from Firewall System\n`;
+        } else {
+          content += `   ❌ Failed to unblock IP from Firewall System: ${workflowResult.csfAnalysis.unblockAttempt?.error || 'Unknown error'}\n`;
+        }
+        
+        if (workflowResult.csfAnalysis.allowAttempt?.success) {
+          content += `   ✅ IP added to Firewall System allow list for future protection\n`;
+        } else if (workflowResult.csfAnalysis.allowAttempt) {
+          content += `   ❌ Failed to add IP to Firewall System allow list: ${workflowResult.csfAnalysis.allowAttempt.error || 'Unknown error'}\n`;
+        }
+        
+        content += `\n`;
+        
+        // Add specific recommendations based on block type
+        if (csf.blockType === 'lfd_failed_login') {
+          content += `💡 SECURITY RECOMMENDATIONS:\n`;
+          content += `============================\n`;
+          content += `Your IP was blocked due to multiple failed login attempts. To prevent this in the future:\n`;
+          content += `• Ensure you're using the correct login credentials\n`;
+          content += `• Check for any automated scripts or email clients with outdated passwords\n`;
+          content += `• Consider using strong, unique passwords for all accounts\n`;
+          content += `• Enable two-factor authentication where available\n\n`;
+        } else if (csf.blockType === 'manual') {
+          content += `💡 MANUAL FIREWALL BLOCK INFORMATION:\n`;
+          content += `=====================================\n`;
+          content += `This IP was manually blocked by our Firewall System security team. The block has been removed as requested.\n`;
+          content += `If you continue to experience issues, please contact our support team.\n\n`;
+        }
+        
+      } else if (csf.inAllowList) {
+        content += `✅ IP Status: ALLOWED by Firewall System (ConfigServer Security & Firewall)\n`;
+        content += `This IP is already in our Firewall System's allow list.\n\n`;
+      } else {
+        content += `ℹ️ IP Status: NOT FOUND in Firewall System rules\n`;
+        content += `This IP was not blocked by our Firewall System.\n\n`;
+      }
+    }
+    
     content += `ACTIONS TAKEN:\n`;
     content += `==============\n`;
     content += `- Workflow Type: ${workflowResult.workflow}\n`;
+    
+    if (workflowResult.parallelProcessing) {
+      content += `- Processing Method: Parallel (CSF + cPHulk simultaneously)\n`;
+    }
     
     if (workflowResult.authServices && workflowResult.authServices.length > 0) {
       content += `- Authentication Services Detected: ${workflowResult.authServices.join(', ')}\n`;
@@ -739,15 +844,15 @@ class CphulkManager {
       content += `- Affected Email Accounts: ${workflowResult.uniqueUsers.join(', ')}\n`;
     }
     
-    content += `- IP Address Whitelisted: ${workflowResult.whitelisted ? 'Yes (24 hours)' : 'No'}\n`;
+    content += `- IP Address Whitelisted in Anti-Brute Force System: ${workflowResult.whitelisted ? 'Yes (24 hours)' : 'No'}\n`;
     content += `- Login History Cleared: ${workflowResult.flushed ? 'Yes' : 'No'}\n`;
     content += `- Automatic Removal Scheduled: ${workflowResult.scheduledRemoval ? 'Yes (after 24 hours)' : 'No'}\n\n`;
     
     // Add detailed mail failure information if available
     if (workflowResult.mailFailureDetails && workflowResult.mailFailureDetails.length > 0) {
-      content += `DETAILED MAIL SERVICE FAILURES:\n`;
-      content += `===============================\n`;
-      content += `The following failed login attempts were detected for your email accounts:\n\n`;
+      content += `DETAILED LOGIN FAILURE ANALYSIS:\n`;
+      content += `================================\n`;
+      content += `The following failed login attempts were detected:\n\n`;
       
       // Group failures by user for better readability
       const failuresByUser = {};
@@ -760,7 +865,7 @@ class CphulkManager {
       
       Object.keys(failuresByUser).forEach(user => {
         const userFailures = failuresByUser[user];
-        content += `📧 Email Account: ${user}\n`;
+        content += `📧 Account: ${user}\n`;
         content += `   Failed Attempts: ${userFailures.length}\n`;
         content += `   Service Type: ${userFailures[0].service} (${userFailures[0].authservice})\n`;
         content += `   Country: ${userFailures[0].country} (${userFailures[0].countryCode})\n`;
@@ -775,7 +880,7 @@ class CphulkManager {
       });
       
       content += `Total Failed Attempts: ${workflowResult.mailFailureDetails.length}\n`;
-      content += `Unique Email Accounts Affected: ${Object.keys(failuresByUser).length}\n\n`;
+      content += `Unique Accounts Affected: ${Object.keys(failuresByUser).length}\n\n`;
     }
     
     content += `TECHNICAL DETAILS:\n`;
@@ -788,7 +893,7 @@ class CphulkManager {
     
     content += `\nWHAT THIS MEANS:\n`;
     content += `================\n`;
-    content += `Your IP address (${ip}) has been temporarily whitelisted in our security system (cPHulk) for 24 hours. `;
+    content += `Your IP address (${ip}) has been temporarily whitelisted in our Anti-Brute Force System for 24 hours. `;
     content += `This allows you to access your services without being blocked by our brute force protection system.\n\n`;
     
     if (workflowResult.uniqueUsers && workflowResult.uniqueUsers.length > 0) {
@@ -824,7 +929,7 @@ class CphulkManager {
     content += `If you have any questions about this action or need further assistance, please reply to this ticket.\n\n`;
     content += `Best regards,\n`;
     content += `Technical Support Team\n`;
-    content += `Automated cPHulk Management System`;
+    content += `Automated Security Management System`;
     
     return content;
   }

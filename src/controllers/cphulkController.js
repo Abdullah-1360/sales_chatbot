@@ -1,6 +1,7 @@
 const Joi = require('joi');
 const CphulkManager = require('../services/cphulkManager');
 const CpanelCredentialResolver = require('../services/cpanelCredentialResolver');
+const CSFService = require('../services/csfService');
 const ResponseFormatter = require('../utils/responseFormatter');
 const { getServiceForClient } = require('../utils/helpers');
 const { getClientsProducts, getClientsDomains } = require('../services/whmcsService');
@@ -67,10 +68,13 @@ class CphulkController {
   constructor() {
     this.manager = new CphulkManager();
     this.credentialResolver = new CpanelCredentialResolver();
+    this.csfService = new CSFService();
     
     // Bind methods to preserve 'this' context
     this.checkFailedLogins = this.checkFailedLogins.bind(this);
     this.whitelistIP = this.whitelistIP.bind(this);
+    this.debugCSF = this.debugCSF.bind(this);
+    this.testCSF = this.testCSF.bind(this);
     this.getCapabilities = this.getCapabilities.bind(this);
     this.healthCheck = this.healthCheck.bind(this);
     this.getScheduledRemovals = this.getScheduledRemovals.bind(this);
@@ -248,6 +252,8 @@ class CphulkController {
 
       let clientInfo = null;
       let serverInfo = null;
+      let csfAnalysis = null;
+      let result = null; // Initialize result variable
 
       // If domain is provided, resolve client credentials and validate service status in parallel where possible
       if (value.domain) {
@@ -302,14 +308,195 @@ class CphulkController {
         }
       }
 
-      // Step 3: Execute intelligent whitelisting workflow based on authservice
-      const result = await this.manager.intelligentWhitelistWorkflow(
-        value.ip, 
-        serverInfo?.serverName, 
-        clientInfo,
-        value.domain,
-        value.reason || 'Client request via API'
-      );
+      // Step 3: Analyze IP with CSF firewall and execute parallel remediation
+      try {
+        // Only perform CSF analysis if we have a server name from credential resolution
+        if (serverInfo?.serverName) {
+          console.log(`→ Analyzing IP ${value.ip} with CSF firewall on server ${serverInfo.serverName}`);
+          
+          // Set a shorter timeout for CSF analysis to prevent blocking
+          const csfTimeout = 10000; // 10 seconds
+          const csfPromise = this.csfService.analyzeIP(value.ip, serverInfo.serverName);
+          
+          csfAnalysis = await Promise.race([
+            csfPromise,
+            new Promise((_, reject) => 
+              setTimeout(() => reject(new Error('CSF analysis timeout')), csfTimeout)
+            )
+          ]);
+          
+          // Handle CSF analysis results and execute targeted remediation
+          if (csfAnalysis.success && csfAnalysis.csf && csfAnalysis.csf.inDenyList) {
+            console.log(`⚠️ IP ${value.ip} is currently blocked by CSF firewall on ${serverInfo.serverName}`);
+            console.log(`   Block type: ${csfAnalysis.csf.blockType || 'unknown'}`);
+            console.log(`   Block reasons: ${csfAnalysis.csf.blockReasons && Array.isArray(csfAnalysis.csf.blockReasons) && csfAnalysis.csf.blockReasons.length > 0 ? csfAnalysis.csf.blockReasons.join(', ') : 'none specified'}`);
+            console.log(`   → CSF issue detected - executing CSF-only remediation (no cPHulk whitelisting needed)`);
+            
+            // Prepare CSF-only operations (no cPHulk whitelisting)
+            const csfOperations = [];
+            
+            // 1. Remove from CSF deny list
+            console.log(`→ Step 1: Removing IP ${value.ip} from CSF deny list (action=kill) on ${serverInfo.serverName}`);
+            const csfUnblockPromise = Promise.race([
+              this.csfService.unblockIP(value.ip, serverInfo.serverName),
+              new Promise((_, reject) => 
+                setTimeout(() => reject(new Error('CSF unblock timeout')), 5000)
+              )
+            ]).catch(error => ({
+              success: false,
+              error: error.message,
+              action: 'unblock'
+            }));
+            csfOperations.push(csfUnblockPromise);
+            
+            // 2. Add to CSF allow list
+            console.log(`→ Step 2: Adding IP ${value.ip} to CSF allow list (action=qallow) on ${serverInfo.serverName}`);
+            const csfAllowPromise = Promise.race([
+              this.csfService.allowIP(
+                value.ip, 
+                serverInfo.serverName, 
+                `CSF-only remediation - ${value.reason || 'Client request via API'} - ${new Date().toISOString()}`
+              ),
+              new Promise((_, reject) => 
+                setTimeout(() => reject(new Error('CSF allow timeout')), 5000)
+              )
+            ]).catch(error => ({
+              success: false,
+              error: error.message,
+              action: 'allow'
+            }));
+            csfOperations.push(csfAllowPromise);
+            
+            // Execute CSF operations in parallel
+            console.log(`→ Executing ${csfOperations.length} CSF operations in parallel...`);
+            const csfResults = await Promise.allSettled(csfOperations);
+            
+            // Process CSF results
+            const csfUnblockResult = csfResults[0];
+            csfAnalysis.unblockAttempt = csfUnblockResult.status === 'fulfilled' 
+              ? csfUnblockResult.value 
+              : { success: false, error: csfUnblockResult.reason?.message || 'Unknown error' };
+            
+            const csfAllowResult = csfResults[1];
+            csfAnalysis.allowAttempt = csfAllowResult.status === 'fulfilled' 
+              ? csfAllowResult.value 
+              : { success: false, error: csfAllowResult.reason?.message || 'Unknown error' };
+            
+            // Set overall success based on CSF operations
+            csfAnalysis.success = csfAnalysis.unblockAttempt.success && csfAnalysis.allowAttempt.success;
+            csfAnalysis.csfOnlyRemediation = true;
+            csfAnalysis.csfRemediation = {
+              unblocked: csfAnalysis.unblockAttempt?.success || false,
+              whitelisted: csfAnalysis.allowAttempt?.success || false
+            };
+            
+            console.log(`→ CSF-only operations completed:`);
+            console.log(`   - CSF unblock (remove from deny list): ${csfAnalysis.unblockAttempt?.success ? 'SUCCESS' : 'FAILED'}`);
+            console.log(`   - CSF whitelist (add to allow list): ${csfAnalysis.allowAttempt?.success ? 'SUCCESS' : 'FAILED'}`);
+            console.log(`   - cPHulk whitelisting: SKIPPED (CSF issue only)`);
+            
+            // Use CSF analysis as the main result
+            result = csfAnalysis;
+            
+          } else {
+            // No CSF block detected, check for cPHulk issues only
+            console.log(`→ No CSF block detected for IP ${value.ip}, checking cPHulk issues only`);
+            
+            // Execute cPHulk-only workflow
+            result = await this.manager.intelligentWhitelistWorkflow(
+              value.ip, 
+              serverInfo.serverName, 
+              clientInfo,
+              value.domain,
+              value.reason || 'Client request via API'
+            );
+            
+            // Mark as cPHulk-only remediation
+            result.cphulkOnlyRemediation = true;
+            console.log(`→ cPHulk-only whitelisting completed: ${result.success ? 'SUCCESS' : 'FAILED'}`);
+            console.log(`   - CSF operations: SKIPPED (no CSF block detected)`);
+            
+            // Add CSF analysis to the result
+            result.csfAnalysis = csfAnalysis;
+          }
+          
+        } else {
+          // No server information available - skip CSF analysis and run cPHulk-only workflow
+          console.log(`→ Skipping CSF analysis for IP ${value.ip} - no server information available`);
+          console.log(`→ Executing cPHulk-only whitelisting workflow`);
+          
+          csfAnalysis = {
+            success: false,
+            error: 'No server information available for CSF analysis',
+            ip: value.ip,
+            serverName: null,
+            message: 'CSF analysis skipped - domain/server resolution required for CSF operations'
+          };
+          
+          // Execute cPHulk-only workflow
+          result = await this.manager.intelligentWhitelistWorkflow(
+            value.ip, 
+            serverInfo?.serverName, 
+            clientInfo,
+            value.domain,
+            value.reason || 'Client request via API'
+          );
+          
+          // Mark as cPHulk-only remediation
+          result.cphulkOnlyRemediation = true;
+          console.log(`→ cPHulk-only whitelisting completed: ${result.success ? 'SUCCESS' : 'FAILED'}`);
+          console.log(`   - CSF operations: SKIPPED (no server information)`);
+          
+          // Add CSF analysis to the result
+          result.csfAnalysis = csfAnalysis;
+        }
+        
+      } catch (csfError) {
+        console.error(`CSF analysis failed for IP ${value.ip}:`, csfError.message);
+        console.log(`→ CSF analysis failed - executing cPHulk-only whitelisting workflow`);
+        
+        csfAnalysis = {
+          success: false,
+          error: csfError.message,
+          ip: value.ip,
+          serverName: serverInfo?.serverName || null,
+          message: 'CSF analysis failed - proceeding with cPHulk whitelisting only'
+        };
+        
+        // Execute cPHulk-only workflow since CSF failed
+        result = await this.manager.intelligentWhitelistWorkflow(
+          value.ip, 
+          serverInfo?.serverName, 
+          clientInfo,
+          value.domain,
+          value.reason || 'Client request via API'
+        );
+        
+        // Mark as cPHulk-only remediation
+        result.cphulkOnlyRemediation = true;
+        console.log(`→ cPHulk-only whitelisting completed: ${result.success ? 'SUCCESS' : 'FAILED'}`);
+        console.log(`   - CSF operations: SKIPPED (CSF analysis failed)`);
+        
+        // Add CSF analysis to the result
+        result.csfAnalysis = csfAnalysis;
+      }
+
+      // Step 4: Only execute cPHulk workflow if not already done
+      if (!result) {
+        console.log(`→ Executing standard cPHulk whitelisting workflow (fallback)`);
+        result = await this.manager.intelligentWhitelistWorkflow(
+          value.ip, 
+          serverInfo?.serverName, 
+          clientInfo,
+          value.domain,
+          value.reason || 'Client request via API'
+        );
+        
+        // Add CSF analysis to the result if available
+        if (csfAnalysis) {
+          result.csfAnalysis = csfAnalysis;
+        }
+      }
 
       // Add client and domain information if available (minimal data)
       if (clientInfo) {
@@ -764,8 +951,102 @@ class CphulkController {
   }
 
   /**
-   * Health check for cPHulk service
+   * Debug CSF response endpoint
    */
+  async debugCSF(req, res) {
+    try {
+      const { ip = '65.21.229.29', server } = req.query;
+      
+      if (!server) {
+        return res.status(400).json({
+          success: false,
+          error: 'Server parameter is required',
+          message: 'Please provide a server name (e.g., ?server=pcp3)',
+          example: '/cphulk/debug-csf?ip=65.21.229.29&server=pcp3'
+        });
+      }
+      
+      console.log(`→ Debug CSF response for IP: ${ip} on server: ${server}`);
+      
+      // Get raw CSF response
+      const debugResult = await this.csfService.debugCSFResponse(ip, server);
+      
+      return res.json({
+        success: true,
+        message: 'CSF debug response retrieved',
+        ip: ip,
+        server: server,
+        debug: debugResult,
+        timestamp: new Date().toISOString()
+      });
+      
+    } catch (error) {
+      console.error('CSF debug error:', error);
+      return res.status(500).json({
+        success: false,
+        error: error.message,
+        message: 'CSF debug failed'
+      });
+    }
+  }
+
+  /**
+   * Test CSF integration endpoint
+   */
+  async testCSF(req, res) {
+    try {
+      const { ip = '8.8.8.8', server } = req.query;
+      
+      if (!server) {
+        return res.status(400).json({
+          success: false,
+          error: 'Server parameter is required',
+          message: 'Please provide a server name (e.g., ?server=pcp3)',
+          example: '/cphulk/test-csf?ip=8.8.8.8&server=pcp3'
+        });
+      }
+      
+      console.log(`→ Testing CSF integration for IP: ${ip} on server: ${server}`);
+      
+      // Test CSF service with timeout
+      const csfTimeout = 5000; // 5 seconds
+      let csfResult;
+      
+      try {
+        const csfPromise = this.csfService.grepIP(ip, server);
+        csfResult = await Promise.race([
+          csfPromise,
+          new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('CSF test timeout')), csfTimeout)
+          )
+        ]);
+      } catch (csfError) {
+        csfResult = {
+          success: false,
+          error: csfError.message,
+          ip: ip,
+          serverName: server
+        };
+      }
+      
+      return res.json({
+        success: true,
+        message: 'CSF integration test completed',
+        ip: ip,
+        server: server,
+        csfResult: csfResult,
+        timestamp: new Date().toISOString()
+      });
+      
+    } catch (error) {
+      console.error('CSF test error:', error);
+      return res.status(500).json({
+        success: false,
+        error: error.message,
+        message: 'CSF integration test failed'
+      });
+    }
+  }
   async healthCheck(req, res) {
     try {
       const health = {

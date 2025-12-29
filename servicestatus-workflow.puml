@@ -1,0 +1,203 @@
+@startuml Service Status Workflow
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam handwritten false
+skinparam shadowing false
+skinparam roundcorner 10
+skinparam packageStyle rectangle
+
+title Service Status API Endpoint Workflow
+
+start
+
+:Receive Service Status Request;
+:Validate Input Parameters;
+note right: clientId, domain OR serviceId, phone (required)
+
+if (Validation Failed?) then (yes)
+  :Return 400 Bad Request;
+  note right: Missing clientId and domain/serviceId
+  stop
+endif
+
+partition "Step 1: Client Resolution" {
+  :Resolve Client ID;
+  note right: From middleware resolveClientId
+  
+  if (Client ID Found?) then (no)
+    :Return 404 Client Not Found;
+    stop
+  endif
+}
+
+partition "Step 2: Phone Validation" {
+  :Validate Phone Number;
+  note right: Middleware validatePhoneNumber
+  
+  if (Phone Valid?) then (no)
+    :Return 400 Invalid Phone;
+    stop
+  endif
+}
+
+partition "Step 3: Service Lookup" {
+  if (Domain Provided?) then (yes)
+    :Get Service by Domain;
+    note right: Search WHMCS products by domain
+  else (serviceId provided)
+    :Get Service by ID;
+    note right: Direct WHMCS product lookup
+  endif
+  
+  if (Service Found?) then (no)
+    :Return 404 Service Not Found;
+    note right: No service with that domain/ID on account
+    stop
+  endif
+}
+
+partition "Step 4: Service Status Analysis" {
+  :Extract Service Details;
+  note right
+  - Service status (Active/Suspended/etc)
+  - Next due date
+  - Suspension reason
+  - Service type (domain/hosting)
+  end note
+  
+  :Convert to Message Status;
+  note right: toMessageStatus() helper function
+  
+  if (Domain Provided AND No ServiceId?) then (yes)
+    fork
+      :Check Domain Registration Status;
+      note right: getClientsDomains() - handle duplicates
+    fork again
+      :Check Hosting Product Status;
+      note right: getClientsProducts() - all products for domain
+    end fork
+    
+    :Select Best Domain Record;
+    note right: Priority: active > grace > redemption > expired
+    
+    :Select Primary Hosting Product;
+    note right: Priority by status and expiry date
+    
+    :Extract Server Information;
+    note right
+    - Server ID, name, IP
+    - Server hostname
+    - Username for AutoSSL
+    end note
+  endif
+}
+
+partition "Step 5: DNS Zone Analysis (Optional)" {
+  if (Domain AND Hosting Found?) then (yes)
+    :Check DNS Nameserver Control;
+    note right: performComprehensiveDNSLookup()
+    
+    if (Uses Our Nameservers?) then (yes)
+      :Get DNS Zone File;
+      note right: WHM API - getDNSZone()
+      
+      :Extract User Domains;
+      note right: For AutoSSL management
+      
+      :Analyze A Records;
+      note right: Check if A record matches server IP
+      
+      if (Duplicate A Records?) then (yes)
+        :Auto-Fix Duplicate Records;
+        note right: Remove incorrect A records
+      endif
+    else (external DNS)
+      :DNS Resolver Analysis Only;
+      note right: External DNS management detected
+    endif
+  endif
+}
+
+partition "Step 6: Error Log Analysis (Optional)" {
+  if (500 Error Issue?) then (yes)
+    :Fetch Error Log;
+    note right: fetchErrorLogFor500() - last 150 lines
+    
+    :Check Last 10 Lines for Syntax Errors;
+    note right
+    - syntax error
+    - parse error  
+    - fatal error
+    end note
+    
+    if (Syntax Errors in Last 10 Lines?) then (yes)
+      :Create Support Ticket;
+      note right: createSyntaxErrorTicket()
+    endif
+  endif
+}
+
+partition "Step 7: Response Compilation" {
+  :Compile Service Status Response;
+  
+  if (Domain Registration Found?) then (yes)
+    :Add Domain Status;
+    note right
+    - Registration status
+    - Expiry date
+    - Nameservers
+    - Duplicate handling
+    end note
+  endif
+  
+  if (Hosting Product Found?) then (yes)
+    :Add Hosting Status;
+    note right
+    - Product status
+    - Server information
+    - Username
+    - Multiple products summary
+    end note
+  endif
+  
+  if (DNS Analysis Performed?) then (yes)
+    :Add DNS Zone Analysis;
+    note right
+    - A record status
+    - Nameserver control
+    - Auto-fix results
+    - User domains list
+    end note
+  endif
+  
+  if (Error Log Analyzed?) then (yes)
+    :Add Error Log Results;
+    note right
+    - Syntax error status
+    - Ticket creation result
+    - Recent error entries
+    end note
+  endif
+}
+
+:Format Final Response;
+:Return 200 OK;
+note right
+{
+  "success": true,
+  "service": {
+    "name": "example.com",
+    "status": "Active",
+    "nextDueDate": "2024-01-15",
+    "type": "hosting"
+  },
+  "domainStatus": {...},
+  "hostingStatus": {...},
+  "dnsAnalysis": {...},
+  "errorLog": {...}
+}
+end note
+
+stop
+
+@enduml

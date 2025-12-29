@@ -481,6 +481,9 @@ function formatResults(results) {
       }
     }
 
+    // Generate the correct link format using pid
+    const correctLink = `https://portal.hostbreak.com/cart.php?a=add&pid=${product.pid}&currency=2`;
+
     return {
       name: product.name,
       description: getFullDescription(product.description),
@@ -490,7 +493,7 @@ function formatResults(results) {
         monthly: monthlyPrice,
         annual: annualPrice
       },
-      link: product.link
+      link: correctLink
     };
   });
 }

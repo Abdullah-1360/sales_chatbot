@@ -17,6 +17,9 @@ class WHMService {
     
     // Cache for server IPs to improve performance
     this.serverIPCache = new Map();
+    
+    // Cache for domain-to-server mapping to improve performance
+    this.domainServerCache = new Map();
     this.cacheExpiry = 5 * 60 * 1000; // 5 minutes
     
     // Silent initialization in production
@@ -56,29 +59,37 @@ class WHMService {
   extractServerNameFromWHMCS(whmcsServerName) {
     if (!whmcsServerName) return null;
     
+    console.log(`→ Extracting server name from WHMCS: "${whmcsServerName}"`);
+    
     const serverName = whmcsServerName.toLowerCase();
     
     // Direct matches (CP1, PCP6, RCP2, etc.)
     const directMatch = serverName.match(/^(cp\d+|pcp\d+|rcp\d+)$/);
     if (directMatch) {
+      console.log(`→ Direct match found: ${directMatch[1]}`);
       return directMatch[1];
     }
     
     // Extract from descriptive names (e.g., "VPS - Win1 (Shared)" -> look for cp/pcp/rcp pattern)
     const descriptiveMatch = serverName.match(/(cp\d+|pcp\d+|rcp\d+)/);
     if (descriptiveMatch) {
+      console.log(`→ Descriptive match found: ${descriptiveMatch[1]}`);
       return descriptiveMatch[1];
     }
     
     // Handle specific known patterns
-    if (serverName.includes('win1')) return 'cp1';
-    if (serverName.includes('win2')) return 'cp2';
+    if (serverName.includes('win1')) {
+      console.log(`→ Win1 pattern matched: cp1`);
+      return 'cp1';
+    }
+    if (serverName.includes('win2')) {
+      console.log(`→ Win2 pattern matched: cp2`);
+      return 'cp2';
+    }
     // Add more mappings as needed
     
     // Silent logging in production
-    if (process.env.NODE_ENV !== 'production') {
-      console.log(`⚠️ Could not extract server name from WHMCS format: "${whmcsServerName}"`);
-    }
+    console.log(`⚠️ Could not extract server name from WHMCS format: "${whmcsServerName}"`);
     return null;
   }
 
@@ -413,10 +424,43 @@ class WHMService {
     try {
       console.log(`→ Getting username for domain: ${domain}`);
       
-      // Search across all servers for the domain
-      const serverNames = Object.keys(this.serverApiKeys);
+      // Check cache first
+      if (this.domainServerCache.has(domain)) {
+        const cachedServer = this.domainServerCache.get(domain);
+        console.log(`→ Using cached server for ${domain}: ${cachedServer.toUpperCase()}`);
+        
+        try {
+          const response = await this.callServerAPI(cachedServer, 'listaccts', { 
+            search: domain,
+            searchtype: 'domain'
+          });
+          
+          if (response.data && response.data.acct) {
+            const accounts = Array.isArray(response.data.acct) ? response.data.acct : [response.data.acct];
+            const domainAccount = accounts.find(acc => acc.domain === domain);
+            
+            if (domainAccount && domainAccount.user) {
+              const username = domainAccount.user;
+              console.log(`✅ Found username for ${domain} on cached server ${cachedServer.toUpperCase()}: ${username}`);
+              return username;
+            }
+          }
+        } catch (cacheError) {
+          console.log(`→ Cached server ${cachedServer.toUpperCase()} failed, clearing cache and searching all servers`);
+          this.domainServerCache.delete(domain);
+        }
+      }
       
-      for (const serverName of serverNames) {
+      // Search across all servers for the domain
+      // Prioritize PCP servers first, then CP servers, then RCP servers
+      const serverNames = Object.keys(this.serverApiKeys);
+      const prioritizedServers = [
+        ...serverNames.filter(s => s.startsWith('pcp')).sort(),
+        ...serverNames.filter(s => s.startsWith('cp') && !s.startsWith('pcp')).sort(),
+        ...serverNames.filter(s => s.startsWith('rcp')).sort()
+      ];
+      
+      for (const serverName of prioritizedServers) {
         try {
           const response = await this.callServerAPI(serverName, 'listaccts', { 
             search: domain,
@@ -430,13 +474,23 @@ class WHMService {
             if (domainAccount && domainAccount.user) {
               const username = domainAccount.user;
               console.log(`✅ Found username for ${domain} on server ${serverName.toUpperCase()}: ${username}`);
+              
+              // Cache the server for this domain
+              this.domainServerCache.set(domain, serverName);
+              
               return username;
             }
           }
         } catch (serverError) {
           // listaccts may return an error if no accounts found on this server
           // This is expected behavior, so we continue to the next server
-          console.log(`→ Domain ${domain} not found on server ${serverName.toUpperCase()}`);
+          console.log(`❌ Domain ${domain} not found on server ${serverName.toUpperCase()}`);
+          
+          // Log the actual error for debugging (but don't stop the search)
+          if (process.env.LOG_LEVEL === 'DEBUG') {
+            console.log(`   Debug: ${serverError.message}`);
+          }
+          
           continue;
         }
       }

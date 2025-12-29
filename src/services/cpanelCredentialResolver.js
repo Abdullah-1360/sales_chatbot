@@ -216,9 +216,17 @@ class CpanelCredentialResolver {
       }
       
       if (!hostingService) {
+        console.log(`❌ No hosting service found for domain: ${domain} (clientId: ${clientId})`);
         result.error = `No hosting service found for domain: ${domain}`;
         return result;
       }
+      
+      console.log(`→ Found hosting service for ${domain}:`, {
+        id: hostingService.id,
+        server: hostingService.server,
+        status: hostingService.status,
+        name: hostingService.name || hostingService.productname
+      });
 
       // Step 3: Get server information (with caching and timeout)
       let serverInfo = null;
@@ -583,19 +591,57 @@ class CpanelCredentialResolver {
   }
 
   /**
-   * Optimized hosting service lookup with reduced logging
+   * Optimized hosting service lookup with better server resolution
    */
   async findHostingServiceForDomain(clientId, domain) {
     try {
-      const products = await getClientsProducts(clientId, { status: 'Active' });
+      // First try to get products for this specific domain (more efficient)
+      console.log(`→ Looking for hosting service for domain: ${domain} (clientId: ${clientId})`);
       
-      if (!products || !products.products || !products.products.product) {
+      const products = await getClientsProducts(clientId, { domain: domain });
+      
+      if (products && products.products) {
+        const productList = products.products.product || products.products;
+        const productArray = Array.isArray(productList) ? productList : [productList];
+        
+        if (productArray.length > 0) {
+          // Prefer Active services over others
+          let selectedProduct = productArray.find(p => p.status === 'Active') || productArray[0];
+          
+          console.log(`→ Found hosting product for ${domain}:`, {
+            id: selectedProduct.id,
+            server: selectedProduct.server,
+            servername: selectedProduct.servername,
+            serverid: selectedProduct.serverid,
+            status: selectedProduct.status,
+            productname: selectedProduct.productname
+          });
+          
+          return {
+            id: selectedProduct.id,
+            domain: selectedProduct.domain,
+            server: selectedProduct.servername || selectedProduct.server, // Prefer servername over server
+            serverid: selectedProduct.serverid,
+            status: selectedProduct.status,
+            product: selectedProduct.productname,
+            servername: selectedProduct.servername,
+            servertype: selectedProduct.servertype,
+            dedicatedip: selectedProduct.dedicatedip
+          };
+        }
+      }
+      
+      // Fallback: Get all active products and search for domain match
+      console.log(`→ Fallback: Searching all active products for ${domain}`);
+      const allProducts = await getClientsProducts(clientId, { status: 'Active' });
+      
+      if (!allProducts || !allProducts.products || !allProducts.products.product) {
         return null;
       }
 
-      const productList = Array.isArray(products.products.product) 
-        ? products.products.product 
-        : [products.products.product];
+      const productList = Array.isArray(allProducts.products.product) 
+        ? allProducts.products.product 
+        : [allProducts.products.product];
 
       // Fast lookup for hosting products
       for (const product of productList) {
@@ -604,10 +650,19 @@ class CpanelCredentialResolver {
               product.dedicatedip === domain ||
               (product.customfields && this.checkCustomFieldsForDomain(product.customfields, domain))) {
             
+            console.log(`→ Found matching hosting product for ${domain}:`, {
+              id: product.id,
+              server: product.server,
+              servername: product.servername,
+              serverid: product.serverid,
+              status: product.status,
+              productname: product.productname
+            });
+            
             return {
               id: product.id,
               domain: product.domain,
-              server: product.server,
+              server: product.servername || product.server, // Prefer servername over server
               serverid: product.serverid,
               status: product.status,
               product: product.productname,
@@ -648,7 +703,10 @@ class CpanelCredentialResolver {
    */
   async getServerInfo(serverName, domain = null, clientId = null) {
     try {
+      console.log(`→ getServerInfo called with serverName: "${serverName}"`);
+      
       if (!serverName || serverName === 'undefined' || serverName.trim() === '') {
+        console.log(`→ Empty server name, trying fallbacks`);
         // Fast fallback: try DNS resolution first (most likely to succeed)
         if (domain) {
           const serverFromDNS = await this.getServerFromDomainDNS(domain);
@@ -668,18 +726,26 @@ class CpanelCredentialResolver {
 
       // Fast path for valid server names
       const normalizedServerName = this.whmService.extractServerNameFromWHMCS(serverName);
+      console.log(`→ Normalized server name: "${normalizedServerName}"`);
+      
       if (!normalizedServerName) {
+        console.log(`❌ Could not normalize server name: "${serverName}"`);
         return null;
       }
 
       const hostname = this.whmService.getServerHostname(normalizedServerName);
+      console.log(`→ Server hostname: "${hostname}"`);
       
-      return {
+      const serverInfo = {
         serverName: normalizedServerName,
         hostname: hostname,
         originalName: serverName
       };
+      
+      console.log(`→ Returning server info:`, serverInfo);
+      return serverInfo;
     } catch (error) {
+      console.log(`❌ Error in getServerInfo: ${error.message}`);
       this.logger.error(`Error getting server info: ${error.message}`);
       return null;
     }
@@ -855,6 +921,7 @@ class CpanelCredentialResolver {
    */
   async getCpanelUsername(domain, serverName) {
     try {
+      console.log(`→ WHMCS provided server name for ${domain}: ${serverName}`);
       return await this.whmService.getUsernameByDomainOnServer(domain, serverName);
     } catch (error) {
       this.logger.error(`Error getting cPanel username: ${error.message}`);

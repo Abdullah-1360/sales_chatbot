@@ -56,6 +56,26 @@ router.post('/whitelist-ip', cphulkController.whitelistIP);
 router.get('/capabilities', cphulkController.getCapabilities);
 
 /**
+ * GET /cphulk/debug-csf
+ * 
+ * Debug CSF response endpoint to see raw CSF API responses
+ * Query Parameters:
+ * - server (required): Server name to test CSF on (e.g., pcp3, cp1)
+ * - ip (optional): IP address to test (defaults to 65.21.229.29)
+ */
+router.get('/debug-csf', cphulkController.debugCSF);
+
+/**
+ * GET /cphulk/test-csf
+ * 
+ * Test CSF integration endpoint for debugging
+ * Query Parameters:
+ * - server (required): Server name to test CSF on (e.g., pcp3, cp1)
+ * - ip (optional): IP address to test (defaults to 8.8.8.8)
+ */
+router.get('/test-csf', cphulkController.testCSF);
+
+/**
  * GET /cphulk/health
  * 
  * Health check endpoint for monitoring cPHulk service status
