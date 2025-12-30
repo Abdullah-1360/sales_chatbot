@@ -4109,7 +4109,148 @@ class WHMService {
       };
     }
   }
+
+  // ========================================
+  // PASSWORD MANAGEMENT
+  // ========================================
+
+  /**
+   * Reset cPanel password for a user
+   * @param {string} serverName - Server name (e.g., 'cp1', 'pcp6')
+   * @param {string} username - cPanel username
+   * @param {string} newPassword - New password (optional, will generate strong password if not provided)
+   * @returns {Promise<object>} - Password reset result
+   */
+  async resetCpanelPassword(serverName, username, newPassword = null) {
+    try {
+      console.log(`🔐 Resetting cPanel password for user: ${username} on server ${serverName.toUpperCase()}`);
+      
+      // Generate a strong password if not provided
+      if (!newPassword) {
+        newPassword = this.generateStrongPassword();
+        console.log(`→ Generated strong password for ${username}`);
+      }
+      
+      // Use WHM API passwd function to reset password
+      const result = await this.callServerAPI(serverName, 'passwd', {
+        user: username,
+        password: newPassword,
+        // db_pass_update: 1 // Also update database passwords
+      }, '1'); // Use API version 1
+      
+      if (result && result.metadata && result.metadata.result === 1) {
+        console.log(`✅ Successfully reset cPanel password for ${username}`);
+        return {
+          success: true,
+          message: `cPanel password reset successfully for ${username}`,
+          username: username,
+          serverName: serverName,
+          passwordGenerated: !newPassword,
+          newPassword: newPassword, // Include for email notification
+          result: result
+        };
+      } else {
+        const reason = result?.metadata?.reason || 'Unknown error';
+        console.log(`❌ Failed to reset cPanel password for ${username}: ${reason}`);
+        return {
+          success: false,
+          error: reason,
+          message: `Failed to reset cPanel password for ${username}: ${reason}`,
+          username: username,
+          serverName: serverName,
+          result: result
+        };
+      }
+      
+    } catch (error) {
+      console.log(`❌ Error resetting cPanel password for ${username}: ${error.message}`);
+      return {
+        success: false,
+        error: error.message,
+        message: `Error resetting cPanel password for ${username}: ${error.message}`,
+        username: username,
+        serverName: serverName
+      };
+    }
+  }
+
+  /**
+   * Generate a strong password
+   * @param {number} length - Password length (default: 16)
+   * @returns {string} - Strong password
+   */
+  generateStrongPassword(length = 16) {
+    const charset = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*';
+    let password = '';
+    
+    // Ensure at least one character from each category
+    const categories = [
+      'ABCDEFGHIJKLMNOPQRSTUVWXYZ', // Uppercase
+      'abcdefghijklmnopqrstuvwxyz', // Lowercase  
+      '0123456789',                 // Numbers
+      '!@#$%^&*'                   // Special characters
+    ];
+    
+    // Add one character from each category
+    categories.forEach(category => {
+      password += category.charAt(Math.floor(Math.random() * category.length));
+    });
+    
+    // Fill the rest with random characters
+    for (let i = password.length; i < length; i++) {
+      password += charset.charAt(Math.floor(Math.random() * charset.length));
+    }
+    
+    // Shuffle the password to avoid predictable patterns
+    return password.split('').sort(() => Math.random() - 0.5).join('');
+  }
+
+  /**
+   * Reset cPanel password by domain (finds username automatically)
+   * @param {string} domain - Domain name
+   * @param {string} newPassword - New password (optional)
+   * @returns {Promise<object>} - Password reset result
+   */
+  async resetPasswordByDomain(domain, newPassword = null) {
+    try {
+      console.log(`🔐 Resetting cPanel password for domain: ${domain}`);
+      
+      // Find the username and server for this domain
+      const account = await this.getAccountByDomain(domain);
+      
+      if (!account) {
+        return {
+          success: false,
+          error: `Domain ${domain} not found on any server`,
+          message: `Cannot reset password: domain ${domain} not found`,
+          domain: domain
+        };
+      }
+      
+      const { user: username, serverName } = account;
+      console.log(`→ Found domain ${domain} on server ${serverName.toUpperCase()} with username: ${username}`);
+      
+      // Reset the password
+      const resetResult = await this.resetCpanelPassword(serverName, username, newPassword);
+      
+      return {
+        ...resetResult,
+        domain: domain,
+        account: account
+      };
+      
+    } catch (error) {
+      console.log(`❌ Error resetting password for domain ${domain}: ${error.message}`);
+      return {
+        success: false,
+        error: error.message,
+        message: `Error resetting password for domain ${domain}: ${error.message}`,
+        domain: domain
+      };
+    }
+  }
 }
+
 
 // Export singleton instance
 const whmService = new WHMService();

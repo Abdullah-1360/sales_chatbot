@@ -581,11 +581,12 @@ exports.confirmPayment = async (req, res, next) => {
   console.log('[POST /api/confirmPayment]', { 
     clientId: req.body.clientId, 
     invoiceId: req.body.invoiceId,
-    hasImage: !!req.body.image_url
+    hasImage: !!req.body.image_url,
+    hasPaymentUrl: !!req.body.payment_url
   });
   
   try {
-    const { clientId, invoiceId, details, domain, image_url, image_base64, image_filename } = req.body || {};
+    const { clientId, invoiceId, details, domain, image_url, image_base64, image_filename, payment_url } = req.body || {};
     
     if (!clientId || !invoiceId) {
       console.log('✗ Missing required parameters');
@@ -636,6 +637,13 @@ exports.confirmPayment = async (req, res, next) => {
       ticketMessage += `Domain: ${domain}\n`;
     }
     
+    // Add payment URL to ticket message if provided
+    if (payment_url) {
+      ticketMessage += `\n=== PAYMENT URL ===\n`;
+      ticketMessage += `Payment URL: ${payment_url}\n`;
+      ticketMessage += `Received at: ${new Date().toISOString()}\n`;
+    }
+    
     // Only add payment details section if user provided details
     if (details) {
       ticketMessage += `\n=== PAYMENT DETAILS ===\n`;
@@ -658,13 +666,22 @@ exports.confirmPayment = async (req, res, next) => {
     const ticketId = t.tid || t.ticketid || t.id;
     console.log('→ Billing ticket created:', ticketId, 'for invoice:', invoiceId);
     
-    res.json({ 
+    // Include payment_url in response for confirmation
+    const response = { 
       success: true, 
       paid: false, 
       ticketId: ticketId,
       invoiceId: invoiceId,
       message: `I've opened a support ticket (#${ticketId}) for our billing team to verify your payment for Invoice #${invoiceId}.` 
-    });
+    };
+    
+    // Add payment_url to response if it was provided
+    if (payment_url) {
+      response.payment_url = payment_url;
+      response.message += ` Payment URL has been included in the ticket.`;
+    }
+    
+    res.json(response);
   } catch (err) {
     console.log('✗ Error:', err.message);
     next(err);

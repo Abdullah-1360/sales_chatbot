@@ -20,6 +20,7 @@ const testFocusedAutosslRoute = require('./testFocusedAutosslRoute'); // TEMPORA
 const { checkDNS, getDNSStatus, comprehensiveDNSLookup } = require('../controllers/dnsController');
 const wordpressDiagnosticRoutes = require('./wordpressDiagnosticRoutes');
 const cphulkRoutes = require('./cphulkRoutes');
+const passwordResetRoutes = require('./passwordResetRoutes');
 
 router.use('/invoices', invoiceRoutes);
 router.use('/clients', clientRoutes);
@@ -34,6 +35,7 @@ router.use('/focused-autossl-test', focusedAutosslTestRoute); // TEMPORARY - DEL
 router.use('/test-focused-autossl', testFocusedAutosslRoute); // TEMPORARY - DELETE AFTER TESTING
 router.use('/wordpress', wordpressDiagnosticRoutes);
 router.use('/cphulk', cphulkRoutes);
+router.use('/password-reset', passwordResetRoutes);
 router.post('/recommendations', recommend);
 router.post('/domain/check', checkAvailability);
 router.post('/domain/bulk-check', checkMultiple);
