@@ -17,19 +17,18 @@ const {
  * Handles both domain registration and hosting product status
  */
 exports.checkServiceStatus = async (req, res, next) => {
-  console.log('[POST /api/serviceStatus]', { 
-    clientId: req.body.clientId, 
-    domain: req.body.domain, 
-    serviceId: req.body.serviceId,
-    hasIssue: !!req.body.issue
-  });
+  // console.log('[POST /api/serviceStatus]', { 
+  //   clientId: req.body.clientId, 
+  //   domain: req.body.domain, 
+  //   serviceId: req.body.serviceId,
+  //   hasIssue: !!req.body.issue
+  // });
   
   try {
     const { clientId, domain, serviceId, issue } = req.body || {};
     
     // Validate required parameters
     if (!clientId || (!domain && !serviceId)) {
-      console.log('✗ Missing required parameters');
       return res.status(400).json({ 
         success: false, 
         error: 'clientId and domain or serviceId required' 
@@ -41,7 +40,6 @@ exports.checkServiceStatus = async (req, res, next) => {
     
     // Service not found
     if (!svc) {
-      console.log('✗ Service not found');
       return res.status(404).json({ 
         success: false, 
         error: `I couldn't find a service with that ${domain ? 'domain' : 'ID'} on your account.` 
@@ -69,14 +67,13 @@ exports.checkServiceStatus = async (req, res, next) => {
         const domainArray = Array.isArray(domains) ? domains : (domains ? [domains] : []);
         
         if (domainArray.length > 0) {
-          console.log(`→ Found ${domainArray.length} domain record(s) for ${domain}`);
+          // console.log(`→ Found ${domainArray.length} domain record(s) for ${domain}`);
           
           // If multiple domains found, select the best one based on status priority:
           // Priority: active > grace > redemption > expired
           let selectedDomain = domainArray[0];
           
           if (domainArray.length > 1) {
-            console.log(`→ Multiple domain records found for ${domain}, selecting best one using priority system...`);
             
             // Define status priority (lower number = higher priority)
             const getStatusPriority = (status) => {
@@ -108,14 +105,14 @@ exports.checkServiceStatus = async (req, res, next) => {
             
             selectedDomain = sortedDomains[0];
             
-            console.log(`→ Selected domain record using priority system:`);
-            console.log(`  Status: ${selectedDomain.status} (Priority: ${getStatusPriority(selectedDomain.status)})`);
-            console.log(`  Expiry: ${selectedDomain.expirydate}`);
-            console.log(`  Other records: ${domainArray.length - 1} duplicate(s)`);
+            // console.log(`→ Selected domain record using priority system:`);
+            // console.log(`  Status: ${selectedDomain.status} (Priority: ${getStatusPriority(selectedDomain.status)})`);
+            // console.log(`  Expiry: ${selectedDomain.expirydate}`);
+            // console.log(`  Other records: ${domainArray.length - 1} duplicate(s)`);
             
             // Log other domains for reference with their priorities
             sortedDomains.slice(1).forEach((d, idx) => {
-              console.log(`  Duplicate ${idx + 1}: Status=${d.status} (Priority: ${getStatusPriority(d.status)}), Expiry=${d.expirydate}`);
+              // console.log(`  Duplicate ${idx + 1}: Status=${d.status} (Priority: ${getStatusPriority(d.status)}), Expiry=${d.expirydate}`);
             });
           }
           
@@ -147,7 +144,7 @@ exports.checkServiceStatus = async (req, res, next) => {
         const productArray = Array.isArray(products) ? products : (products ? [products] : []);
         
         if (productArray.length > 0) {
-          console.log(`→ Found ${productArray.length} hosting product(s) for ${domain}`);
+          // console.log(`→ Found ${productArray.length} hosting product(s) for ${domain}`);
           
           // Collect ALL products with their statuses and server information
           const allProducts = productArray.map(p => ({
@@ -213,25 +210,25 @@ exports.checkServiceStatus = async (req, res, next) => {
           const primaryProduct = sortedProducts[0];
           
           if (allProducts.length > 1) {
-            console.log(`→ Multiple hosting products found, selected using priority system:`);
-            console.log(`  Status: ${primaryProduct.status} (Priority: ${getHostingStatusPriority(primaryProduct.status)})`);
-            console.log(`  ID: ${primaryProduct.id}`);
-            console.log(`  Server: ${primaryProduct.serverName || 'N/A'} (ID: ${primaryProduct.serverId || 'N/A'})`);
-            console.log(`  Server IP: ${primaryProduct.serverIP || 'N/A'}`);
-            console.log(`  Expiry: ${primaryProduct.expiryDate}`);
-            console.log(`  Other products: ${allProducts.length - 1} duplicate(s)`);
+            // console.log(`→ Multiple hosting products found, selected using priority system:`);
+            // console.log(`  Status: ${primaryProduct.status} (Priority: ${getHostingStatusPriority(primaryProduct.status)})`);
+            // console.log(`  ID: ${primaryProduct.id}`);
+            // console.log(`  Server: ${primaryProduct.serverName || 'N/A'} (ID: ${primaryProduct.serverId || 'N/A'})`);
+            // console.log(`  Server IP: ${primaryProduct.serverIP || 'N/A'}`);
+            // console.log(`  Expiry: ${primaryProduct.expiryDate}`);
+            // console.log(`  Other products: ${allProducts.length - 1} duplicate(s)`);
             
             // Log other products for reference with their priorities
             sortedProducts.slice(1).forEach((p, idx) => {
-              console.log(`  Product ${idx + 1}: Status=${p.status} (Priority: ${getHostingStatusPriority(p.status)}), ID=${p.id}, Server=${p.serverName || 'N/A'}, Expiry=${p.expiryDate}`);
+              // console.log(`  Product ${idx + 1}: Status=${p.status} (Priority: ${getHostingStatusPriority(p.status)}), ID=${p.id}, Server=${p.serverName || 'N/A'}, Expiry=${p.expiryDate}`);
             });
           } else {
-            console.log(`→ Single hosting product found:`);
-            console.log(`  Status: ${primaryProduct.status}`);
-            console.log(`  ID: ${primaryProduct.id}`);
-            console.log(`  Server: ${primaryProduct.serverName || 'N/A'} (ID: ${primaryProduct.serverId || 'N/A'})`);
-            console.log(`  Server IP: ${primaryProduct.serverIP || 'N/A'}`);
-            console.log(`  Server Hostname: ${primaryProduct.serverHostname || 'N/A'}`);
+            // console.log(`→ Single hosting product found:`);
+            // console.log(`  Status: ${primaryProduct.status}`);
+            // console.log(`  ID: ${primaryProduct.id}`);
+            // console.log(`  Server: ${primaryProduct.serverName || 'N/A'} (ID: ${primaryProduct.serverId || 'N/A'})`);
+            // console.log(`  Server IP: ${primaryProduct.serverIP || 'N/A'}`);
+            // console.log(`  Server Hostname: ${primaryProduct.serverHostname || 'N/A'}`);
           }
           
           hostingStatus = {
@@ -257,27 +254,27 @@ exports.checkServiceStatus = async (req, res, next) => {
           // Fetch username for AutoSSL management from the specific hosting server
           if (domain && hostingStatus.serverName) {
             try {
-              console.log(`→ Fetching username for domain ${domain} from hosting server ${hostingStatus.serverName}...`);
+              // console.log(`→ Fetching username for domain ${domain} from hosting server ${hostingStatus.serverName}...`);
               const whmService = require('../services/whmService');
               
               // Extract server name from hosting status (e.g., "PCP3 (Premium)" -> "pcp3")
               const serverName = whmService.extractServerNameFromWHMCS(hostingStatus.serverName);
               
               if (serverName) {
-                console.log(`→ Using hosting server: ${serverName.toUpperCase()}`);
+                // console.log(`→ Using hosting server: ${serverName.toUpperCase()}`);
                 const username = await whmService.getUsernameByDomainOnServer(domain, serverName);
                 
                 if (username) {
                   hostingStatus.username = username;
-                  console.log(`✅ Username found for ${domain} on ${serverName.toUpperCase()}: ${username}`);
+                  // console.log(`✅ Username found for ${domain} on ${serverName.toUpperCase()}: ${username}`);
                 } else {
-                  console.log(`⚠️ Username not found for domain ${domain} on server ${serverName.toUpperCase()}`);
+                  // console.log(`⚠️ Username not found for domain ${domain} on server ${serverName.toUpperCase()}`);
                 }
               } else {
-                console.log(`⚠️ Could not extract server name from: ${hostingStatus.serverName}`);
+                // console.log(`⚠️ Could not extract server name from: ${hostingStatus.serverName}`);
               }
             } catch (usernameError) {
-              console.log(`⚠️ Error fetching username for ${domain}: ${usernameError.message}`);
+              // console.log(`⚠️ Error fetching username for ${domain}: ${usernameError.message}`);
             }
           }
         }
@@ -286,17 +283,17 @@ exports.checkServiceStatus = async (req, res, next) => {
       }
     }
     
-    console.log('→ Service:', serviceName, 'Status:', status, 
-                domainStatus ? `Domain: ${domainStatus.status}` : '', 
-                hostingStatus ? `Hosting: ${hostingStatus.status}${hostingStatus.totalProducts > 1 ? ` (${hostingStatus.totalProducts} products found)` : ''}` : '',
-                hostingStatus && hostingStatus.serverName ? `Server: ${hostingStatus.serverName}` : '');
+    // console.log('→ Service:', serviceName, 'Status:', status, 
+    //             domainStatus ? `Domain: ${domainStatus.status}` : '', 
+    //             hostingStatus ? `Hosting: ${hostingStatus.status}${hostingStatus.totalProducts > 1 ? ` (${hostingStatus.totalProducts} products found)` : ''}` : '',
+    //             hostingStatus && hostingStatus.serverName ? `Server: ${hostingStatus.serverName}` : '');
 
     // DNS Zone Analysis - Check if domain's A record matches server IP
     let dnsZoneAnalysis = null;
     let userDomainData = null; // Initialize userDomainData for zone file domain extraction
     
     if (domain && hostingStatus && hostingStatus.serverIP) {
-      console.log(`\n🔍 Analyzing DNS zone for ${domain}...`);
+      // console.log(`\n🔍 Analyzing DNS zone for ${domain}...`);
       
       try {
         // Import DNS and WHM services for zone analysis
@@ -304,13 +301,13 @@ exports.checkServiceStatus = async (req, res, next) => {
         const whmService = require('../services/whmService');
         
         // Step 1: Check if we control the DNS (nameservers) first
-        console.log(`→ Step 1: Checking DNS nameserver control...`);
+        // console.log(`→ Step 1: Checking DNS nameserver control...`);
         
         const dnsLookup = await performComprehensiveDNSLookup(domain);
         const usesOurNameservers = dnsLookup.serverMatches.nsRecordsMatchOurServers;
         
-        console.log(`→ Uses our nameservers: ${usesOurNameservers ? '✅' : '❌'}`);
-        console.log(`→ Current nameservers: ${dnsLookup.records.NS.join(', ')}`);
+        // console.log(`→ Uses our nameservers: ${usesOurNameservers ? '✅' : '❌'}`);
+        // console.log(`→ Current nameservers: ${dnsLookup.records.NS.join(', ')}`);
         
         let currentARecords = [];
         let dnsZoneRecords = [];
@@ -318,8 +315,8 @@ exports.checkServiceStatus = async (req, res, next) => {
         let domainServer = null;
         
         // Step 2: Check if domain is hosted on our servers (regardless of nameserver control)
-        console.log(`→ Step 2: Checking if domain is hosted on our servers...`);
-        console.log(`→ Note: We can read zone files for hosted domains even with external DNS management`);
+        // console.log(`→ Step 2: Checking if domain is hosted on our servers...`);
+        // console.log(`→ Note: We can read zone files for hosted domains even with external DNS management`);
         
         // Create WHMCS hint from hosting status
         const whmcsHint = {
@@ -333,21 +330,21 @@ exports.checkServiceStatus = async (req, res, next) => {
         
         if (domainServer) {
           isOurServer = true;
-          console.log(`→ Domain hosted on our server: ${domainServer.toUpperCase()}`);
-          console.log(`→ Step 3: Getting zone file data (available for hosted domains)`);
+          // console.log(`→ Domain hosted on our server: ${domainServer.toUpperCase()}`);
+          // console.log(`→ Step 3: Getting zone file data (available for hosted domains)`);
           
           dnsZoneRecords = await whmService.getDNSZone(domainServer, domain);
           
           // Extract all user domains from zone file for AutoSSL processing
-          console.log(`→ DEBUG: dnsZoneRecords length: ${dnsZoneRecords ? dnsZoneRecords.length : 'null'}`);
+          // console.log(`→ DEBUG: dnsZoneRecords length: ${dnsZoneRecords ? dnsZoneRecords.length : 'null'}`);
           if (dnsZoneRecords && dnsZoneRecords.length > 0) {
-            console.log(`→ Extracting all user domains from zone file for AutoSSL management...`);
-            console.log(`→ DEBUG: Zone records sample: ${JSON.stringify(dnsZoneRecords.slice(0, 3).map(r => ({type: r.type, name: r.name})))}`);
+            // console.log(`→ Extracting all user domains from zone file for AutoSSL management...`);
+            // console.log(`→ DEBUG: Zone records sample: ${JSON.stringify(dnsZoneRecords.slice(0, 3).map(r => ({type: r.type, name: r.name})))}`);
             userDomainData = whmService.extractUserDomainsFromZone(dnsZoneRecords, domain);
-            console.log(`→ Found ${userDomainData.summary.totalDomains} user domains in zone file`);
-            console.log(`→ DEBUG: Extracted domains: ${userDomainData.domains.join(', ')}`);
+            // console.log(`→ Found ${userDomainData.summary.totalDomains} user domains in zone file`);
+            // console.log(`→ DEBUG: Extracted domains: ${userDomainData.domains.join(', ')}`);
           } else {
-            console.log(`→ DEBUG: No zone records available for domain extraction`);
+            // console.log(`→ DEBUG: No zone records available for domain extraction`);
           }
           
           // Extract A records from zone file for DNS analysis
@@ -367,28 +364,28 @@ exports.checkServiceStatus = async (req, res, next) => {
             });
             
             currentARecords = mainDomainARecords.map(r => r.address);
-            console.log(`→ Zone file A records: ${currentARecords.join(', ')}`);
+            // console.log(`→ Zone file A records: ${currentARecords.join(', ')}`);
             
             if (usesOurNameservers) {
-              console.log(`→ DNS Control: We manage nameservers - zone file is authoritative`);
+              // console.log(`→ DNS Control: We manage nameservers - zone file is authoritative`);
             } else {
-              console.log(`→ DNS Control: External nameservers - zone file available but not authoritative`);
-              console.log(`→ Note: Zone file data will be used for AutoSSL domain extraction`);
+              // console.log(`→ DNS Control: External nameservers - zone file available but not authoritative`);
+              // console.log(`→ Note: Zone file data will be used for AutoSSL domain extraction`);
             }
           } else {
-            console.log(`→ No A records found in zone file`);
+            // console.log(`→ No A records found in zone file`);
             // Fallback to DNS resolver for A records
             currentARecords = dnsLookup.records.A || [];
-            console.log(`→ Fallback to DNS resolver A records: ${currentARecords.join(', ')}`);
+            // console.log(`→ Fallback to DNS resolver A records: ${currentARecords.join(', ')}`);
           }
         } else {
           // Domain not hosted on our servers - use DNS resolver only
-          console.log(`→ Domain not hosted on our servers - using DNS resolver only`);
-          console.log(`→ DNS managed externally (e.g., Cloudflare, external registrar)`);
-          console.log(`→ Skipping zone file analysis - not applicable for external DNS`);
+          // console.log(`→ Domain not hosted on our servers - using DNS resolver only`);
+          // console.log(`→ DNS managed externally (e.g., Cloudflare, external registrar)`);
+          // console.log(`→ Skipping zone file analysis - not applicable for external DNS`);
           
           currentARecords = dnsLookup.records.A || [];
-          console.log(`→ DNS resolver A records: ${currentARecords.join(', ')}`);
+          // console.log(`→ DNS resolver A records: ${currentARecords.join(', ')}`);
           
           // For external DNS, we don't need to check server hosting details
           // We only care about the DNS records and providing instructions
@@ -436,7 +433,7 @@ exports.checkServiceStatus = async (req, res, next) => {
           
         } else if (usesOurNameservers && !isOurServer) {
           // We control DNS but domain not hosted on our servers - use DNS lookup
-          console.log(`→ Step 3: Analyzing DNS records (we control DNS, external hosting)`);
+          // console.log(`→ Step 3: Analyzing DNS records (we control DNS, external hosting)`);
           
           if (currentARecords.length > 0) {
             mainDomainARecords = currentARecords.map((ip, index) => ({
@@ -463,7 +460,7 @@ exports.checkServiceStatus = async (req, res, next) => {
           
         } else {
           // External DNS management - only analyze DNS lookup results for suggestions
-          console.log(`→ Step 3: Analyzing DNS records (external DNS management)`);
+          // console.log(`→ Step 3: Analyzing DNS records (external DNS management)`);
           
           if (currentARecords.length > 0) {
             // Create simple analysis for external DNS - no zone file operations
@@ -962,8 +959,8 @@ exports.checkServiceStatus = async (req, res, next) => {
               
               if (errorLogResult.success) {
                 console.log(`✅ Error log fetched successfully: ${errorLogResult.errorLogLines.length} recent entries`);
-                console.log(`→ Last 10 lines analysis: ${errorLogResult.last10SyntaxErrors.length} of 10 lines are syntax errors`);
-                console.log(`→ Syntax error issue detected: ${errorLogResult.isSyntaxErrorIssue}`);
+                // console.log(`→ Last 10 lines analysis: ${errorLogResult.last10SyntaxErrors.length} of 10 lines are syntax errors`);
+                // console.log(`→ Syntax error issue detected: ${errorLogResult.isSyntaxErrorIssue}`);
                 
                 // Add error log information to reachability analysis
                 reachabilityAnalysis.errorLog = {
@@ -1087,7 +1084,7 @@ exports.checkServiceStatus = async (req, res, next) => {
             }
             
           } catch (errorLogError) {
-            console.log(`❌ Error during error log fetching: ${errorLogError.message}`);
+            // console.log(`❌ Error during error log fetching: ${errorLogError.message}`);
             
             reachabilityAnalysis.errorLog = {
               fetched: false,
@@ -1097,13 +1094,13 @@ exports.checkServiceStatus = async (req, res, next) => {
             };
           }
         } else if (reachabilityAnalysis.statusCode === 500) {
-          console.log(`\n⚠️ 500 Internal Server Error detected but cannot fetch error log:`);
+          // console.log(`\n⚠️ 500 Internal Server Error detected but cannot fetch error log:`);
           if (!hostingStatus) {
-            console.log(`→ No hosting status available - domain may not be hosted with us`);
+            // console.log(`→ No hosting status available - domain may not be hosted with us`);
           } else if (!hostingStatus.username) {
-            console.log(`→ Username not available for domain ${domain}`);
+            // console.log(`→ Username not available for domain ${domain}`);
           } else if (!hostingStatus.serverName) {
-            console.log(`→ Server name not available`);
+            // //console.log(`→ Server name not available`);
           }
           
           reachabilityAnalysis.errorLog = {
@@ -1121,9 +1118,9 @@ exports.checkServiceStatus = async (req, res, next) => {
         // Quota Check - Check inode and disk usage before AutoSSL
         let quotaAnalysis = null;
         if (hostingStatus && hostingStatus.username && hostingStatus.serverName) {
-          console.log(`\n📊 Checking Quota Usage for ${domain}...`);
-          console.log(`→ Username: ${hostingStatus.username}`);
-          console.log(`→ Server: ${hostingStatus.serverName}`);
+          //console.log(`\n📊 Checking Quota Usage for ${domain}...`);
+          //console.log(`→ Username: ${hostingStatus.username}`);
+          //console.log(`→ Server: ${hostingStatus.serverName}`);
           
           try {
             const whmService = require('../services/whmService');
@@ -1132,7 +1129,7 @@ exports.checkServiceStatus = async (req, res, next) => {
             const serverName = whmService.extractServerNameFromWHMCS(hostingStatus.serverName);
             
             if (serverName) {
-              console.log(`→ Fetching quota info from server: ${serverName.toUpperCase()}`);
+              //console.log(`→ Fetching quota info from server: ${serverName.toUpperCase()}`);
               
               const quotaResult = await whmService.callServerAPI(serverName, 'cpanel', {
                 'cpanel_jsonapi_user': hostingStatus.username,
@@ -1141,20 +1138,20 @@ exports.checkServiceStatus = async (req, res, next) => {
                 'cpanel_jsonapi_apiversion': '3'
               }, '2', 'GET'); // Use GET method for cPanel JSON API
               
-              console.log(`→ Quota API Response structure:`, {
-                hasResult: !!quotaResult,
-                hasData: !!(quotaResult && quotaResult.data),
-                keys: quotaResult ? Object.keys(quotaResult) : [],
-                dataKeys: quotaResult && quotaResult.data ? Object.keys(quotaResult.data) : []
-              });
+              // console.log(`→ Quota API Response structure:`, {
+              //   hasResult: !!quotaResult,
+              //   hasData: !!(quotaResult && quotaResult.data),
+              //   keys: quotaResult ? Object.keys(quotaResult) : [],
+              //   dataKeys: quotaResult && quotaResult.data ? Object.keys(quotaResult.data) : []
+              // });
               
               // Debug: Log the first few levels of the response to understand structure
               if (quotaResult && quotaResult.data) {
-                console.log(`→ Response data keys:`, Object.keys(quotaResult.data));
+                //
                 if (quotaResult.data.result) {
-                  console.log(`→ Response data.result keys:`, Object.keys(quotaResult.data.result));
+                  //console.log(`→ Response data.result keys:`, Object.keys(quotaResult.data.result));
                   if (quotaResult.data.result.data) {
-                    console.log(`→ Response data.result.data keys:`, Object.keys(quotaResult.data.result.data));
+                    //console.log(`→ Response data.result.data keys:`, Object.keys(quotaResult.data.result.data));
                   }
                 }
               }
@@ -1163,16 +1160,8 @@ exports.checkServiceStatus = async (req, res, next) => {
               if (quotaResult) {
                 let quotaData = null;
                 
-                console.log(`→ Parsing quota data from cPanel JSON API response...`);
-                console.log(`→ Response structure check:`, {
-                  hasData: !!quotaResult.data,
-                  hasResult: !!quotaResult.result,
-                  hasResultData: !!(quotaResult.result && quotaResult.result.data),
-                  topLevelKeys: Object.keys(quotaResult),
-                  func: quotaResult.func,
-                  module: quotaResult.module,
-                  apiversion: quotaResult.apiversion
-                });
+//console.log`→ Parsing quota data from cPanel JSON API response...`);
+                //
                 
                 // Handle cPanel JSON API direct response structure
                 if (quotaResult.result && quotaResult.result.data) {
@@ -1193,29 +1182,29 @@ exports.checkServiceStatus = async (req, res, next) => {
                   console.log(`→ ✅ Found quota data at: data.data`);
                 } else {
                   console.log(`→ ❌ Could not find quota data in expected cPanel JSON API structure`);
-                  console.log(`→ Top-level keys:`, Object.keys(quotaResult));
+                  // console.log(`→ Top-level keys:`, Object.keys(quotaResult));
                   if (quotaResult.result) {
-                    console.log(`→ Available keys at result level:`, Object.keys(quotaResult.result));
+                    // console.log(`→ Available keys at result level:`, Object.keys(quotaResult.result));
                     if (quotaResult.result.data) {
-                      console.log(`→ Available keys at result.data level:`, Object.keys(quotaResult.result.data));
+                      // console.log(`→ Available keys at result.data level:`, Object.keys(quotaResult.result.data));
                     }
                   }
                   if (quotaResult.data) {
-                    console.log(`→ Available keys at data level:`, Object.keys(quotaResult.data));
+                    // console.log(`→ Available keys at data level:`, Object.keys(quotaResult.data));
                   }
                 }
                 
                 if (quotaData && typeof quotaData === 'object') {
-                  console.log(`→ Quota data keys found:`, Object.keys(quotaData));
-                  console.log(`→ Raw quota values:`, {
-                    megabytes_used: quotaData.megabytes_used,
-                    megabyte_limit: quotaData.megabyte_limit,
-                    inodes_used: quotaData.inodes_used,
-                    inode_limit: quotaData.inode_limit,
-                    under_quota_overall: quotaData.under_quota_overall,
-                    under_megabyte_limit: quotaData.under_megabyte_limit,
-                    under_inode_limit: quotaData.under_inode_limit
-                  });
+                  // console.log(`→ Quota data keys found:`, Object.keys(quotaData));
+                  // console.log(`→ Raw quota values:`, {
+                  //   megabytes_used: quotaData.megabytes_used,
+                  //   megabyte_limit: quotaData.megabyte_limit,
+                  //   inodes_used: quotaData.inodes_used,
+                  //   inode_limit: quotaData.inode_limit,
+                  //   under_quota_overall: quotaData.under_quota_overall,
+                  //   under_megabyte_limit: quotaData.under_megabyte_limit,
+                  //   under_inode_limit: quotaData.under_inode_limit
+                  // });
                 } else {
                   console.log(`→ ❌ Could not extract valid quota data from response`);
                 }
@@ -1264,11 +1253,11 @@ exports.checkServiceStatus = async (req, res, next) => {
                   const diskExceeded = quotaAnalysis.megabytesLimit > 0 && !quotaAnalysis.underMegabyteLimit;
                   const inodeExceeded = quotaAnalysis.inodeLimit > 0 && !quotaAnalysis.underInodeLimit;
                 
-                console.log(`→ Quota limit analysis:`);
-                console.log(`  Disk limit: ${quotaAnalysis.megabytesLimit}MB (${quotaAnalysis.megabytesLimit > 0 ? 'limited' : 'unlimited'})`);
-                console.log(`  Disk exceeded: ${diskExceeded} (under_limit: ${quotaAnalysis.underMegabyteLimit})`);
-                console.log(`  Inode limit: ${quotaAnalysis.inodeLimit} (${quotaAnalysis.inodeLimit > 0 ? 'limited' : 'unlimited'})`);
-                console.log(`  Inode exceeded: ${inodeExceeded} (under_limit: ${quotaAnalysis.underInodeLimit})`);
+                // console.log(`→ Quota limit analysis:`);
+                // console.log(`  Disk limit: ${quotaAnalysis.megabytesLimit}MB (${quotaAnalysis.megabytesLimit > 0 ? 'limited' : 'unlimited'})`);
+                // console.log(`  Disk exceeded: ${diskExceeded} (under_limit: ${quotaAnalysis.underMegabyteLimit})`);
+                // console.log(`  Inode limit: ${quotaAnalysis.inodeLimit} (${quotaAnalysis.inodeLimit > 0 ? 'limited' : 'unlimited'})`);
+                // console.log(`  Inode exceeded: ${inodeExceeded} (under_limit: ${quotaAnalysis.underInodeLimit})`);
                 
                 if (diskExceeded || inodeExceeded) {
                   quotaAnalysis.quotaExceeded = true;
@@ -1349,7 +1338,7 @@ exports.checkServiceStatus = async (req, res, next) => {
                     });
                     
                     const ticketId = ticket.tid || ticket.ticketid || ticket.id;
-                    console.log(`✅ Support ticket created for quota issue: #${ticketId}`);
+                    // console.log(`✅ Support ticket created for quota issue: #${ticketId}`);
                     
                     quotaAnalysis.supportTicket = {
                       created: true,
@@ -1361,7 +1350,7 @@ exports.checkServiceStatus = async (req, res, next) => {
                     };
                     
                   } catch (ticketError) {
-                    console.log(`❌ Failed to create support ticket for quota issue: ${ticketError.message}`);
+                    // console.log(`❌ Failed to create support ticket for quota issue: ${ticketError.message}`);
                     
                     quotaAnalysis.supportTicket = {
                       created: true,
@@ -1373,7 +1362,7 @@ exports.checkServiceStatus = async (req, res, next) => {
                   }
                   
                   // Return early with quota exceeded response - don't proceed to AutoSSL
-                  console.log(`→ Quota limits exceeded - skipping AutoSSL check`);
+                  // console.log(`→ Quota limits exceeded - skipping AutoSSL check`);
                   
                   // Add quota analysis to reachability analysis
                   if (reachabilityAnalysis) {
@@ -1436,13 +1425,13 @@ exports.checkServiceStatus = async (req, res, next) => {
                     `${quotaAnalysis.inodesUsed} / ${quotaAnalysis.inodeLimit} (${((quotaAnalysis.inodesUsed / quotaAnalysis.inodeLimit) * 100).toFixed(1)}%)` :
                     `${quotaAnalysis.inodesUsed} / Unlimited`;
                   
-                  console.log(`→ Disk: ${diskDisplay}`);
-                  console.log(`→ Inodes: ${inodeDisplay}`);
+                  // console.log(`→ Disk: ${diskDisplay}`);
+                  // console.log(`→ Inodes: ${inodeDisplay}`);
                 }
                 
                 } else {
                   // Error in quota data parsing - log and continue
-                  console.log(`⚠️ Quota analysis error: ${quotaAnalysis.error}`);
+                  // console.log(`⚠️ Quota analysis error: ${quotaAnalysis.error}`);
                 }
                 
               } else {
@@ -1458,7 +1447,7 @@ exports.checkServiceStatus = async (req, res, next) => {
               }
               
             } else {
-              console.log(`⚠️ Could not extract server name from: ${hostingStatus.serverName}`);
+              // console.log(`⚠️ Could not extract server name from: ${hostingStatus.serverName}`);
               quotaAnalysis = {
                 username: hostingStatus.username,
                 error: 'Could not determine server name for quota check',
@@ -1469,7 +1458,7 @@ exports.checkServiceStatus = async (req, res, next) => {
             }
             
           } catch (quotaError) {
-            console.log(`❌ Error during quota check: ${quotaError.message}`);
+            // console.log(`❌ Error during quota check: ${quotaError.message}`);
             quotaAnalysis = {
               username: hostingStatus.username,
               error: quotaError.message,
@@ -1483,10 +1472,10 @@ exports.checkServiceStatus = async (req, res, next) => {
         // File Permissions Check - Check file/directory permissions before AutoSSL
         let filePermissionsAnalysis = null;
         if (hostingStatus && hostingStatus.username && hostingStatus.serverName && (!quotaAnalysis || !quotaAnalysis.quotaExceeded)) {
-          console.log(`\n📁 Checking File Permissions for ${domain}...`);
-          console.log(`→ Username: ${hostingStatus.username}`);
-          console.log(`→ Server: ${hostingStatus.serverName}`);
-          console.log(`→ Directory: /public_html`);
+          // console.log(`\n📁 Checking File Permissions for ${domain}...`);
+          // console.log(`→ Username: ${hostingStatus.username}`);
+          // console.log(`→ Server: ${hostingStatus.serverName}`);
+          // console.log(`→ Directory: /public_html`);
           
           try {
             const whmService = require('../services/whmService');
@@ -1495,7 +1484,7 @@ exports.checkServiceStatus = async (req, res, next) => {
             const serverName = whmService.extractServerNameFromWHMCS(hostingStatus.serverName);
             
             if (serverName) {
-              console.log(`→ Fetching file list from server: ${serverName.toUpperCase()}`);
+              // console.log(`→ Fetching file list from server: ${serverName.toUpperCase()}`);
               
               const fileListResult = await whmService.callServerAPI(serverName, 'cpanel', {
                 'cpanel_jsonapi_user': hostingStatus.username,
@@ -1505,17 +1494,17 @@ exports.checkServiceStatus = async (req, res, next) => {
                 'dir': '/public_html'
               }, '2', 'GET'); // Use GET method for cPanel JSON API
               
-              console.log(`→ File list API Response structure:`, {
-                hasResult: !!fileListResult,
-                hasResultData: !!(fileListResult && fileListResult.result && fileListResult.result.data),
-                topLevelKeys: fileListResult ? Object.keys(fileListResult) : [],
-                func: fileListResult ? fileListResult.func : undefined
-              });
+              // console.log(`→ File list API Response structure:`, {
+              //   hasResult: !!fileListResult,
+              //   hasResultData: !!(fileListResult && fileListResult.result && fileListResult.result.data),
+              //   topLevelKeys: fileListResult ? Object.keys(fileListResult) : [],
+              //   func: fileListResult ? fileListResult.func : undefined
+              // });
               
               // Parse file list response
               if (fileListResult && fileListResult.result && fileListResult.result.data) {
                 const fileList = fileListResult.result.data;
-                console.log(`→ ✅ Found file list data: ${fileList.length} items`);
+                // console.log(`→ ✅ Found file list data: ${fileList.length} items`);
                 
                 // Analyze file permissions
                 const permissionIssues = [];
@@ -1577,9 +1566,9 @@ exports.checkServiceStatus = async (req, res, next) => {
                   filePermissionsAnalysis.issue = `Found ${permissionIssues.length} file/directory permission issues in /public_html`;
                   filePermissionsAnalysis.recommendation = 'File and directory permissions need to be corrected for proper website functionality';
                   
-                  console.log(`🚨 Permission Issues Found: ${permissionIssues.length} items with incorrect permissions`);
-                  console.log(`→ Files: ${correctFiles}/${totalFiles} correct (${totalFiles - correctFiles} issues)`);
-                  console.log(`→ Directories: ${correctDirs}/${totalDirs} correct (${totalDirs - correctDirs} issues)`);
+                  // console.log(`🚨 Permission Issues Found: ${permissionIssues.length} items with incorrect permissions`);
+                  // console.log(`→ Files: ${correctFiles}/${totalFiles} correct (${totalFiles - correctFiles} issues)`);
+                  // console.log(`→ Directories: ${correctDirs}/${totalDirs} correct (${totalDirs - correctDirs} issues)`);
                   
                   // Log first few permission issues for debugging
                   permissionIssues.slice(0, 5).forEach((issue, index) => {
@@ -1591,8 +1580,8 @@ exports.checkServiceStatus = async (req, res, next) => {
                   }
                   
                   // AUTO-FIX: Automatically correct file permissions using cPanel fileop API
-                  console.log(`\n🔧 AUTO-FIX: Correcting file permissions automatically...`);
-                  console.log(`→ Will fix ${permissionIssues.length} permission issues in parallel`);
+                  // console.log(`\n🔧 AUTO-FIX: Correcting file permissions automatically...`);
+                  // console.log(`→ Will fix ${permissionIssues.length} permission issues in parallel`);
                   
                   try {
                     // Prepare parallel API calls for permission fixes
@@ -1609,9 +1598,9 @@ exports.checkServiceStatus = async (req, res, next) => {
                         relativePath = name;
                       }
                       
-                      console.log(`→ Fixing ${type}: ${name} (${currentMode} → ${expectedMode})`);
-                      console.log(`→ DEBUG: Full path: ${path}`);
-                      console.log(`→ DEBUG: Relative path: ${relativePath}`);
+                      // console.log(`→ Fixing ${type}: ${name} (${currentMode} → ${expectedMode})`);
+                      // console.log(`→ DEBUG: Full path: ${path}`);
+                      // console.log(`→ DEBUG: Relative path: ${relativePath}`);
                       
                       try {
                         console.log(`→ DEBUG: Attempting chmod for ${relativePath} with mode ${expectedMode}`);
@@ -1626,14 +1615,14 @@ exports.checkServiceStatus = async (req, res, next) => {
                           'sourcefiles': `public_html/${relativePath}`
                         }, '2', 'GET');
                         
-                        console.log(`→ DEBUG: chmod API response:`, {
-                          hasResult: !!chmodResult,
-                          hasResultData: !!(chmodResult && chmodResult.result),
-                          status: chmodResult?.result?.status,
-                          errors: chmodResult?.result?.errors,
-                          warnings: chmodResult?.result?.warnings,
-                          topLevelKeys: chmodResult ? Object.keys(chmodResult) : []
-                        });
+                        // console.log(`→ DEBUG: chmod API response:`, {
+                        //   hasResult: !!chmodResult,
+                        //   hasResultData: !!(chmodResult && chmodResult.result),
+                        //   status: chmodResult?.result?.status,
+                        //   errors: chmodResult?.result?.errors,
+                        //   warnings: chmodResult?.result?.warnings,
+                        //   topLevelKeys: chmodResult ? Object.keys(chmodResult) : []
+                        // });
                         
                         // Parse cPanel API v2 response structure
                         let success = false;
@@ -1723,7 +1712,7 @@ exports.checkServiceStatus = async (req, res, next) => {
                       filePermissionsAnalysis.autoFix.success = true;
                       filePermissionsAnalysis.autoFix.message = `Successfully fixed all ${successfulFixes.length} permission issues automatically`;
                       
-                      console.log(`✅ AUTO-FIX SUCCESS: All ${successfulFixes.length} permission issues corrected automatically`);
+                      // console.log(`✅ AUTO-FIX SUCCESS: All ${successfulFixes.length} permission issues corrected automatically`);
                       
                     } else if (successfulFixes.length > 0) {
                       // Partial success
@@ -1732,7 +1721,7 @@ exports.checkServiceStatus = async (req, res, next) => {
                       filePermissionsAnalysis.autoFix.success = false;
                       filePermissionsAnalysis.autoFix.message = `Partially successful: ${successfulFixes.length} fixed, ${failedFixes.length} failed`;
                       
-                      console.log(`⚠️ AUTO-FIX PARTIAL: ${successfulFixes.length} fixed, ${failedFixes.length} failed`);
+                      // console.log(`⚠️ AUTO-FIX PARTIAL: ${successfulFixes.length} fixed, ${failedFixes.length} failed`);
                       
                       // Log failed fixes
                       failedFixes.forEach((fix, index) => {
@@ -1746,11 +1735,11 @@ exports.checkServiceStatus = async (req, res, next) => {
                       filePermissionsAnalysis.autoFix.success = false;
                       filePermissionsAnalysis.autoFix.message = `All ${permissionIssues.length} permission fixes failed`;
                       
-                      console.log(`❌ AUTO-FIX FAILED: All ${permissionIssues.length} permission fixes failed`);
+                      // console.log(`❌ AUTO-FIX FAILED: All ${permissionIssues.length} permission fixes failed`);
                     }
                     
                   } catch (autoFixError) {
-                    console.log(`❌ AUTO-FIX ERROR: ${autoFixError.message}`);
+                    // console.log(`❌ AUTO-FIX ERROR: ${autoFixError.message}`);
                     
                     filePermissionsAnalysis.autoFix = {
                       attempted: true,
@@ -1818,13 +1807,13 @@ exports.checkServiceStatus = async (req, res, next) => {
                   filePermissionsAnalysis.issue = null;
                   filePermissionsAnalysis.recommendation = 'All file and directory permissions are correct';
                   
-                  console.log(`✅ File Permissions Check: All permissions are correct`);
-                  console.log(`→ Files: ${correctFiles}/${totalFiles} with correct permissions (0644)`);
-                  console.log(`→ Directories: ${correctDirs}/${totalDirs} with correct permissions (0755)`);
+                  // console.log(`✅ File Permissions Check: All permissions are correct`);
+                  // console.log(`→ Files: ${correctFiles}/${totalFiles} with correct permissions (0644)`);
+                  // console.log(`→ Directories: ${correctDirs}/${totalDirs} with correct permissions (0755)`);
                 }
                 
               } else {
-                console.log(`⚠️ Failed to parse file list data from cPanel JSON API response`);
+                // console.log(`⚠️ Failed to parse file list data from cPanel JSON API response`);
                 filePermissionsAnalysis = {
                   username: hostingStatus.username,
                   serverName: serverName,
@@ -1837,7 +1826,7 @@ exports.checkServiceStatus = async (req, res, next) => {
               }
               
             } else {
-              console.log(`⚠️ Could not extract server name from: ${hostingStatus.serverName}`);
+              // console.log(`⚠️ Could not extract server name from: ${hostingStatus.serverName}`);
               filePermissionsAnalysis = {
                 username: hostingStatus.username,
                 error: 'Could not determine server name for file permissions check',
@@ -1848,7 +1837,7 @@ exports.checkServiceStatus = async (req, res, next) => {
             }
             
           } catch (filePermError) {
-            console.log(`❌ Error during file permissions check: ${filePermError.message}`);
+            // console.log(`❌ Error during file permissions check: ${filePermError.message}`);
             filePermissionsAnalysis = {
               username: hostingStatus.username,
               error: filePermError.message,
@@ -1861,12 +1850,12 @@ exports.checkServiceStatus = async (req, res, next) => {
 
         // Focused AutoSSL Management - Complete workflow without wait
         if (!reachabilityAnalysis.ssl.valid && hostingStatus && hostingStatus.username && hostingStatus.serverName) {
-          console.log(`\n🎯 SSL Certificate Invalid - Starting Focused AutoSSL Management...`);
-          console.log(`→ Domain: ${domain}`);
-          console.log(`→ Username: ${hostingStatus.username}`);
-          console.log(`→ Server: ${hostingStatus.serverName}`);
-          console.log(`→ SSL Issues: ${reachabilityAnalysis.ssl.warnings.join(', ')}`);
-          console.log(`→ Using complete workflow: Remove Exclusion → Enable → Trigger (no wait)`);
+          // console.log(`\n🎯 SSL Certificate Invalid - Starting Focused AutoSSL Management...`);
+          // console.log(`→ Domain: ${domain}`);
+          // console.log(`→ Username: ${hostingStatus.username}`);
+          // console.log(`→ Server: ${hostingStatus.serverName}`);
+          // console.log(`→ SSL Issues: ${reachabilityAnalysis.ssl.warnings.join(', ')}`);
+          // console.log(`→ Using complete workflow: Remove Exclusion → Enable → Trigger (no wait)`);
           
           try {
             const whmService = require('../services/whmService');
@@ -1884,17 +1873,17 @@ exports.checkServiceStatus = async (req, res, next) => {
             const userDomainDataFromAnalysis = dnsZoneAnalysis?.userDomainData || null;
             const domainsToProcess = userDomainDataFromAnalysis?.domains || [domain];
             
-            console.log(`→ DEBUG: dnsZoneAnalysis exists: ${!!dnsZoneAnalysis}`);
-            console.log(`→ DEBUG: userDomainData from analysis: ${!!userDomainDataFromAnalysis}`);
-            console.log(`→ DEBUG: domains to process: ${JSON.stringify(domainsToProcess)}`);
-            console.log(`→ Processing AutoSSL for ${domainsToProcess.length} user domains`);
+            // console.log(`→ DEBUG: dnsZoneAnalysis exists: ${!!dnsZoneAnalysis}`);
+            // console.log(`→ DEBUG: userDomainData from analysis: ${!!userDomainDataFromAnalysis}`);
+            // console.log(`→ DEBUG: domains to process: ${JSON.stringify(domainsToProcess)}`);
+            // console.log(`→ Processing AutoSSL for ${domainsToProcess.length} user domains`);
             
             if (userDomainDataFromAnalysis) {
-              console.log(`→ Zone file contains: ${userDomainDataFromAnalysis.summary.totalDomains} domains, ${userDomainDataFromAnalysis.summary.aRecords} A records, ${userDomainDataFromAnalysis.summary.cnameRecords} CNAME records`);
-              console.log(`→ All extracted domains: ${userDomainDataFromAnalysis.domains.join(', ')}`);
+              // console.log(`→ Zone file contains: ${userDomainDataFromAnalysis.summary.totalDomains} domains, ${userDomainDataFromAnalysis.summary.aRecords} A records, ${userDomainDataFromAnalysis.summary.cnameRecords} CNAME records`);
+              // console.log(`→ All extracted domains: ${userDomainDataFromAnalysis.domains.join(', ')}`);
             } else {
-              console.log(`→ No zone file domain data available - using fallback to main domain only`);
-              console.log(`→ This may happen if: zone file is empty, external DNS, or domain not hosted on our servers`);
+              // console.log(`→ No zone file domain data available - using fallback to main domain only`);
+              // console.log(`→ This may happen if: zone file is empty, external DNS, or domain not hosted on our servers`);
             }
             
             const autoSSLResult = await whmService.focusedAutoSSLManagement(
@@ -1905,7 +1894,7 @@ exports.checkServiceStatus = async (req, res, next) => {
             );
             
             if (autoSSLResult.success) {
-              console.log(`✅ Focused AutoSSL Management Completed: ${autoSSLResult.message}`);
+              // console.log(`✅ Focused AutoSSL Management Completed: ${autoSSLResult.message}`);
               
               // Determine the action taken based on the result
               let actionTaken = 'unknown';
@@ -1982,13 +1971,13 @@ exports.checkServiceStatus = async (req, res, next) => {
             reachabilityAnalysis.recommendation = `SSL certificate issues detected. Error during focused AutoSSL management: ${autoSSLError.message}. Please contact support for manual SSL certificate installation. ${reachabilityAnalysis.recommendation}`;
           }
         } else if (!reachabilityAnalysis.ssl.valid) {
-          console.log(`\n⚠️ SSL Certificate Invalid but Focused AutoSSL cannot be managed:`);
+          // console.log(`\n⚠️ SSL Certificate Invalid but Focused AutoSSL cannot be managed:`);
           if (!hostingStatus) {
-            console.log(`→ No hosting status available - domain may not be hosted with us`);
+            // console.log(`→ No hosting status available - domain may not be hosted with us`);
           } else if (!hostingStatus.username) {
-            console.log(`→ Username not available for domain ${domain} - cannot manage focused AutoSSL`);
+            // console.log(`→ Username not available for domain ${domain} - cannot manage focused AutoSSL`);
           } else if (!hostingStatus.serverName) {
-            console.log(`→ Server name not available - cannot determine focused AutoSSL server`);
+            // console.log(`→ Server name not available - cannot determine focused AutoSSL server`);
           }
           
           // Add focused AutoSSL unavailable information
@@ -2039,9 +2028,9 @@ exports.checkServiceStatus = async (req, res, next) => {
         };
       }
     } else if (domain && dnsZoneAnalysis && !dnsZoneAnalysis.aRecordMatchesServer) {
-      console.log(`\n⏭️ Skipping reachability check for ${domain}`);
-      console.log(`→ DNS A record check failed - domain does not point to our servers`);
-      console.log(`→ Reachability check not applicable for domains not pointing to our infrastructure`);
+      // console.log(`\n⏭️ Skipping reachability check for ${domain}`);
+      // console.log(`→ DNS A record check failed - domain does not point to our servers`);
+      // console.log(`→ Reachability check not applicable for domains not pointing to our infrastructure`);
     }
 
     // Import status handlers
@@ -2231,7 +2220,7 @@ exports.getMyServices = async (req, res, next) => {
     const products = productsRaw.product || productsRaw;
     const productArray = Array.isArray(products) ? products : (products ? [products] : []);
     
-    console.log(`→ Found ${productArray.length} products for client ${clientId}`);
+    // console.log(`→ Found ${productArray.length} products for client ${clientId}`);
     
     // Format products with essential info
     const formattedProducts = productArray.map(p => ({
@@ -2299,7 +2288,7 @@ exports.getMyDomains = async (req, res, next) => {
     const domains = domainsRaw.domain || domainsRaw;
     const domainArray = Array.isArray(domains) ? domains : (domains ? [domains] : []);
     
-    console.log(`→ Found ${domainArray.length} domains for client ${clientId}`);
+    // console.log(`→ Found ${domainArray.length} domains for client ${clientId}`);
     
     // Format domains with essential info
     const formattedDomains = domainArray.map(d => ({
@@ -2377,7 +2366,7 @@ exports.getMyAccount = async (req, res, next) => {
     const domains = domainsRaw.domain || domainsRaw;
     const domainArray = Array.isArray(domains) ? domains : (domains ? [domains] : []);
     
-    console.log(`→ Found ${productArray.length} products and ${domainArray.length} domains for client ${clientId}`);
+    // console.log(`→ Found ${productArray.length} products and ${domainArray.length} domains for client ${clientId}`);
     
     // Create single array with id and name only
     const items = [];
@@ -2398,7 +2387,7 @@ exports.getMyAccount = async (req, res, next) => {
       });
     });
     
-    console.log(`→ Returning ${items.length} total items`);
+    // console.log(`→ Returning ${items.length} total items`);
     
     return res.json({
       success: true,
@@ -2451,7 +2440,7 @@ exports.testDNSZoneAnalysis = async (req, res, next) => {
       };
     }
     
-    console.log(`→ Testing DNS zone analysis for: ${domain}`);
+    // console.log(`→ Testing DNS zone analysis for: ${domain}`);
     
     // Perform the same DNS zone analysis as in service status
     let dnsZoneAnalysis = null;
@@ -2469,7 +2458,7 @@ exports.testDNSZoneAnalysis = async (req, res, next) => {
       const domainServer = await whmService.findDomainServerByAccounts(domain, whmcsHint);
       
       if (domainServer) {
-        console.log(`→ Domain hosted on our server: ${domainServer.toUpperCase()}`);
+        // console.log(`→ Domain hosted on our server: ${domainServer.toUpperCase()}`);
         
         const dnsZoneRecords = await whmService.getDNSZone(domainServer, domain);
         const expectedServerIP = mockHostingStatus.serverIP;
@@ -2523,7 +2512,7 @@ exports.testDNSZoneAnalysis = async (req, res, next) => {
               const updateResult = await whmService.updateARecord(domainServer, domain, expectedServerIP);
               
               if (updateResult.success) {
-                console.log(`✅ AUTO-FIX SUCCESS: Updated A record for ${domain}`);
+                // console.log(`✅ AUTO-FIX SUCCESS: Updated A record for ${domain}`);
                 dnsZoneAnalysis.issue = 'A record pointed to wrong IP but has been automatically corrected';
                 dnsZoneAnalysis.recommendation = 'A record automatically updated in DNS zone';
                 dnsZoneAnalysis.dnsConsistent = true;
@@ -2546,12 +2535,12 @@ exports.testDNSZoneAnalysis = async (req, res, next) => {
             dnsZoneAnalysis.recommendation = 'Add A record to DNS zone pointing to correct server IP';
             
             // AUTO-FIX: Add missing A record
-            console.log(`\n🔧 AUTO-FIX: Attempting to add missing A record...`);
+            // console.log(`\n🔧 AUTO-FIX: Attempting to add missing A record...`);
             try {
               const addResult = await whmService.addMissingARecord(domainServer, domain, expectedServerIP);
               
               if (addResult.success) {
-                console.log(`✅ AUTO-FIX SUCCESS: Added A record for ${domain}`);
+                // console.log(`✅ AUTO-FIX SUCCESS: Added A record for ${domain}`);
                 dnsZoneAnalysis.issue = 'A record was missing but has been automatically added';
                 dnsZoneAnalysis.recommendation = 'A record automatically added to DNS zone';
                 dnsZoneAnalysis.dnsConsistent = true;
@@ -2585,7 +2574,7 @@ exports.testDNSZoneAnalysis = async (req, res, next) => {
       });
     }
     
-    console.log(`✅ DNS zone analysis completed for ${domain}`);
+    // console.log(`✅ DNS zone analysis completed for ${domain}`);
     
     return res.json({
       success: true,
@@ -2621,7 +2610,7 @@ exports.testSyntaxErrorTicket = async (req, res, next) => {
       });
     }
     
-    console.log(`→ Testing syntax error ticket creation for: ${domain}`);
+    // console.log(`→ Testing syntax error ticket creation for: ${domain}`);
     
     const whmService = require('../services/whmService');
     
@@ -2662,7 +2651,7 @@ exports.testSyntaxErrorTicket = async (req, res, next) => {
       email
     );
     
-    console.log(`✅ Syntax error ticket test completed for ${domain}`);
+    // console.log(`✅ Syntax error ticket test completed for ${domain}`);
     
     return res.json({
       success: true,
@@ -2700,12 +2689,12 @@ exports.testErrorLogFetching = async (req, res, next) => {
       });
     }
     
-    console.log(`→ Testing error log fetching for: ${domain}`);
+    // console.log(`→ Testing error log fetching for: ${domain}`);
     
     const whmService = require('../services/whmService');
     const result = await whmService.fetchErrorLogFor500(serverName, username, domain);
     
-    console.log(`✅ Error log fetch test completed for ${domain}`);
+    // console.log(`✅ Error log fetch test completed for ${domain}`);
     
     return res.json({
       success: true,
