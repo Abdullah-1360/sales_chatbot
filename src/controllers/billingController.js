@@ -666,7 +666,7 @@ exports.confirmPayment = async (req, res, next) => {
     const ticketId = t.tid || t.ticketid || t.id;
     console.log('→ Billing ticket created:', ticketId, 'for invoice:', invoiceId);
     
-    // Include payment_url in response for confirmation
+    // Build response without payment_url
     const response = { 
       success: true, 
       paid: false, 
@@ -675,9 +675,8 @@ exports.confirmPayment = async (req, res, next) => {
       message: `I've opened a support ticket (#${ticketId}) for our billing team to verify your payment for Invoice #${invoiceId}.` 
     };
     
-    // Add payment_url to response if it was provided
+    // Add note about payment URL being included in ticket if it was provided
     if (payment_url) {
-      response.payment_url = payment_url;
       response.message += ` Payment URL has been included in the ticket.`;
     }
     
