@@ -29,7 +29,7 @@ exports.getServerStatus = async (req, res, next) => {
       timestamp: new Date().toISOString()
     };
     
-    console.log(`✅ Server status retrieved from ${serverInfo.successCount}/${serverInfo.totalServers} servers`);
+    // console.log(`✅ Server status retrieved from ${serverInfo.successCount}/${serverInfo.totalServers} servers`);
     res.json(response);
     
   } catch (error) {
@@ -60,7 +60,7 @@ exports.getAvailableServers = async (req, res, next) => {
       timestamp: new Date().toISOString()
     };
     
-    console.log(`✅ Listed ${servers.length} available servers`);
+    // console.log(`✅ Listed ${servers.length} available servers`);
     res.json(response);
     
   } catch (error) {
@@ -109,7 +109,7 @@ exports.getAccountByDomain = async (req, res, next) => {
       partition: account.partition
     };
     
-    console.log('✅ Account found:', account.user);
+    // console.log('✅ Account found:', account.user);
     res.json({
       success: true,
       account: accountData
@@ -182,7 +182,7 @@ exports.getAccountStatus = async (req, res, next) => {
       }
     };
     
-    console.log('✅ Account status retrieved:', account.user, status);
+    // console.log('✅ Account status retrieved:', account.user, status);
     res.json(response);
     
   } catch (error) {

@@ -13,6 +13,127 @@ const {
 } = require('../utils/helpers');
 
 /**
+ * Create a minimal response format focusing only on issues and actions needed
+ */
+function createSimplifiedResponse(originalResponse, additionalData = {}) {
+  const { dnsZoneAnalysis, reachabilityAnalysis } = additionalData;
+  
+  // Base response with only essential info
+  const simplified = {
+    success: originalResponse.success,
+    status: originalResponse.status,
+    service: originalResponse.service,
+    message: cleanMessage(originalResponse.message)
+  };
+  
+  // Add server info only if there are issues or it's needed for context
+  if (originalResponse.serverId) simplified.serverId = originalResponse.serverId;
+  if (originalResponse.serverName) simplified.serverName = originalResponse.serverName;
+  if (originalResponse.serverIP) simplified.serverIP = originalResponse.serverIP;
+  if (originalResponse.username) simplified.username = originalResponse.username;
+  
+  // Add billing info only if there's a billing issue
+  if (originalResponse.billingIssue) {
+    simplified.billingIssue = true;
+    if (originalResponse.invoiceId) simplified.invoiceId = originalResponse.invoiceId;
+    if (originalResponse.amountDue) simplified.amountDue = originalResponse.amountDue;
+    if (originalResponse.daysUntilTermination) simplified.daysUntilTermination = originalResponse.daysUntilTermination;
+  }
+  
+  // Add action required only if there's an action needed
+  if (originalResponse.actionRequired) {
+    simplified.actionRequired = originalResponse.actionRequired;
+  }
+  
+  // Add next due date only if service is active or there's a renewal needed
+  if (originalResponse.nextDueDate && (originalResponse.status === 'Active' || originalResponse.billingIssue)) {
+    simplified.nextDueDate = originalResponse.nextDueDate;
+  }
+  
+  // Add DNS info only if there are issues or fixes applied
+  if (dnsZoneAnalysis && (!dnsZoneAnalysis.dnsConsistent || dnsZoneAnalysis.autoFixed || dnsZoneAnalysis.issue)) {
+    simplified.dnsIssue = {
+      issue: dnsZoneAnalysis.issue,
+      recommendation: dnsZoneAnalysis.recommendation
+    };
+    
+    // Add provider info if external DNS needs updating
+    if (dnsZoneAnalysis.dnsProvider && !dnsZoneAnalysis.usesOurNameservers) {
+      simplified.dnsIssue.provider = dnsZoneAnalysis.providerName;
+    }
+    
+    // Add auto-fix info if something was fixed
+    if (dnsZoneAnalysis.autoFixed) {
+      simplified.dnsFixed = dnsZoneAnalysis.autoFixMessage;
+    }
+  }
+  
+  // Add reachability info only if there are issues
+  if (reachabilityAnalysis && (!reachabilityAnalysis.reachable || reachabilityAnalysis.statusCode >= 400)) {
+    simplified.siteIssue = {
+      reachable: reachabilityAnalysis.reachable,
+      issue: reachabilityAnalysis.issue,
+      recommendation: reachabilityAnalysis.recommendation
+    };
+    
+    if (reachabilityAnalysis.statusCode) {
+      simplified.siteIssue.statusCode = reachabilityAnalysis.statusCode;
+    }
+  }
+  
+  // Add SSL info only if there are warnings or it's expiring soon
+  if (reachabilityAnalysis && reachabilityAnalysis.ssl) {
+    const ssl = reachabilityAnalysis.ssl;
+    if (!ssl.valid || ssl.daysUntilExpiry <= 30 || (ssl.warnings && ssl.warnings.length > 0)) {
+      simplified.sslIssue = {
+        valid: ssl.valid,
+        daysUntilExpiry: ssl.daysUntilExpiry,
+        warnings: ssl.warnings,
+        error: ssl.error
+      };
+    }
+  }
+  
+  // Add support ticket info only if one was created
+  if (originalResponse.ticketCreated && originalResponse.ticketId) {
+    simplified.ticketCreated = originalResponse.ticketId;
+  }
+  
+  return simplified;
+}
+
+/**
+ * Clean message by removing verbose confirmations of things working correctly
+ */
+function cleanMessage(message) {
+  if (!message) return message;
+  
+  // Remove verbose DNS confirmations
+  let cleaned = message
+    .replace(/\s*DNS Info: DNS managed externally via [A-Z]+\. cPanel DNS changes won't work\./g, '')
+    .replace(/\s*Both website and email are configured with our servers\./g, '')
+    .replace(/\s*Both website and email point to our servers\./g, '')
+    .replace(/\s*Website points to our servers\./g, '')
+    .replace(/\s*Email points to our servers\./g, '')
+    .replace(/\s*Email is configured with our servers\./g, '')
+    .replace(/\s*DNS Configuration: [^.]*correctly[^.]*\./g, '')
+    .replace(/\s*✅ DNS Configuration: [^.]*\./g, '')
+    .replace(/\s*Zone file available for AutoSSL processing\./g, '')
+    .replace(/\s*DNS and AutoSSL checks passed - issue is code-related\./g, '')
+    .replace(/\s*All file and directory permissions are correct\./g, '')
+    .replace(/\s*Quota usage is within limits\./g, '')
+    .replace(/\s*DNS correctly configured via [A-Z]+\./g, '');
+  
+  // Clean up extra spaces and periods
+  cleaned = cleaned
+    .replace(/\s+/g, ' ')
+    .replace(/\.\s*\./g, '.')
+    .trim();
+  
+  return cleaned;
+}
+
+/**
  * Check service status for a domain or serviceId
  * Handles both domain registration and hosting product status
  */
@@ -536,18 +657,18 @@ exports.checkServiceStatus = async (req, res, next) => {
             dnsZoneAnalysis.dnsConsistent = true;
             dnsZoneAnalysis.issue = null;
             dnsZoneAnalysis.recommendation = 'A record is correctly configured in zone file';
-            console.log(`✅ DNS Analysis: Zone file A record correctly points to server IP ${expectedServerIP}`);
+            // console.log(`✅ DNS Analysis: Zone file A record correctly points to server IP ${expectedServerIP}`);
           } else if (zonePointsToServer && dnsZoneAnalysis.hasIncorrectRecords) {
             dnsZoneAnalysis.dnsConsistent = false;
             dnsZoneAnalysis.issue = `Duplicate A records in zone file (${dnsZoneAnalysis.totalARecords} total: ${dnsZoneAnalysis.correctARecords} correct, ${dnsZoneAnalysis.incorrectARecords} incorrect)`;
             dnsZoneAnalysis.recommendation = 'Remove duplicate A records with wrong IPs from zone file';
-            console.log(`🚨 DNS Analysis: Correct IP in zone file but duplicate A records with wrong IPs detected`);
-            console.log(`   → Total A records: ${dnsZoneAnalysis.totalARecords}`);
-            console.log(`   → Correct records: ${dnsZoneAnalysis.correctARecords} (pointing to ${expectedServerIP})`);
-            console.log(`   → Duplicate records: ${dnsZoneAnalysis.incorrectARecords} (pointing to ${dnsZoneAnalysis.duplicateIPs.join(', ')})`);
+            // console.log(`🚨 DNS Analysis: Correct IP in zone file but duplicate A records with wrong IPs detected`);
+            // console.log(`   → Total A records: ${dnsZoneAnalysis.totalARecords}`);
+            // console.log(`   → Correct records: ${dnsZoneAnalysis.correctARecords} (pointing to ${expectedServerIP})`);
+            // console.log(`   → Duplicate records: ${dnsZoneAnalysis.incorrectARecords} (pointing to ${dnsZoneAnalysis.duplicateIPs.join(', ')})`);
             
             // AUTO-FIX: Automatically remove duplicate A records with wrong IPs
-            console.log(`\n🔧 AUTO-FIX: Attempting to remove duplicate A records with wrong IPs...`);
+            // console.log(`\n🔧 AUTO-FIX: Attempting to remove duplicate A records with wrong IPs...`);
             try {
               const whmService = require('../services/whmService');
               
@@ -588,12 +709,12 @@ exports.checkServiceStatus = async (req, res, next) => {
               for (const record of sortedIncorrectRecords) {
                 const lineNumber = record.Line || record.line;
                 if (!lineNumber) {
-                  console.log(`⚠️ Skipping record without line number: ${record.name} → ${record.address}`);
+                  // console.log(`⚠️ Skipping record without line number: ${record.name} → ${record.address}`);
                   continue;
                 }
                 
                 try {
-                  console.log(`🔧 Removing duplicate A record at line ${lineNumber}: ${record.name || domain} → ${record.address}`);
+                  // console.log(`🔧 Removing duplicate A record at line ${lineNumber}: ${record.name || domain} → ${record.address}`);
                   
                   const removeResult = await whmService.callServerAPI(domainServer, 'removezonerecord', {
                     domain: domain,
@@ -601,21 +722,21 @@ exports.checkServiceStatus = async (req, res, next) => {
                   });
                   
                   if (removeResult && removeResult.metadata && removeResult.metadata.result === 1) {
-                    console.log(`✅ Successfully removed duplicate A record at line ${lineNumber}`);
+                    // console.log(`✅ Successfully removed duplicate A record at line ${lineNumber}`);
                     removedCount++;
                   } else {
                     const error = removeResult?.metadata?.reason || 'Unknown error';
-                    console.log(`❌ Failed to remove duplicate A record at line ${lineNumber}: ${error}`);
+                    // console.log(`❌ Failed to remove duplicate A record at line ${lineNumber}: ${error}`);
                     removalErrors.push(`Line ${lineNumber}: ${error}`);
                   }
                 } catch (removeError) {
-                  console.log(`❌ Error removing duplicate A record at line ${lineNumber}: ${removeError.message}`);
+                  // console.log(`❌ Error removing duplicate A record at line ${lineNumber}: ${removeError.message}`);
                   removalErrors.push(`Line ${lineNumber}: ${removeError.message}`);
                 }
               }
               
               if (removedCount > 0) {
-                console.log(`✅ AUTO-FIX SUCCESS: Removed ${removedCount} duplicate A records`);
+                // console.log(`✅ AUTO-FIX SUCCESS: Removed ${removedCount} duplicate A records`);
                 
                 // Update the analysis to reflect the successful cleanup
                 dnsZoneAnalysis.issue = `Duplicate A records were detected and automatically removed (${removedCount} duplicates removed)`;
@@ -661,7 +782,7 @@ exports.checkServiceStatus = async (req, res, next) => {
                 const updateResult = await whmService.updateARecord(domainServer, domain, expectedServerIP);
                 
                 if (updateResult.success) {
-                  console.log(`✅ AUTO-FIX SUCCESS: Updated A record for ${domain}: ${mainARecord.address} → ${expectedServerIP}`);
+                  // console.log(`✅ AUTO-FIX SUCCESS: Updated A record for ${domain}: ${mainARecord.address} → ${expectedServerIP}`);
                   
                   // Update the analysis to reflect the successful update
                   dnsZoneAnalysis.issue = 'A record pointed to wrong IP but has been automatically corrected';
@@ -674,9 +795,9 @@ exports.checkServiceStatus = async (req, res, next) => {
                   dnsZoneAnalysis.autoFixMessage = updateResult.message || `Updated A record from ${mainARecord.address} to ${expectedServerIP}`;
                   dnsZoneAnalysis.oldIP = mainARecord.address;
                   
-                  console.log(`→ DNS Zone Analysis Updated: A record automatically corrected and verified`);
+                  // console.log(`→ DNS Zone Analysis Updated: A record automatically corrected and verified`);
                 } else {
-                  console.log(`❌ AUTO-FIX FAILED: ${updateResult.error}`);
+                  // console.log(`❌ AUTO-FIX FAILED: ${updateResult.error}`);
                   dnsZoneAnalysis.autoFixAttempted = true;
                   dnsZoneAnalysis.autoFixError = updateResult.error;
                   dnsZoneAnalysis.recommendation = `Failed to automatically update A record: ${updateResult.error}. Manual update required.`;
@@ -699,7 +820,7 @@ exports.checkServiceStatus = async (req, res, next) => {
                 const addResult = await whmService.addMissingARecord(domainServer, domain, expectedServerIP);
                 
                 if (addResult.success) {
-                  console.log(`✅ AUTO-FIX SUCCESS: Added A record for ${domain} → ${expectedServerIP}`);
+                  // console.log(`✅ AUTO-FIX SUCCESS: Added A record for ${domain} → ${expectedServerIP}`);
                   
                   // Update the analysis to reflect the successful addition
                   dnsZoneAnalysis.issue = 'A record was missing but has been automatically added';
@@ -745,17 +866,17 @@ exports.checkServiceStatus = async (req, res, next) => {
             dnsZoneAnalysis.dnsConsistent = true;
             dnsZoneAnalysis.issue = null;
             dnsZoneAnalysis.recommendation = `DNS correctly configured via ${providerName}. Zone file available for AutoSSL processing.`;
-            console.log(`✅ DNS Analysis: External DNS (${providerName}) correctly points to server. Zone file available for AutoSSL.`);
+            // console.log(`✅ DNS Analysis: External DNS (${providerName}) correctly points to server. Zone file available for AutoSSL.`);
           } else {
             dnsZoneAnalysis.dnsConsistent = false;
             if (zonePointsToServer) {
               dnsZoneAnalysis.issue = `External DNS (${providerName}) points to wrong IP, but zone file has correct IP`;
               dnsZoneAnalysis.recommendation = `Update A record in ${providerName} to point to ${expectedServerIP}`;
-              console.log(`❌ DNS Analysis: External DNS points to wrong IP but zone file is correct`);
+              // console.log(`❌ DNS Analysis: External DNS points to wrong IP but zone file is correct`);
             } else {
               dnsZoneAnalysis.issue = `External DNS (${providerName}) points to wrong IP`;
               dnsZoneAnalysis.recommendation = `Update A record in ${providerName} to point to ${expectedServerIP}`;
-              console.log(`❌ DNS Analysis: External DNS points to wrong IP ${currentARecords.join(', ')} (should be ${expectedServerIP})`);
+              // console.log(`❌ DNS Analysis: External DNS points to wrong IP ${currentARecords.join(', ')} (should be ${expectedServerIP})`);
             }
           }
         } else {
@@ -774,13 +895,13 @@ exports.checkServiceStatus = async (req, res, next) => {
             dnsZoneAnalysis.dnsConsistent = true;
             dnsZoneAnalysis.issue = null;
             dnsZoneAnalysis.recommendation = `DNS correctly configured via ${providerName}`;
-            console.log(`✅ DNS Analysis: External DNS (${providerName}) A record correctly points to server IP ${expectedServerIP}`);
+            // console.log(`✅ DNS Analysis: External DNS (${providerName}) A record correctly points to server IP ${expectedServerIP}`);
           } else {
             dnsZoneAnalysis.dnsConsistent = false;
             if (currentARecords.length > 0) {
               dnsZoneAnalysis.issue = `A record points to wrong server (managed by ${providerName})`;
               dnsZoneAnalysis.recommendation = `Update A record at ${providerName} to point to ${expectedServerIP}`;
-              console.log(`❌ DNS Analysis: External DNS (${providerName}) points to ${currentARecords.join(', ')} but should be ${expectedServerIP}`);
+              // console.log(`❌ DNS Analysis: External DNS (${providerName}) points to ${currentARecords.join(', ')} but should be ${expectedServerIP}`);
               
               // Add specific instructions based on provider
               if (dnsProvider === 'cloudflare') {
@@ -911,9 +1032,9 @@ exports.checkServiceStatus = async (req, res, next) => {
           reachabilityAnalysis.recommendation = `Domain is reachable via ${reachabilityAnalysis.method.toUpperCase()}`;
           
           if (reachabilityAnalysis.statusCode) {
-            console.log(`✅ Domain Reachability: ${domain} is reachable via ${reachabilityAnalysis.method.toUpperCase()} (Status: ${reachabilityAnalysis.statusCode}, Response: ${reachabilityAnalysis.responseTime}ms)`);
+            // console.log(`✅ Domain Reachability: ${domain} is reachable via ${reachabilityAnalysis.method.toUpperCase()} (Status: ${reachabilityAnalysis.statusCode}, Response: ${reachabilityAnalysis.responseTime}ms)`);
           } else {
-            console.log(`✅ Domain Reachability: ${domain} is reachable via ${reachabilityAnalysis.method.toUpperCase()} (Response: ${reachabilityAnalysis.responseTime}ms)`);
+            // console.log(`✅ Domain Reachability: ${domain} is reachable via ${reachabilityAnalysis.method.toUpperCase()} (Response: ${reachabilityAnalysis.responseTime}ms)`);
           }
         } else {
           reachabilityAnalysis.issue = 'Domain is not reachable';
@@ -953,12 +1074,12 @@ exports.checkServiceStatus = async (req, res, next) => {
             const serverName = whmService.extractServerNameFromWHMCS(hostingStatus.serverName);
             
             if (serverName) {
-              console.log(`→ Fetching error log from server: ${serverName.toUpperCase()}`);
+              // console.log(`→ Fetching error log from server: ${serverName.toUpperCase()}`);
               
               const errorLogResult = await whmService.fetchErrorLogFor500(serverName, hostingStatus.username, domain);
               
               if (errorLogResult.success) {
-                console.log(`✅ Error log fetched successfully: ${errorLogResult.errorLogLines.length} recent entries`);
+                // console.log(`✅ Error log fetched successfully: ${errorLogResult.errorLogLines.length} recent entries`);
                 // console.log(`→ Last 10 lines analysis: ${errorLogResult.last10SyntaxErrors.length} of 10 lines are syntax errors`);
                 // console.log(`→ Syntax error issue detected: ${errorLogResult.isSyntaxErrorIssue}`);
                 
@@ -978,8 +1099,8 @@ exports.checkServiceStatus = async (req, res, next) => {
                 
                 // Check if LAST 10 LINES contain syntax errors and create support ticket
                 if (errorLogResult.isSyntaxErrorIssue && errorLogResult.last10SyntaxErrors.length > 0) {
-                  console.log(`\n🎫 Syntax errors in last 10 lines - Creating support ticket...`);
-                  console.log(`→ Found ${errorLogResult.last10SyntaxErrors.length} syntax errors in last 10 lines`);
+                  // console.log(`\n🎫 Syntax errors in last 10 lines - Creating support ticket...`);
+                  // console.log(`→ Found ${errorLogResult.last10SyntaxErrors.length} syntax errors in last 10 lines`);
                   
                   try {
                     // Prepare checks status for ticket
@@ -1000,7 +1121,7 @@ exports.checkServiceStatus = async (req, res, next) => {
                     );
                     
                     if (ticketResult.success) {
-                      console.log(`✅ Support ticket created: #${ticketResult.ticketId}`);
+                      // console.log(`✅ Support ticket created: #${ticketResult.ticketId}`);
                       
                       reachabilityAnalysis.supportTicket = {
                         created: true,
@@ -1038,10 +1159,10 @@ exports.checkServiceStatus = async (req, res, next) => {
                   }
                   
                   // Log syntax errors for debugging
-                  console.log(`→ Syntax errors in last 10 lines:`);
-                  errorLogResult.last10SyntaxErrors.forEach((line, index) => {
-                    console.log(`  ${index + 1}. ${line}`);
-                  });
+                  // console.log(`→ Syntax errors in last 10 lines:`);
+                  // errorLogResult.last10SyntaxErrors.forEach((line, index) => {
+                  //   console.log(`  ${index + 1}. ${line}`);
+                  // });
                   
                 } else {
                   // No syntax errors in last 10 lines, show general error log info
@@ -1167,21 +1288,21 @@ exports.checkServiceStatus = async (req, res, next) => {
                 if (quotaResult.result && quotaResult.result.data) {
                   // Direct structure: { func: "get_quota_info", result: { data: {...} } }
                   quotaData = quotaResult.result.data;
-                  console.log(`→ ✅ Found quota data at: result.data (direct cPanel response)`);
+                  // console.log(`→ ✅ Found quota data at: result.data (direct cPanel response)`);
                 } else if (quotaResult.data && quotaResult.data.uapi && quotaResult.data.uapi.result && quotaResult.data.uapi.result.data) {
                   // WHM wrapped structure: { data: { uapi: { result: { data: {...} } } } }
                   quotaData = quotaResult.data.uapi.result.data;
-                  console.log(`→ ✅ Found quota data at: data.uapi.result.data (WHM wrapped)`);
+                  // console.log(`→ ✅ Found quota data at: data.uapi.result.data (WHM wrapped)`);
                 } else if (quotaResult.data && quotaResult.data.cpanelresult && quotaResult.data.cpanelresult.data) {
                   // Alternative structure: { data: { cpanelresult: { data: {...} } } }
                   quotaData = quotaResult.data.cpanelresult.data;
-                  console.log(`→ ✅ Found quota data at: data.cpanelresult.data`);
+                  // console.log(`→ ✅ Found quota data at: data.cpanelresult.data`);
                 } else if (quotaResult.data && quotaResult.data.data) {
                   // Simple nested structure: { data: { data: {...} } }
                   quotaData = quotaResult.data.data;
-                  console.log(`→ ✅ Found quota data at: data.data`);
+                  // console.log(`→ ✅ Found quota data at: data.data`);
                 } else {
-                  console.log(`→ ❌ Could not find quota data in expected cPanel JSON API structure`);
+                  // console.log(`→ ❌ Could not find quota data in expected cPanel JSON API structure`);
                   // console.log(`→ Top-level keys:`, Object.keys(quotaResult));
                   if (quotaResult.result) {
                     // console.log(`→ Available keys at result level:`, Object.keys(quotaResult.result));
@@ -1398,7 +1519,16 @@ exports.checkServiceStatus = async (req, res, next) => {
                       result.message += ` A support ticket (#${quotaAnalysis.supportTicket.ticketId}) has been created to assist you with upgrading your plan.`;
                     }
                     
-                    return res.json(result);
+                    // Create simplified response format
+                    const simplifiedResponse = createSimplifiedResponse(result, {
+                      dnsZoneAnalysis,
+                      reachabilityAnalysis,
+                      domainStatus,
+                      hostingStatus
+                    });
+                    simplifiedResponse.quotaExceeded = true;
+                    
+                    return res.json(simplifiedResponse);
                   }
                   
                   // Fallback response for quota exceeded
@@ -1407,7 +1537,6 @@ exports.checkServiceStatus = async (req, res, next) => {
                     status: status,
                     service: serviceName,
                     quotaExceeded: true,
-                    quotaAnalysis: quotaAnalysis,
                     message: `Your hosting account has exceeded its quota limits. ${quotaAnalysis.issue}. Please upgrade your hosting plan to resolve this issue.${quotaAnalysis.supportTicket && quotaAnalysis.supportTicket.success ? ` A support ticket (#${quotaAnalysis.supportTicket.ticketId}) has been created to assist you.` : ''}`
                   });
                   
@@ -1415,7 +1544,7 @@ exports.checkServiceStatus = async (req, res, next) => {
                   quotaAnalysis.issue = null;
                   quotaAnalysis.recommendation = 'Quota usage is within limits';
                   
-                  console.log(`✅ Quota Check: Usage within limits`);
+                  // console.log(`✅ Quota Check: Usage within limits`);
                   
                   const diskDisplay = quotaAnalysis.megabytesLimit > 0 ? 
                     `${quotaAnalysis.megabytesUsed}MB / ${quotaAnalysis.megabytesLimit}MB (${((quotaAnalysis.megabytesUsed / quotaAnalysis.megabytesLimit) * 100).toFixed(1)}%)` :
@@ -1789,7 +1918,16 @@ exports.checkServiceStatus = async (req, res, next) => {
                       result.filePermissionsAnalysis = filePermissionsAnalysis;
                       result.message = `File permission issues detected. ${filePermissionsAnalysis.autoFix.message}. ${filePermissionsAnalysis.recommendation}`;
                       
-                      return res.json(result);
+                      // Create simplified response format
+                      const simplifiedResponse = createSimplifiedResponse(result, {
+                        dnsZoneAnalysis,
+                        reachabilityAnalysis,
+                        domainStatus,
+                        hostingStatus
+                      });
+                      simplifiedResponse.filePermissionIssues = true;
+                      
+                      return res.json(simplifiedResponse);
                     }
                     
                     // Fallback response for permission issues
@@ -1798,7 +1936,6 @@ exports.checkServiceStatus = async (req, res, next) => {
                       status: status,
                       service: serviceName,
                       filePermissionIssues: true,
-                      filePermissionsAnalysis: filePermissionsAnalysis,
                       message: `File permission issues detected. ${filePermissionsAnalysis.autoFix.message}. ${filePermissionsAnalysis.recommendation}`
                     });
                   }
@@ -1867,7 +2004,7 @@ exports.checkServiceStatus = async (req, res, next) => {
               throw new Error(`Could not extract server name from: ${hostingStatus.serverName}`);
             }
             
-            console.log(`→ Using extracted server name for focused AutoSSL: ${serverName.toUpperCase()}`);
+            // console.log(`→ Using extracted server name for focused AutoSSL: ${serverName.toUpperCase()}`);
             
             // Get user domain data from DNS zone analysis for comprehensive AutoSSL processing
             const userDomainDataFromAnalysis = dnsZoneAnalysis?.userDomainData || null;
@@ -2113,7 +2250,14 @@ exports.checkServiceStatus = async (req, res, next) => {
     }
     
     if (result) {
-      return res.json(result);
+      // Create simplified response format
+      const simplifiedResponse = createSimplifiedResponse(result, {
+        dnsZoneAnalysis,
+        reachabilityAnalysis,
+        domainStatus,
+        hostingStatus
+      });
+      return res.json(simplifiedResponse);
     }
     
     // Default fallback

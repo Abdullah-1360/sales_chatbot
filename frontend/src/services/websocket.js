@@ -80,8 +80,8 @@ class WebSocketService {
           
           // Extract lead data from payload (backend sends { type, data, timestamp })
           const leadData = payload.data || payload;
-          console.log('📋 Extracted lead data:', JSON.stringify(leadData, null, 2));
-          console.log('🎯 Triggering new_lead event to', this.eventHandlers.get('new_lead')?.length || 0, 'handlers');
+          // console.log('📋 Extracted lead data:', JSON.stringify(leadData, null, 2));
+          // console.log('🎯 Triggering new_lead event to', this.eventHandlers.get('new_lead')?.length || 0, 'handlers');
           
           this.triggerEvent('new_lead', leadData);
         });
@@ -93,8 +93,8 @@ class WebSocketService {
           
           // Extract chat data from payload (backend sends { type, data, timestamp })
           const chatData = payload.data || payload;
-          console.log('📋 Extracted chat data:', JSON.stringify(chatData, null, 2));
-          console.log('🎯 Triggering new_chat event to', this.eventHandlers.get('new_chat')?.length || 0, 'handlers');
+          // console.log('📋 Extracted chat data:', JSON.stringify(chatData, null, 2));
+          // console.log('🎯 Triggering new_chat event to', this.eventHandlers.get('new_chat')?.length || 0, 'handlers');
           
           this.triggerEvent('new_chat', chatData);
         });

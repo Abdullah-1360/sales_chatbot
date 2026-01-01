@@ -56,7 +56,7 @@ const ServerCache = mongoose.model('ServerCache', serverCacheSchema);
 async function initializeMongoDB() {
   try {
     if (mongoose.connection.readyState === 1) {
-      console.log('✅ Using existing MongoDB connection for server cache');
+      // console.log('✅ Using existing MongoDB connection for server cache');
       return true;
     }
     

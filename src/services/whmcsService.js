@@ -176,14 +176,14 @@ async function openTicket({ deptid, deptname, subject, message, clientid, priori
     });
   }
   
-  console.log('→ OpenTicket params:', {
-    deptid: base.deptid,
-    subject: base.subject,
-    clientid: base.clientid,
-    invoiceid: base.invoiceid,
-    hasAttachments: !!base.attachment,
-    attachmentCount: base.attachment ? base.attachment.length : 0
-  });
+  // console.log('→ OpenTicket params:', {
+  //   deptid: base.deptid,
+  //   subject: base.subject,
+  //   clientid: base.clientid,
+  //   invoiceid: base.invoiceid,
+  //   hasAttachments: !!base.attachment,
+  //   attachmentCount: base.attachment ? base.attachment.length : 0
+  // });
   
   if (base.attachment && base.attachment.length > 0) {
     base.attachment.forEach((att, index) => {

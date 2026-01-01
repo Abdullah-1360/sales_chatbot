@@ -196,13 +196,13 @@ async function getServerInfoForDNS() {
       lastUpdated: new Date().toISOString()
     };
     
-    console.log(`→ Extracted ${serverInfo.serverIPs.length} server IPs`);
-    console.log(`→ Extracted ${serverInfo.mailServers.length} mail servers`);
-    console.log(`→ Extracted ${serverInfo.nameservers.length} nameservers`);
+    // console.log(`→ Extracted ${serverInfo.serverIPs.length} server IPs`);
+    // console.log(`→ Extracted ${serverInfo.mailServers.length} mail servers`);
+    // console.log(`→ Extracted ${serverInfo.nameservers.length} nameservers`);
     
     return serverInfo;
   } catch (error) {
-    console.error('❌ Failed to get server info for DNS:', error.message);
+    // console.error('❌ Failed to get server info for DNS:', error.message);
     throw error;
   }
 }

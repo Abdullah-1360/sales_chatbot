@@ -1445,9 +1445,9 @@ class WHMService {
       }
     };
     
-    console.log(`→ Extracted ${result.summary.totalDomains} user domains:`);
+    // console.log(`→ Extracted ${result.summary.totalDomains} user domains:`);
     domainsArray.forEach(d => console.log(`  • ${d}`));
-    console.log(`→ Found ${result.summary.aRecords} A records and ${result.summary.cnameRecords} CNAME records`);
+    // console.log(`→ Found ${result.summary.aRecords} A records and ${result.summary.cnameRecords} CNAME records`);
     
     return result;
   }
@@ -3825,13 +3825,13 @@ class WHMService {
    */
   async fetchErrorLogFor500(serverName, username, domain) {
     try {
-      console.log(`🔍 Fetching error log for 500 error: ${domain} (user: ${username}, server: ${serverName})`);
+      // console.log(`🔍 Fetching error log for 500 error: ${domain} (user: ${username}, server: ${serverName})`);
       
       // Use WHM API v1 format: whmapi1 cpuser=root command='uapi Fileman view_file path=/public_html/error_log'
-      console.log(`→ Using WHM API v2 format: https://server:2087/json-api/uapi_cpanel`);
-      console.log(`→ API Version: 2 (as shown in WHM interface)`);
-      console.log(`→ cPanel User: cpanel.user=${username} (account whose files to access)`);
-      console.log(`→ Target Path: /home/${username}/public_html/error_log`);
+      // console.log(`→ Using WHM API v2 format: https://server:2087/json-api/uapi_cpanel`);
+      // console.log(`→ API Version: 2 (as shown in WHM interface)`);
+      // console.log(`→ cPanel User: cpanel.user=${username} (account whose files to access)`);
+      // console.log(`→ Target Path: /home/${username}/public_html/error_log`);
       
       const result = await this.callServerAPI(serverName, 'uapi_cpanel', {
         'cpanel.user': username,
@@ -3841,13 +3841,13 @@ class WHMService {
         'file': 'error_log'
       }, '2'); // WHM API v2 (as shown in the image)
       
-      console.log(`→ WHM API Response structure:`, {
-        hasResult: !!result,
-        hasData: !!(result && result.data),
-        hasUapi: !!(result && result.data && result.data.uapi),
-        hasUapiData: !!(result && result.data && result.data.uapi && result.data.uapi.data),
-        keys: result ? Object.keys(result) : []
-      });
+      // console.log(`→ WHM API Response structure:`, {
+      //   hasResult: !!result,
+      //   hasData: !!(result && result.data),
+      //   hasUapi: !!(result && result.data && result.data.uapi),
+      //   hasUapiData: !!(result && result.data && result.data.uapi && result.data.uapi.data),
+      //   keys: result ? Object.keys(result) : []
+      // });
       
       // Handle actual WHM uapi_cpanel response structure
       // Expected format: { "data": { "uapi": { "data": { "content": "...", "path": "...", "filename": "..." } } } }
@@ -3895,14 +3895,14 @@ class WHMService {
         const isSyntaxErrorIssue = last10AreSyntaxErrors.length > 0;
         
         console.log(`✅ Successfully fetched error log for ${domain} (${lastLines.length} recent entries)`);
-        console.log(`→ Total lines in error log: ${lines.length}`);
+        // console.log(`→ Total lines in error log: ${lines.length}`);
         
-        if (lastLines.length > 0) {
-          console.log(`→ Recent error log entries:`);
-          lastLines.forEach((line, index) => {
-            console.log(`  ${index + 1}. ${line}`);
-          });
-        }
+        // if (lastLines.length > 0) {
+        //   console.log(`→ Recent error log entries:`);
+        //   lastLines.forEach((line, index) => {
+        //     console.log(`  ${index + 1}. ${line}`);
+        //   });
+        // }
         
         return {
           success: true,
@@ -3997,11 +3997,11 @@ class WHMService {
    */
   async createSyntaxErrorTicket(domain, username, serverName, syntaxErrors, checksStatus = {}, clientId, email) {
     try {
-      console.log(`🎫 Creating support ticket for 500 syntax errors: ${domain}`);
-      console.log(`→ Client ID: ${clientId}`);
-      console.log(`→ Email: ${email}`);
-      console.log(`→ Username: ${username}`);
-      console.log(`→ Server: ${serverName}`);
+      // console.log(`🎫 Creating support ticket for 500 syntax errors: ${domain}`);
+      // console.log(`→ Client ID: ${clientId}`);
+      // console.log(`→ Email: ${email}`);
+      // console.log(`→ Username: ${username}`);
+      // console.log(`→ Server: ${serverName}`);
       
       if (!clientId && !email) {
         throw new Error('Either Client ID or email is required for ticket creation');
