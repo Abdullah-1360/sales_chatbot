@@ -55,8 +55,7 @@ body {
   padding: 0;
   min-width: 320px;
   min-height: 100vh;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  background-attachment: fixed;
+  background: #f3f4f6;
   color: var(--text-primary);
 }
 

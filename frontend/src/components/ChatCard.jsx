@@ -99,9 +99,14 @@ const ChatCard = ({ chat, isExpanded = false, onToggleExpand, onDismiss }) => {
               <circle cx="12" cy="12" r="10"/>
               <polyline points="12 6 12 12 16 14"/>
             </svg>
-            {relativeTime}
+            <span className="time-text-with-arrow">
+              {relativeTime}
+            </span>
           </span>
           <button className="chat-card-expand-btn" onClick={(e) => { e.stopPropagation(); onToggleExpand(); }}>
+            <svg className="time-arrow" width="8" height="6" viewBox="0 0 8 6" fill="none">
+              <path d="M4 6L0 0H8L4 6Z" fill="currentColor"/>
+            </svg>
             <svg 
               width="20" 
               height="20" 

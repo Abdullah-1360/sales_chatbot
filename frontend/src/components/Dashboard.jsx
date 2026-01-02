@@ -46,7 +46,7 @@ function Dashboard() {
   return (
     <div className="dashboard">
       <div className="dashboard-header">
-        <h1>Real-time Dashboard</h1>
+        <h1>Chatbot Dashboard</h1>
         <ConnectionStatus />
       </div>
       
