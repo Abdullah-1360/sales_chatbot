@@ -2,6 +2,7 @@ const {
   genInvoices,
   getInvoice,
   getInvoices,
+  getInvoicesForUser,
   openTicket,
   addOrder,
   getClientsProducts,
@@ -596,18 +597,56 @@ exports.confirmPayment = async (req, res, next) => {
       });
     }
     
-    const inv = await getInvoice(invoiceId);
-    const ownerId = String(inv.userid || inv.clientid);
+    // Get all invoices for the user using the new WHMCS API
+    console.log('→ Fetching invoices for user:', clientId);
+    const invoicesResponse = await getInvoicesForUser(clientId);
     
-    if (String(ownerId) !== String(clientId)) {
+    if (!invoicesResponse || !invoicesResponse.invoices || !invoicesResponse.invoices.invoice) {
+      console.log('✗ No invoices found for user:', clientId);
+      return res.status(404).json({ 
+        success: false, 
+        error: 'No invoices found for this account.' 
+      });
+    }
+    
+    // Handle both single invoice and array of invoices
+    const invoiceList = Array.isArray(invoicesResponse.invoices.invoice) 
+      ? invoicesResponse.invoices.invoice 
+      : [invoicesResponse.invoices.invoice];
+    
+    // Find the requested invoice by matching either id or invoicenum
+    const requestedInvoiceId = String(invoiceId);
+    console.log('→ Looking for invoice:', requestedInvoiceId, 'in', invoiceList.length, 'invoices');
+    
+    const matchedInvoice = invoiceList.find(inv => {
+      const idMatch = String(inv.id) === requestedInvoiceId;
+      const invoiceNumMatch = String(inv.invoicenum) === requestedInvoiceId;
+      return idMatch || invoiceNumMatch;
+    });
+    
+    if (!matchedInvoice) {
+      console.log('✗ Invoice not found:', invoiceId, 'for user:', clientId);
+      // Log first few invoices for debugging
+      console.log('→ Sample invoices:', invoiceList.slice(0, 3).map(inv => ({
+        id: inv.id,
+        invoicenum: inv.invoicenum,
+        status: inv.status
+      })));
       return res.status(404).json({ 
         success: false, 
         error: 'Invoice not found or does not belong to this account.' 
       });
     }
     
-    if (String(inv.status) === 'Paid') {
-      const paidDate = inv.datepaid || null;
+    console.log('→ Found invoice:', {
+      id: matchedInvoice.id,
+      invoicenum: matchedInvoice.invoicenum,
+      status: matchedInvoice.status,
+      total: matchedInvoice.total
+    });
+    
+    if (String(matchedInvoice.status) === 'Paid') {
+      const paidDate = matchedInvoice.datepaid || null;
       console.log('→ Invoice already paid:', invoiceId);
       return res.json({ 
         success: true, 
@@ -629,10 +668,11 @@ exports.confirmPayment = async (req, res, next) => {
     
     // Build detailed message with invoice information
     let ticketMessage = `=== PAYMENT CONFIRMATION ===\n`;
-    ticketMessage += `Invoice ID: ${invoiceId}\n`;
-    ticketMessage += `Invoice Total: ${inv.total}\n`;
-    ticketMessage += `Invoice Balance: ${inv.balance}\n`;
-    ticketMessage += `Due Date: ${inv.duedate}\n`;
+    ticketMessage += `Invoice ID: ${matchedInvoice.id}\n`;
+    ticketMessage += `Invoice Number: ${matchedInvoice.invoicenum || 'N/A'}\n`;
+    ticketMessage += `Invoice Total: ${matchedInvoice.total}\n`;
+    ticketMessage += `Invoice Status: ${matchedInvoice.status}\n`;
+    ticketMessage += `Due Date: ${matchedInvoice.duedate}\n`;
     if (domain) {
       ticketMessage += `Domain: ${domain}\n`;
     }
@@ -660,7 +700,7 @@ exports.confirmPayment = async (req, res, next) => {
       message: ticketMessage, 
       clientid: clientId, 
       priority: 'Medium',
-      invoiceid: invoiceId
+      invoiceid: matchedInvoice.id // Use the actual invoice ID from WHMCS
     });
     
     const ticketId = t.tid || t.ticketid || t.id;

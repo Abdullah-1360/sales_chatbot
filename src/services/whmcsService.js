@@ -228,6 +228,11 @@ async function getClientsDetails(params = {}) {
   return cached('GetClientsDetails', params, () => callApi('GetClientsDetails', params));
 }
 
+async function getInvoicesForUser(userId) {
+  const params = { userid: userId,orderby :'date',order:'desc'};
+  return cached('GetInvoicesForUser', params, () => callApi('GetInvoices', params));
+}
+
 async function getServers(params = {}) {
   // Add pagination parameters to ensure we get all servers
   const defaultParams = {
@@ -256,6 +261,7 @@ module.exports = {
   callApi,
   getInvoice,
   getInvoices,
+  getInvoicesForUser,
   getClientsProducts,
   getClientsDomains,
   getClientsDetails,
