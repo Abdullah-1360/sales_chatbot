@@ -18,7 +18,7 @@ let io = null;
  * @returns {Server} Socket.IO server instance
  */
 function initializeWebSocket(httpServer, options = {}) {
-  const { corsOrigin = 'http://localhost:5173' } = options;
+  const { corsOrigin = process.env.CORS_ORIGIN || 'http://localhost:5173' } = options;
   
   // Handle both single origin and array of origins
   const origins = Array.isArray(corsOrigin) ? corsOrigin : [corsOrigin];
