@@ -139,20 +139,58 @@ exports.getInvoicesList = async (req, res, next) => {
 };
 
 /**
- * Invoice lookup with enhanced messaging
+ * Simple email validation helper
+ */
+function isValidEmail(email) {
+  if (!email || typeof email !== 'string') return false;
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  return emailRegex.test(email.trim());
+}
+
+/**
+ * Invoice lookup with enhanced messaging and domain-based client resolution
  */
 exports.invoiceLookup = async (req, res, next) => {
   console.log('[POST /api/invoiceLookup]', { 
     clientId: req.body.clientId, 
     invoiceId: req.body.invoiceId, 
-    domain: req.body.domain 
+    domain: req.body.domain,
+    email: req.body.email ? '[PROVIDED]' : undefined,
+    resolvedFrom: req.body._resolvedFrom
   });
   
   try {
-    const { clientId, invoiceId, domain } = req.body || {};
+    const { clientId, invoiceId, domain, email } = req.body || {};
     
+    // Validate email if provided (even if empty string)
+    if (email !== undefined && email !== null && email !== '') {
+      if (!isValidEmail(email)) {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'Invalid email format provided' 
+        });
+      }
+    }
+    
+    // If no clientId was resolved and we have domain but no email, that's fine
+    // The resolveClientId middleware should have handled domain resolution
     if (!clientId) {
-      return res.status(400).json({ success: false, error: 'clientId required' });
+      if (domain && !email) {
+        return res.status(404).json({ 
+          success: false, 
+          error: 'No client found for the provided domain. Please verify the domain or provide an email address.' 
+        });
+      } else if (email && !domain) {
+        return res.status(404).json({ 
+          success: false, 
+          error: 'No client found with the provided email address.' 
+        });
+      } else {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'Please provide either a domain name or email address to identify your account.' 
+        });
+      }
     }
     
     let targetInvoiceId = invoiceId;
@@ -176,24 +214,46 @@ exports.invoiceLookup = async (req, res, next) => {
       }
     } else if (domain) {
       const found = await findRelatedUnpaidInvoice(clientId, { domain });
-      if (found) invoice = found;
+      if (found) {
+        invoice = found;
+        console.log('→ Found unpaid invoice via domain:', found.invoiceid || found.id);
+      }
     }
     
     if (!invoice) {
-      // No invoice found - provide helpful response
+      // No invoice found - provide helpful response based on resolution method
+      const resolvedFrom = req.body._resolvedFrom;
+      
       if (domain) {
+        let message = 'No unpaid invoice found for this service.';
+        
+        if (resolvedFrom === 'domain') {
+          message += ` Client was successfully identified using domain "${domain}".`;
+        }
+        
+        message += ' WHMCS will automatically generate a renewal invoice when the service is due (typically 7-14 days before the due date).';
+        
         return res.json({ 
           success: false, 
           error: 'No unpaid invoice found for this service.',
           domain: domain,
-          message: 'There are currently no unpaid invoices for this service. WHMCS will automatically generate a renewal invoice when the service is due (typically 7-14 days before the due date).',
-          
+          clientId: clientId,
+          resolvedFrom: resolvedFrom,
+          message: message
         });
+      }
+      
+      let errorMessage = 'Invoice not found or does not belong to this account.';
+      if (resolvedFrom === 'email') {
+        errorMessage = 'No invoice found for the account associated with the provided email address.';
+      } else if (resolvedFrom === 'domain') {
+        errorMessage = 'No invoice found for the account associated with the provided domain.';
       }
       
       return res.status(404).json({ 
         success: false, 
-        error: 'Invoice not found or does not belong to this account.' 
+        error: errorMessage,
+        resolvedFrom: resolvedFrom
       });
     }
     
@@ -202,9 +262,19 @@ exports.invoiceLookup = async (req, res, next) => {
     
     if (String(ownerId) !== String(clientId)) {
       console.log('✗ Ownership validation failed');
+      const resolvedFrom = req.body._resolvedFrom;
+      let errorMessage = 'Invoice not found or does not belong to this account.';
+      
+      if (resolvedFrom === 'email') {
+        errorMessage = 'This invoice does not belong to the account associated with the provided email address.';
+      } else if (resolvedFrom === 'domain') {
+        errorMessage = 'This invoice does not belong to the account associated with the provided domain.';
+      }
+      
       return res.status(404).json({ 
         success: false, 
-        error: 'Invoice not found or does not belong to this account.' 
+        error: errorMessage,
+        resolvedFrom: resolvedFrom
       });
     }
     
@@ -215,6 +285,7 @@ exports.invoiceLookup = async (req, res, next) => {
     const dueDate = invoice.duedate || null;
     const paidDate = invoice.datepaid || invoice.date_paid || null;
     const invoiceIdOut = invoice.invoiceid || invoice.id;
+    const resolvedFrom = req.body._resolvedFrom;
     
     // Check if invoice is overdue
     let isOverdue = false;
@@ -243,13 +314,21 @@ exports.invoiceLookup = async (req, res, next) => {
       message = `Invoice #${invoiceIdOut} is ${status}, with a balance of ${amount} due${dueDate ? ' by ' + dueDate : ''}.`;
     }
     
+    // Add resolution context to message if client was resolved from domain/email
+    if (resolvedFrom === 'domain' && domain) {
+      message += ` (Client identified using domain: ${domain})`;
+    } else if (resolvedFrom === 'email' && email) {
+      message += ` (Client identified using email address)`;
+    }
+    
     const response = { 
       success: true, 
       invoiceId: invoiceIdOut, 
       status, 
       amount, 
       dueDate, 
-      message 
+      message,
+      clientId: clientId
     };
     
     if (status === 'Paid' && paidDate) {
@@ -258,8 +337,14 @@ exports.invoiceLookup = async (req, res, next) => {
     if (isOverdue) {
       response.isOverdue = true;
     }
+    if (resolvedFrom) {
+      response.resolvedFrom = resolvedFrom;
+      if (resolvedFrom === 'domain' && domain) {
+        response.resolvedDomain = domain;
+      }
+    }
     
-    console.log('→ Invoice:', response.invoiceId, 'Status:', response.status, isOverdue ? '(OVERDUE)' : '');
+    console.log('→ Invoice:', response.invoiceId, 'Status:', response.status, isOverdue ? '(OVERDUE)' : '', 'Resolved from:', resolvedFrom || 'clientId');
     res.json(response);
   } catch (err) {
     console.log('✗ Error:', err.message);
