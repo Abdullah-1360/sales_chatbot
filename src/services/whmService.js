@@ -3867,7 +3867,7 @@ class WHMService {
           responseData = uapiResult.data;
           fileContent = responseData.content || '';
           console.log(`→ Using result.data.uapi.data structure (correct WHM format)`);
-          console.log(`→ File path: ${responseData.path || 'N/A'}`);
+          console.log(`→ File path: [REDACTED]`);
           console.log(`→ Filename: ${responseData.filename || 'N/A'}`);
           console.log(`→ Content length: ${fileContent.length} characters`);
         } else {

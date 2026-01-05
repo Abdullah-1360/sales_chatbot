@@ -53,14 +53,11 @@ async function getComprehensiveDNSStatus(serviceName, whmcsNameservers = null) {
  */
 function addServerAndDomainInfo(response, domainStatus, hostingStatus, dnsZoneAnalysis = null, reachabilityAnalysis = null) {
   // Add server information if available from hosting status
+  // Note: Server details removed for security - no longer exposing serverId, serverName, serverIP, username
   if (hostingStatus) {
-    if (hostingStatus.serverId) response.serverId = hostingStatus.serverId;
-    if (hostingStatus.serverName) response.serverName = hostingStatus.serverName;
-    if (hostingStatus.serverIP) response.serverIP = hostingStatus.serverIP;
     if (hostingStatus.serverHostname) response.serverHostname = hostingStatus.serverHostname;
     if (hostingStatus.productId) response.hostingProductId = hostingStatus.productId;
     if (hostingStatus.totalProducts > 1) response.hostingProducts = hostingStatus.totalProducts;
-    if (hostingStatus.username) response.username = hostingStatus.username;
   }
   
   // Add domain information if available
@@ -74,7 +71,7 @@ function addServerAndDomainInfo(response, domainStatus, hostingStatus, dnsZoneAn
   // Add DNS zone analysis if available
   if (dnsZoneAnalysis) {
     response.dnsZoneAnalysis = {
-      expectedServerIP: dnsZoneAnalysis.expectedServerIP,
+      // Note: expectedServerIP removed for security
       currentARecords: dnsZoneAnalysis.currentARecords,
       aRecordMatchesServer: dnsZoneAnalysis.aRecordMatchesServer,
       zoneARecordIP: dnsZoneAnalysis.zoneARecordIP,
