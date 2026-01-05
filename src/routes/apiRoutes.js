@@ -5,6 +5,14 @@ const validatePhoneNumber = require('../middleware/validatePhoneNumber');
 const invoiceController = require('../controllers/invoiceController');
 const serviceStatusController = require('../controllers/serviceStatusController');
 const billingController = require('../controllers/billingController');
+const userController = require('../controllers/userController');
+const leadsController = require('../controllers/leadsController');
+
+// POST /api/checkUserExists - Check if user exists by email or phone (DEPRECATED - use /api/leads)
+// router.post('/checkUserExists', userController.checkUserExists);
+
+// POST /api/leads - Combined endpoint: check user exists in WHMCS, create lead in VTiger if not exists
+router.post('/leads', leadsController.handleLeads);
 
 // POST /api/invoiceLookup - with phone validation
 router.post('/invoiceLookup', resolveClientId, validatePhoneNumber, invoiceController.invoiceLookup);

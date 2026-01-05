@@ -11,8 +11,7 @@ const app = express();
 
 // CORS configuration for frontend communication
 //prc
-const corsOrigin = 'https://chat.hostbrake.com';
-
+const corsOrigin = process.env.CORS_ORIGIN || 'https://alertme.hostbreak.com';
 // Support multiple origins (comma-separated)
 const allowedOrigins = corsOrigin.includes(',') 
   ? corsOrigin.split(',').map(origin => origin.trim())

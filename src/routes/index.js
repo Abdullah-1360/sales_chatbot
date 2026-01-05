@@ -3,6 +3,7 @@ const { recommend } = require('../controllers/recommendation');
 const { checkAvailability, checkMultiple } = require('../controllers/domain');
 const { searchPlans } = require('../controllers/planSearch');
 const { createLead } = require('../controllers/vtiger');
+const { handleLeads } = require('../controllers/leadsController');
 const { getLeads, deleteLead } = require('../controllers/leads');
 const { createChat, getChats, deleteChat } = require('../controllers/chats');
 const { getAllGidsWithNames, getGidName, isValidGid } = require('../services/gidHelper');
@@ -49,7 +50,7 @@ router.post('/dns/comprehensive', comprehensiveDNSLookup);
 router.get('/plans/search', searchPlans);
 
 // VTiger lead endpoints
-router.post('/leads', createLead);
+router.post('/leads', handleLeads); // Combined: check WHMCS user exists + create VTiger lead if not
 router.get('/leads', getLeads);
 router.delete('/leads/:id', deleteLead);
 
