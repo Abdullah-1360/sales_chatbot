@@ -7,6 +7,22 @@ const serviceStatusController = require('../controllers/serviceStatusController'
 const billingController = require('../controllers/billingController');
 const userController = require('../controllers/userController');
 const leadsController = require('../controllers/leadsController');
+const chatsController = require('../controllers/chats');
+
+// GET /api/chats - Get chats with pagination
+router.get('/chats', chatsController.getChats);
+
+// POST /api/chats - Create a new chat
+router.post('/chats', chatsController.createChat);
+
+// DELETE /api/chats/:id - Delete a chat by ID
+router.delete('/chats/:id', chatsController.deleteChat);
+
+// GET /api/leads - Get leads with pagination  
+router.get('/leads', leadsController.getLeads);
+
+// DELETE /api/leads/:id - Delete a lead by ID
+router.delete('/leads/:id', leadsController.deleteLead);
 
 // POST /api/checkUserExists - Check if user exists by email or phone (DEPRECATED - use /api/leads)
 // router.post('/checkUserExists', userController.checkUserExists);
