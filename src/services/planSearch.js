@@ -23,20 +23,20 @@ const KEYWORD_MAPPINGS = {
   'business': ['biz', 'business'],
   'biz': ['biz', 'business'],
   
-  // Plan levels - Entry tier
-  'starter': ['starter', 'entry', 'basic'],
-  'entry': ['entry', 'starter', 'basic'],
-  'basic': ['basic', 'entry', 'starter'],
+  // Plan levels - Entry tier (Enhanced for reseller compatibility)
+  'starter': ['starter', 'starter reseller', 'starter freedom', 'entry', 'basic'],
+  'entry': ['entry', 'starter', 'starter reseller', 'starter freedom', 'basic'],
+  'basic': ['basic', 'entry', 'starter', 'starter reseller', 'starter freedom'],
   
-  // Plan levels - Mid tier
-  'standard': ['standard', 'pro'],
-  'professional': ['pro', 'standard'],
-  'pro': ['pro', 'standard'],
+  // Plan levels - Mid tier (Enhanced for reseller compatibility)
+  'standard': ['standard', 'standard reseller', 'standard freedom', 'pro'],
+  'professional': ['pro', 'standard', 'standard reseller', 'standard freedom'],
+  'pro': ['pro', 'standard', 'standard reseller', 'standard freedom'],
   
-  // Plan levels - Upper tier
-  'premium': ['premium', 'fantasy', 'max'],
-  'ultimate': ['fantasy', 'ultimate', 'max', 'infinity'],
-  'fantasy': ['fantasy', 'ultimate', 'premium'],
+  // Plan levels - Upper tier (Enhanced for reseller compatibility)
+  'premium': ['premium', 'fantasy', 'fantasy reseller', 'fantasy freedom', 'max'],
+  'ultimate': ['fantasy', 'fantasy reseller', 'fantasy freedom', 'ultimate', 'max', 'infinity'],
+  'fantasy': ['fantasy', 'fantasy reseller', 'fantasy freedom', 'ultimate', 'premium'],
   'max': ['max', 'biz-max', 'infinity'],
   'infinity': ['infinity', 'biz-infinity', 'max'],
   
@@ -59,17 +59,25 @@ const KEYWORD_MAPPINGS = {
   'growth': ['growth', 'woocommerce growth'],
   'geek': ['geek', 'woocommerce geek'],
   
-  // Reseller hosting specific
+  // Reseller hosting specific - Enhanced with all plan tiers
   'smarty': ['smarty', 'smarty reseller', 'smarty freedom'],
   'freedom': ['freedom', 'reseller'],
+  'starter': ['starter', 'starter reseller', 'starter freedom', 'entry', 'basic'],
+  'standard': ['standard', 'standard reseller', 'standard freedom', 'pro'],
+  'fantasy': ['fantasy', 'fantasy reseller', 'fantasy freedom', 'ultimate', 'premium'],
+  
+  // Reseller plan variations
+  'reseller': ['reseller', 'freedom', 'smarty', 'starter', 'standard', 'fantasy'],
+  'cpanel reseller': ['reseller', 'freedom', 'smarty', 'starter', 'standard', 'fantasy'],
+  'windows reseller': ['reseller', 'windows', 'smarty', 'starter', 'standard', 'fantasy'],
   
   // Budget/Price-related
-  'cheap': ['entry', 'basic', 'starter', 'biz-5'],
-  'budget': ['entry', 'basic', 'starter', 'biz-5'],
-  'affordable': ['entry', 'basic', 'starter', 'biz-5'],
-  'economical': ['entry', 'basic', 'starter'],
-  'low-cost': ['entry', 'basic', 'starter'],
-  'inexpensive': ['entry', 'basic', 'starter'],
+  'cheap': ['entry', 'basic', 'starter', 'starter reseller', 'starter freedom', 'biz-5'],
+  'budget': ['entry', 'basic', 'starter', 'starter reseller', 'starter freedom', 'biz-5'],
+  'affordable': ['entry', 'basic', 'starter', 'starter reseller', 'starter freedom', 'biz-5'],
+  'economical': ['entry', 'basic', 'starter', 'starter reseller', 'starter freedom'],
+  'low-cost': ['entry', 'basic', 'starter', 'starter reseller', 'starter freedom'],
+  'inexpensive': ['entry', 'basic', 'starter', 'starter reseller', 'starter freedom'],
   
   // Student/Beginner
   'student': ['entry', 'basic', 'starter', 'personal', 'novice'],
@@ -110,6 +118,18 @@ const KEYWORD_MAPPINGS = {
   // Platform
   'windows': ['windows'],
   'linux': ['plan', 'hosting'],
+  
+  // Reseller-specific terms
+  'white label': ['reseller', 'freedom', 'smarty'],
+  'whitelabel': ['reseller', 'freedom', 'smarty'],
+  'client hosting': ['reseller', 'freedom'],
+  'host clients': ['reseller', 'freedom'],
+  'hosting business': ['reseller', 'freedom'],
+  'hosting company': ['reseller', 'freedom'],
+  'web hosting business': ['reseller', 'freedom'],
+  'hosting reseller': ['reseller', 'freedom', 'smarty'],
+  'cpanel reseller': ['reseller', 'freedom', 'smarty'],
+  'plesk reseller': ['reseller', 'windows'],
   
   // Features
   'free': ['free', 'trial'],
@@ -250,7 +270,12 @@ function getFullDescription(description) {
  */
 function isResellerOrSSLQuery(query) {
   const queryLower = query.toLowerCase();
-  const resellerKeywords = ['reseller', 'freedom', 'client', 'agency'];
+  const resellerKeywords = [
+    'reseller', 'freedom', 'client', 'agency', 'smarty', 
+    'starter reseller', 'standard reseller', 'fantasy reseller',
+    'starter freedom', 'standard freedom', 'fantasy freedom',
+    'smarty reseller', 'smarty freedom', 'cpanel reseller', 'windows reseller'
+  ];
   const sslKeywords = ['ssl', 'certificate', 'cert', 'secure', 'security', 'wildcard', 'rapidssl', 'geotrust'];
   
   const hasReseller = resellerKeywords.some(kw => queryLower.includes(kw));
