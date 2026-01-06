@@ -51,7 +51,7 @@ const serverCacheSchema = new mongoose.Schema({
 const ServerCache = mongoose.model('ServerCache', serverCacheSchema);
 
 /**
- * Initialize MongoDB connection (using existing mongoose connection)
+ * Initialize MongoDB connection (using existing mongoose connection) with timeout protection
  */
 async function initializeMongoDB() {
   try {
@@ -61,9 +61,25 @@ async function initializeMongoDB() {
     }
     
     if (mongoose.connection.readyState === 0) {
-      const MONGODB_URI = process.env.MONGODB_URI ;
+      const MONGODB_URI = process.env.MONGODB_URI;
       console.log('🔌 Connecting to MongoDB for server cache...');
-      await mongoose.connect(MONGODB_URI);
+      
+      // Add timeout protection to prevent hanging
+      const connectPromise = mongoose.connect(MONGODB_URI, {
+        serverSelectionTimeoutMS: 5000, // 5 second timeout
+        connectTimeoutMS: 10000, // 10 second connection timeout
+        socketTimeoutMS: 30000, // 30 second socket timeout
+        maxPoolSize: 10, // Maintain up to 10 socket connections
+        bufferCommands: false, // Disable mongoose buffering
+        bufferMaxEntries: 0 // Disable mongoose buffering
+      });
+      
+      // Race the connection against a timeout
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('MongoDB connection timeout after 10 seconds')), 10000)
+      );
+      
+      await Promise.race([connectPromise, timeoutPromise]);
       console.log('✅ MongoDB connection established for server cache');
     }
     
@@ -89,7 +105,7 @@ async function closeMongoDB() {
 }
 
 /**
- * Get cached server data from MongoDB
+ * Get cached server data from MongoDB with timeout protection
  * NOTE: No TTL checking - cache is used as-is until server restart
  * Cache is only refreshed on server startup (via AUTO_SYNC_ON_STARTUP)
  * @returns {Object|null} Cached server data or null if not found
@@ -98,10 +114,17 @@ async function getCachedServerData() {
   try {
     await initializeMongoDB();
     
-    // Find the most recent server data
-    const cachedData = await ServerCache.findOne(
+    // Add timeout protection to prevent hanging on database queries
+    const queryPromise = ServerCache.findOne(
       { type: 'whmcs_servers' }
     ).sort({ lastUpdated: -1 });
+    
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('MongoDB query timeout after 5 seconds')), 5000)
+    );
+    
+    // Race the query against a timeout
+    const cachedData = await Promise.race([queryPromise, timeoutPromise]);
     
     if (!cachedData) {
       console.log('📭 No cached server data found in MongoDB');

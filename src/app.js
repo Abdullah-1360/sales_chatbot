@@ -53,9 +53,10 @@ app.use(express.json());
 // Request/Response logging middleware
 app.use(requestLogger);
 
-// Mount routes at both root and /api for backward compatibility
+// Mount routes properly to avoid duplicates
 app.use('/', router);
-app.use('/api', router);
+// Note: API routes are already mounted under /api in the main router
+// Removing duplicate /api mounting to prevent double ticket creation
 
 // Error logging middleware
 app.use(errorLogger);

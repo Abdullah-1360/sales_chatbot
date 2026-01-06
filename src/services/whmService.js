@@ -52,6 +52,86 @@ class WHMService {
   }
 
   /**
+   * Parse PHP error log line into structured object
+   * @param {string} errorLine - Raw error log line
+   * @returns {Object} Parsed error object with file, line, error, and timestamp
+   */
+  parsePHPErrorLine(errorLine) {
+    try {
+      // Common PHP error log format patterns
+      // [06-Jan-2026 10:22:04 UTC] PHP Parse error: syntax error, unexpected 'define' (T_STRING) in /home/uzairfar/public_html/index.php on line 13
+      // [06-Jan-2026 10:22:04 UTC] PHP Fatal error: syntax error, unexpected 'define' (T_STRING) in /home/uzairfar/public_html/index.php on line 13
+      
+      const patterns = [
+        // Standard PHP error format with timestamp
+        /^\[([^\]]+)\]\s+PHP\s+(Parse|Fatal|Syntax)\s+error:\s+(.+?)\s+in\s+(.+?)\s+on\s+line\s+(\d+)/i,
+        // Alternative format without timestamp
+        /PHP\s+(Parse|Fatal|Syntax)\s+error:\s+(.+?)\s+in\s+(.+?)\s+on\s+line\s+(\d+)/i,
+        // Generic error format
+        /(.+?)\s+in\s+(.+?)\s+on\s+line\s+(\d+)/i
+      ];
+      
+      for (const pattern of patterns) {
+        const match = errorLine.match(pattern);
+        if (match) {
+          if (match.length >= 6) {
+            // Full format with timestamp
+            return {
+              timestamp: match[1],
+              type: match[2],
+              error: match[3],
+              file: match[4],
+              line: parseInt(match[5]),
+              rawLine: errorLine
+            };
+          } else if (match.length >= 5) {
+            // Format without timestamp
+            return {
+              timestamp: null,
+              type: match[1],
+              error: match[2],
+              file: match[3],
+              line: parseInt(match[4]),
+              rawLine: errorLine
+            };
+          } else if (match.length >= 4) {
+            // Generic format
+            return {
+              timestamp: null,
+              type: 'Error',
+              error: match[1],
+              file: match[2],
+              line: parseInt(match[3]),
+              rawLine: errorLine
+            };
+          }
+        }
+      }
+      
+      // If no pattern matches, return a basic structure
+      return {
+        timestamp: null,
+        type: 'Unknown',
+        error: errorLine,
+        file: 'Unknown',
+        line: 'Unknown',
+        rawLine: errorLine
+      };
+      
+    } catch (error) {
+      // Fallback for any parsing errors
+      return {
+        timestamp: null,
+        type: 'Parse Error',
+        error: errorLine,
+        file: 'Unknown',
+        line: 'Unknown',
+        rawLine: errorLine
+      };
+    }
+  }
+
+  /**
    * Extract server name from WHMCS server name format
    * @param {string} whmcsServerName - WHMCS server name (e.g., 'CP1', 'VPS - Win1 (Shared)')
    * @returns {string|null} - Normalized server name (e.g., 'cp1') or null if not recognized
@@ -3891,6 +3971,11 @@ class WHMService {
           line.toLowerCase().includes('fatal error')
         );
         
+        // Parse syntax errors into structured objects
+        const parsedSyntaxErrors = last10AreSyntaxErrors.map(errorLine => {
+          return this.parsePHPErrorLine(errorLine);
+        });
+        
         // Only consider it a syntax error issue if the last 10 lines contain syntax errors
         const isSyntaxErrorIssue = last10AreSyntaxErrors.length > 0;
         
@@ -3911,7 +3996,8 @@ class WHMService {
           serverName: serverName,
           errorLogLines: lastLines,
           last10Lines: last10Lines,
-          last10SyntaxErrors: last10AreSyntaxErrors,
+          last10SyntaxErrors: parsedSyntaxErrors,
+          rawSyntaxErrors: last10AreSyntaxErrors,
           isSyntaxErrorIssue: isSyntaxErrorIssue,
           totalLines: lines.length,
           message: `Found ${lastLines.length} recent error log entries for ${domain}`,
@@ -4031,7 +4117,19 @@ class WHMService {
       if (syntaxErrors && syntaxErrors.length > 0) {
         ticketMessage += `=== RECENT SYNTAX ERRORS (Last ${syntaxErrors.length}) ===\n`;
         syntaxErrors.forEach((error, index) => {
-          ticketMessage += `${index + 1}. ${error}\n`;
+          // Handle both parsed objects and raw strings for backward compatibility
+          if (typeof error === 'object' && error.file) {
+            ticketMessage += `${index + 1}. ${error.type || 'Error'}: ${error.error}\n`;
+            ticketMessage += `   File: ${error.file}\n`;
+            ticketMessage += `   Line: ${error.line}\n`;
+            if (error.timestamp) {
+              ticketMessage += `   Time: ${error.timestamp}\n`;
+            }
+            ticketMessage += `\n`;
+          } else {
+            // Fallback for raw string errors
+            ticketMessage += `${index + 1}. ${error}\n`;
+          }
         });
         ticketMessage += `\n`;
       }

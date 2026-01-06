@@ -1163,60 +1163,77 @@ exports.checkServiceStatus = async (req, res, next) => {
                     timestamp: errorLogResult.timestamp
                   };
                   
-                  // Check if LAST 10 LINES contain syntax errors and create support ticket
+                  // Check if LAST 10 LINES contain syntax errors
                   if (errorLogResult.isSyntaxErrorIssue && errorLogResult.last10SyntaxErrors.length > 0) {
-                    try {
-                      // Prepare checks status for ticket
-                      const checksStatus = {
-                        dnsCheck: dnsZoneAnalysis?.dnsConsistent ? 'Passed' : 'Issues detected',
-                        autoSSLCheck: reachabilityAnalysis?.ssl?.valid ? 'SSL Valid' : 'SSL Issues detected',
-                        connectivity: reachabilityAnalysis?.reachable ? 'Server reachable' : 'Connectivity issues'
-                      };
-                      
-                      const ticketResult = await whmService.createSyntaxErrorTicket(
-                        domain, 
-                        hostingStatus.username, 
-                        serverName, 
-                        errorLogResult.last10SyntaxErrors,
-                        checksStatus,
-                        clientId,
-                        req.body.email // Pass email as fallback
-                      );
-                      
-                      if (ticketResult.success) {
-                        reachabilityAnalysis.supportTicket = {
-                          created: true,
-                          success: true,
-                          ticketId: ticketResult.ticketId,
-                          subject: ticketResult.subject,
-                          message: ticketResult.message,
-                          timestamp: ticketResult.timestamp
+                    
+                    // Only create separate syntax error ticket if no user issue is provided
+                    // If user issue exists, it will be combined into one comprehensive ticket later
+                    if (!issue) {
+                      try {
+                        // Prepare checks status for ticket
+                        const checksStatus = {
+                          dnsCheck: dnsZoneAnalysis?.dnsConsistent ? 'Passed' : 'Issues detected',
+                          autoSSLCheck: reachabilityAnalysis?.ssl?.valid ? 'SSL Valid' : 'SSL Issues detected',
+                          connectivity: reachabilityAnalysis?.reachable ? 'Server reachable' : 'Connectivity issues'
                         };
                         
-                        reachabilityAnalysis.recommendation = `500 Internal Server Error caused by PHP syntax errors. Support ticket #${ticketResult.ticketId} has been automatically created with error details. DNS and AutoSSL checks passed - issue is code-related.`;
-                      } else {
-                        console.log(`❌ Failed to create support ticket: ${ticketResult.error}`);
+                        const ticketResult = await whmService.createSyntaxErrorTicket(
+                          domain, 
+                          hostingStatus.username, 
+                          serverName, 
+                          errorLogResult.last10SyntaxErrors,
+                          checksStatus,
+                          clientId,
+                          req.body.email // Pass email as fallback
+                        );
+                        
+                        if (ticketResult.success) {
+                          reachabilityAnalysis.supportTicket = {
+                            created: true,
+                            success: true,
+                            ticketId: ticketResult.ticketId,
+                            subject: ticketResult.subject,
+                            message: ticketResult.message,
+                            timestamp: ticketResult.timestamp
+                          };
+                          
+                          reachabilityAnalysis.recommendation = `500 Internal Server Error caused by PHP syntax errors. Support ticket #${ticketResult.ticketId} has been automatically created with error details. DNS and AutoSSL checks passed - issue is code-related.`;
+                        } else {
+                          console.log(`❌ Failed to create support ticket: ${ticketResult.error}`);
+                          
+                          reachabilityAnalysis.supportTicket = {
+                            created: true,
+                            success: false,
+                            error: ticketResult.error,
+                            message: ticketResult.message,
+                            timestamp: ticketResult.timestamp
+                          };
+                          
+                          reachabilityAnalysis.recommendation = `500 Internal Server Error caused by PHP syntax errors. Failed to create support ticket automatically: ${ticketResult.error}. Please contact support manually.`;
+                        }
+                        
+                      } catch (ticketError) {
+                        console.log(`❌ Error during ticket creation: ${ticketError.message}`);
                         
                         reachabilityAnalysis.supportTicket = {
-                          created: true,
+                          created: false,
                           success: false,
-                          error: ticketResult.error,
-                          message: ticketResult.message,
-                          timestamp: ticketResult.timestamp
+                          error: ticketError.message,
+                          message: `Error during ticket creation: ${ticketError.message}`
                         };
-                        
-                        reachabilityAnalysis.recommendation = `500 Internal Server Error caused by PHP syntax errors. Failed to create support ticket automatically: ${ticketResult.error}. Please contact support manually.`;
                       }
-                      
-                    } catch (ticketError) {
-                      console.log(`❌ Error during ticket creation: ${ticketError.message}`);
+                    } else {
+                      // User issue provided - syntax error info will be combined into main ticket
+                      console.log(`→ Syntax errors detected but user issue provided - will combine into comprehensive ticket`);
                       
                       reachabilityAnalysis.supportTicket = {
                         created: false,
                         success: false,
-                        error: ticketError.message,
-                        message: `Error during ticket creation: ${ticketError.message}`
+                        willCombine: true,
+                        message: 'Syntax error details will be included in comprehensive user issue ticket'
                       };
+                      
+                      reachabilityAnalysis.recommendation = `500 Internal Server Error caused by PHP syntax errors. This will be included in your support ticket along with your reported issue. DNS and AutoSSL checks passed - issue is code-related.`;
                     }
                   } else {
                     // No syntax errors in last 10 lines
@@ -1618,30 +1635,170 @@ exports.checkServiceStatus = async (req, res, next) => {
       const deptid = process.env.TECHSUPPORT_DEPTID;
       // Only use deptname if deptid is not provided (deptid takes priority)
       const deptname = deptid ? undefined : (process.env.TECHSUPPORT_DEPTNAME || 'Technical Support');
-      const subject = `Issue with ${serviceName}`;
       
-      // Build detailed ticket message
-      let ticketMessage = `=== SERVICE ISSUE REPORTED ===\n`;
-      ticketMessage += `Service: ${serviceName}\n`;
-      ticketMessage += `Status: ${result.status}\n`;
-      if (domain) {
-        ticketMessage += `Domain: ${domain}\n`;
-      }
-      if (serviceId) {
-        ticketMessage += `Service ID: ${serviceId}\n`;
-      }
-      if (result.domainStatus) {
-        ticketMessage += `Domain Status: ${result.domainStatus}\n`;
-      }
-      if (result.hostingStatus) {
-        ticketMessage += `Hosting Status: ${result.hostingStatus}\n`;
-      }
-      if (nextDueDate) {
-        ticketMessage += `Next Due Date: ${nextDueDate}\n`;
-      }
+      // Check if any automated analysis was performed that should be included
+      const syntaxErrorsDetected = reachabilityAnalysis?.errorLog?.isSyntaxErrorIssue && 
+                                   reachabilityAnalysis?.errorLog?.last10SyntaxErrors?.length > 0;
       
-      ticketMessage += `\n=== ISSUE DESCRIPTION ===\n`;
-      ticketMessage += String(issue);
+      const dnsIssuesDetected = dnsZoneAnalysis && !dnsZoneAnalysis.dnsConsistent;
+      const sslIssuesDetected = reachabilityAnalysis?.ssl && !reachabilityAnalysis.ssl.valid;
+      const autoSSLAttempted = reachabilityAnalysis?.autoSSL?.attempted;
+      
+      const automatedAnalysisPerformed = syntaxErrorsDetected || dnsIssuesDetected || sslIssuesDetected || autoSSLAttempted;
+      
+      const syntaxTicketCreated = reachabilityAnalysis?.supportTicket?.created && 
+                                  reachabilityAnalysis?.supportTicket?.success;
+      
+      let subject, ticketMessage;
+      
+      if (automatedAnalysisPerformed) {
+        // Combine user issue with automated analysis findings in one comprehensive ticket
+        if (syntaxErrorsDetected) {
+          subject = `Service Issue with PHP Syntax Errors - ${serviceName}`;
+        } else if (sslIssuesDetected) {
+          subject = `Service Issue with SSL Problems - ${serviceName}`;
+        } else if (dnsIssuesDetected) {
+          subject = `Service Issue with DNS Problems - ${serviceName}`;
+        } else {
+          subject = `Service Issue with Technical Analysis - ${serviceName}`;
+        }
+        
+        ticketMessage = `=== COMPREHENSIVE SERVICE ISSUE REPORT ===\n`;
+        ticketMessage += `Service: ${serviceName}\n`;
+        ticketMessage += `Status: ${result.status}\n`;
+        if (domain) {
+          ticketMessage += `Domain: ${domain}\n`;
+        }
+        if (serviceId) {
+          ticketMessage += `Service ID: ${serviceId}\n`;
+        }
+        if (result.domainStatus) {
+          ticketMessage += `Domain Status: ${result.domainStatus}\n`;
+        }
+        if (result.hostingStatus) {
+          ticketMessage += `Hosting Status: ${result.hostingStatus}\n`;
+        }
+        if (nextDueDate) {
+          ticketMessage += `Next Due Date: ${nextDueDate}\n`;
+        }
+        
+        ticketMessage += `\n=== USER REPORTED ISSUE ===\n`;
+        ticketMessage += String(issue);
+        
+        ticketMessage += `\n=== AUTOMATED ANALYSIS FINDINGS ===\n`;
+        
+        if (syntaxErrorsDetected) {
+          ticketMessage += `Primary Issue: 500 Internal Server Error caused by PHP syntax errors\n`;
+        } else if (sslIssuesDetected) {
+          ticketMessage += `Primary Issue: SSL certificate problems detected\n`;
+        } else if (dnsIssuesDetected) {
+          ticketMessage += `Primary Issue: DNS configuration problems detected\n`;
+        }
+        
+        ticketMessage += `DNS Check: ${reachabilityAnalysis?.dnsConsistent ? 'Passed' : 'Issues detected'}\n`;
+        ticketMessage += `SSL Check: ${reachabilityAnalysis?.ssl?.valid ? 'Valid' : 'Issues detected'}\n`;
+        ticketMessage += `Server Connectivity: ${reachabilityAnalysis?.reachable ? 'Reachable' : 'Issues detected'}\n`;
+        
+        // Include DNS zone analysis if available
+        if (dnsZoneAnalysis) {
+          ticketMessage += `DNS Zone Analysis: ${dnsZoneAnalysis.dnsConsistent ? 'Consistent' : 'Issues detected'}\n`;
+          if (dnsZoneAnalysis.autoFixAttempted) {
+            ticketMessage += `DNS Auto-fix Attempted: ${dnsZoneAnalysis.autoFixError ? 'Failed - ' + dnsZoneAnalysis.autoFixError : 'Success'}\n`;
+          }
+        }
+        
+        // Include AutoSSL analysis if available
+        if (reachabilityAnalysis?.autoSSL) {
+          ticketMessage += `AutoSSL Management: ${reachabilityAnalysis.autoSSL.success ? 'Success' : 'Failed - ' + (reachabilityAnalysis.autoSSL.error || 'Unknown error')}\n`;
+        }
+        
+        // Include specific analysis details based on what was detected
+        if (syntaxErrorsDetected && reachabilityAnalysis?.errorLog?.last10SyntaxErrors?.length > 0) {
+          ticketMessage += `\n=== PHP SYNTAX ERRORS DETECTED ===\n`;
+          ticketMessage += `Total syntax errors in recent log entries: ${reachabilityAnalysis.errorLog.last10SyntaxErrors.length}\n\n`;
+          
+          reachabilityAnalysis.errorLog.last10SyntaxErrors.forEach((error, index) => {
+            ticketMessage += `Error ${index + 1}:\n`;
+            ticketMessage += `File: ${error.file || 'Unknown'}\n`;
+            ticketMessage += `Line: ${error.line || 'Unknown'}\n`;
+            ticketMessage += `Error: ${error.error || 'Unknown error'}\n`;
+            if (error.timestamp) {
+              ticketMessage += `Time: ${error.timestamp}\n`;
+            }
+            ticketMessage += `\n`;
+          });
+        }
+        
+        if (sslIssuesDetected && reachabilityAnalysis?.ssl) {
+          ticketMessage += `\n=== SSL CERTIFICATE ISSUES ===\n`;
+          ticketMessage += `SSL Status: ${reachabilityAnalysis.ssl.valid ? 'Valid' : 'Invalid'}\n`;
+          if (reachabilityAnalysis.ssl.error) {
+            ticketMessage += `SSL Error: ${reachabilityAnalysis.ssl.error}\n`;
+          }
+          if (reachabilityAnalysis.ssl.issuer) {
+            ticketMessage += `Current Issuer: ${reachabilityAnalysis.ssl.issuer}\n`;
+          }
+          if (reachabilityAnalysis.ssl.warnings?.length > 0) {
+            ticketMessage += `SSL Warnings: ${reachabilityAnalysis.ssl.warnings.join(', ')}\n`;
+          }
+          ticketMessage += `\n`;
+        }
+        
+        if (dnsIssuesDetected && dnsZoneAnalysis) {
+          ticketMessage += `\n=== DNS CONFIGURATION ISSUES ===\n`;
+          ticketMessage += `DNS Consistency: ${dnsZoneAnalysis.dnsConsistent ? 'Consistent' : 'Inconsistent'}\n`;
+          if (dnsZoneAnalysis.issue) {
+            ticketMessage += `DNS Issue: ${dnsZoneAnalysis.issue}\n`;
+          }
+          if (dnsZoneAnalysis.recommendation) {
+            ticketMessage += `DNS Recommendation: ${dnsZoneAnalysis.recommendation}\n`;
+          }
+          ticketMessage += `\n`;
+        }
+        
+        if (syntaxTicketCreated && reachabilityAnalysis?.supportTicket?.ticketId) {
+          ticketMessage += `\nNote: Initial automated analysis was performed (reference ticket #${reachabilityAnalysis.supportTicket.ticketId} - this comprehensive ticket supersedes it).\n`;
+        }
+        
+        ticketMessage += `\n=== RECOMMENDATION ===\n`;
+        if (syntaxErrorsDetected) {
+          ticketMessage += `The reported issue appears to be related to PHP syntax errors causing 500 Internal Server Error. `;
+          ticketMessage += `Please review and fix the PHP syntax errors in the website code. `;
+        } else if (sslIssuesDetected) {
+          ticketMessage += `The reported issue appears to be related to SSL certificate problems. `;
+          ticketMessage += `Please check SSL certificate configuration and renewal. `;
+        } else if (dnsIssuesDetected) {
+          ticketMessage += `The reported issue appears to be related to DNS configuration problems. `;
+          ticketMessage += `Please check DNS settings and nameserver configuration. `;
+        }
+        ticketMessage += `Our technical team will investigate all findings and provide assistance.\n`;
+        
+      } else {
+        // Standard ticket for user issue without syntax errors
+        subject = `Issue with ${serviceName}`;
+        
+        ticketMessage = `=== SERVICE ISSUE REPORTED ===\n`;
+        ticketMessage += `Service: ${serviceName}\n`;
+        ticketMessage += `Status: ${result.status}\n`;
+        if (domain) {
+          ticketMessage += `Domain: ${domain}\n`;
+        }
+        if (serviceId) {
+          ticketMessage += `Service ID: ${serviceId}\n`;
+        }
+        if (result.domainStatus) {
+          ticketMessage += `Domain Status: ${result.domainStatus}\n`;
+        }
+        if (result.hostingStatus) {
+          ticketMessage += `Hosting Status: ${result.hostingStatus}\n`;
+        }
+        if (nextDueDate) {
+          ticketMessage += `Next Due Date: ${nextDueDate}\n`;
+        }
+        
+        ticketMessage += `\n=== ISSUE DESCRIPTION ===\n`;
+        ticketMessage += String(issue);
+      }
       
       try {
         const ticket = await openTicket({
@@ -1659,7 +1816,19 @@ exports.checkServiceStatus = async (req, res, next) => {
         // Add ticket info to response
         result.ticketCreated = true;
         result.ticketId = ticketId;
-        result.message += ` I've opened a support ticket (#${ticketId}) for our technical team to investigate your issue.`;
+        
+        if (automatedAnalysisPerformed) {
+          let analysisTypes = [];
+          if (syntaxErrorsDetected) analysisTypes.push('PHP syntax errors');
+          if (sslIssuesDetected) analysisTypes.push('SSL issues');
+          if (dnsIssuesDetected) analysisTypes.push('DNS issues');
+          if (autoSSLAttempted) analysisTypes.push('AutoSSL management');
+          
+          const analysisDescription = analysisTypes.length > 0 ? ` (${analysisTypes.join(', ')} detected)` : '';
+          result.message += ` I've opened a comprehensive support ticket (#${ticketId}) that includes both your reported issue and our automated analysis findings${analysisDescription}.`;
+        } else {
+          result.message += ` I've opened a support ticket (#${ticketId}) for our technical team to investigate your issue.`;
+        }
         
       } catch (ticketError) {
         console.log('⚠️ Warning: Could not create support ticket:', ticketError.message);
@@ -1679,10 +1848,10 @@ exports.checkServiceStatus = async (req, res, next) => {
       return res.json(simplifiedResponse);
     }
     
-    // Default fallback
+    // Default fallback - only reached if no result was generated
     let message = `Your service ${serviceName} status is ${status}.`;
     
-    // If issue provided but no result, create ticket anyway
+    // If issue provided but no result was generated, create ticket
     if (issue) {
       
       const { openTicket } = require('../services/whmcsService');
@@ -1692,7 +1861,7 @@ exports.checkServiceStatus = async (req, res, next) => {
       const deptname = deptid ? undefined : (process.env.TECHSUPPORT_DEPTNAME || 'Technical Support');
       const subject = `Issue with ${serviceName}`;
       
-      let ticketMessage = `=== SERVICE ISSUE REPORTED ===\n`;
+      let ticketMessage = `=== SERVICE ISSUE REPORTED (FALLBACK) ===\n`;
       ticketMessage += `Service: ${serviceName}\n`;
       ticketMessage += `Status: ${status}\n`;
       if (domain) {
