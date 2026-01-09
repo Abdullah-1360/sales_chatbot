@@ -1,0 +1,126 @@
+@startuml Ticket Lookup Endpoint Workflow
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam handwritten false
+skinparam shadowing false
+skinparam roundcorner 10
+skinparam sequenceArrowThickness 2
+skinparam sequenceLifeLineBackgroundColor #F8F9FA
+skinparam sequenceParticipantBackgroundColor #E3F2FD
+skinparam sequenceActorBackgroundColor #FFF3E0
+skinparam noteBackgroundColor #FFFDE7
+skinparam noteBorderColor #FBC02D
+
+title Ticket Lookup Endpoint - Complete Workflow
+
+actor Client as C
+participant "API Gateway" as API
+participant "Ticket Controller" as TC
+participant "WHMCS Service" as WS
+participant "WHMCS API" as WHMCS
+database "WHMCS Database" as DB
+
+== Request Validation ==
+C -> API: POST /api/ticketLookup\n{"phone":"923335113646","ticket":"139242"}
+API -> TC: Route to ticketLookupController.getTicketSummary()
+
+TC -> TC: Validate Parameters
+note right: • Check phone exists\n• Check ticket exists\n• Validate phone format (≥10 digits)\n• Validate ticket format (numeric)
+
+alt Invalid Parameters
+    TC -> API: 400 Bad Request\n{"success":false,"error":"phone/ticket required"}
+    API -> C: Error Response
+    stop
+end
+
+== Ticket Lookup Strategy ==
+TC -> WS: getTicketWithClientValidation(ticketNumber, phone)
+
+WS -> WS: **Step 1: Direct Lookup**
+WS -> WHMCS: GetTicket(ticketid: "139242")
+WHMCS -> DB: SELECT * FROM tickets WHERE id = 139242
+DB -> WHMCS: Ticket Data
+WHMCS -> WS: Ticket Details
+
+alt Direct Lookup Success
+    note right of WS: searchMethod = "direct"
+else Direct Lookup Fails
+    WS -> WS: **Step 2: Parallel Department Search**
+    
+    par Support Department Search
+        WS -> WHMCS: GetTickets(deptid: 2, limitnum: 100)
+        WHMCS -> DB: SELECT * FROM tickets WHERE deptid = 2
+        DB -> WHMCS: Support Tickets
+        WHMCS -> WS: Support Department Results
+    and Billing Department Search  
+        WS -> WHMCS: GetTickets(deptid: 3, limitnum: 100)
+        WHMCS -> DB: SELECT * FROM tickets WHERE deptid = 3
+        DB -> WHMCS: Billing Tickets
+        WHMCS -> WS: Billing Department Results
+    end
+    
+    WS -> WS: Search for ticket in department results
+    
+    alt Ticket Found in Department
+        WS -> WHMCS: GetTicket(ticketid: found_ticket_id)
+        WHMCS -> WS: Full Ticket Details
+        note right of WS: searchMethod = "department_support"\nor "department_billing"
+    else Ticket Not Found
+        WS -> TC: Error: "Ticket not found"
+        TC -> API: 404 Not Found
+        API -> C: {"success":false,"error":"Ticket not found"}
+        stop
+    end
+end
+
+== Client Validation ==
+WS -> WS: Extract userid from ticket
+WS -> WHMCS: GetClientsDetails(clientid: userid)
+WHMCS -> DB: SELECT * FROM clients WHERE id = userid
+DB -> WHMCS: Client Data
+WHMCS -> WS: Client Details
+
+alt Client Not Found
+    WS -> TC: Error: "Client not found"
+    TC -> API: 404 Not Found
+    API -> C: {"success":false,"error":"Client not found"}
+    stop
+end
+
+== Phone Number Validation ==
+WS -> WS: **Phone Validation Process**
+note right of WS: • Normalize both numbers\n• Remove spaces, dashes, parentheses\n• Check exact match\n• Check partial matches
+
+WS -> WS: normalizePhone(clientPhone)\nnormalizePhone(providedPhone)
+WS -> WS: Compare normalized numbers
+
+alt Phone Numbers Match
+    note right of WS: phoneValidated = true
+else Phone Numbers Don't Match
+    WS -> WS: Create masked registered phone\n(first 4 + *** + last 3)
+    WS -> TC: Error: "Please contact from your\nregistered number 3335***646"
+    TC -> API: 403 Forbidden
+    API -> C: {"success":false,\n"error":"Please contact from your\nregistered number 3335***646"}
+    stop
+end
+
+== Success Response ==
+WS -> TC: Return validated ticket data\n{ticket, client, phoneValidated,\nsearchMethod, departmentId}
+
+TC -> TC: **Format Ticket Summary**
+note right of TC: • ticketId, ticketNumber\n• subject, status, priority\n• department, departmentId\n• client details\n• validation info\n• search method
+
+TC -> TC: generateTicketSummary(ticketData, clientData)
+
+TC -> API: 200 OK\n{"success":true,"ticket":{...}}
+API -> C: **Complete Ticket Summary**
+
+note over C: Response includes:\n• Ticket details (ID, subject, status)\n• Client information (name, email)\n• Department information\n• Search method used\n• Validation status\n• Human-readable summary
+
+== Response Examples ==
+
+note over API: **Success Response:**\n{\n  "success": true,\n  "ticket": {\n    "ticketNumber": "139242",\n    "subject": "Service Issue...",\n    "status": "In Progress",\n    "department": "Support",\n    "departmentId": "2",\n    "clientName": "Uzair Farooq",\n    "clientEmail": "uzair@example.com",\n    "phoneValidated": true,\n    "searchMethod": "direct",\n    "summary": "Ticket #139242 for Uzair Farooq..."\n  }\n}
+
+note over API: **Error Responses:**\n• 400: Invalid parameters\n• 403: Phone mismatch with masked number\n• 404: Ticket/client not found\n• 500: Server error
+
+@enduml
