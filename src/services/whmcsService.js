@@ -199,6 +199,188 @@ async function openTicket({ deptid, deptname, subject, message, clientid, priori
   return callApi('OpenTicket', base);
 }
 
+/**
+ * Get ticket details by ticket ID
+ * @param {string|number} ticketId - Ticket ID or ticket number
+ * @returns {Promise<Object>} Ticket details
+ */
+async function getTicket(ticketId) {
+  // Try both ticketid and tid parameters as WHMCS might expect different formats
+  try {
+    return await callApi('GetTicket', { ticketid: ticketId });
+  } catch (error) {
+    // If ticketid fails, try with tid parameter
+    if (error.message && error.message.includes('Ticket ID Not Found')) {
+      try {
+        return await callApi('GetTicket', { tid: ticketId });
+      } catch (tidError) {
+        // If both fail, throw the original error
+        throw error;
+      }
+    }
+    throw error;
+  }
+}
+
+/**
+ * Get tickets for a specific client
+ * @param {string|number} clientId - Client ID
+ * @param {Object} options - Additional options (status, deptid, etc.)
+ * @returns {Promise<Object>} Tickets data
+ */
+async function getTickets(clientId, options = {}) {
+  const params = {
+    clientid: clientId,
+    ...options
+  };
+  return callApi('GetTickets', params);
+}
+
+/**
+ * Get ticket by ticket number with parallel department searches and validate client phone
+ * @param {string|number} ticketNumber - Ticket number
+ * @param {string} phone - Client phone number for validation
+ * @returns {Promise<Object>} Ticket details with client validation
+ */
+async function getTicketWithClientValidation(ticketNumber, phone) {
+  try {
+    let ticketData = null;
+    let searchMethod = 'direct';
+    
+    // First, try direct ticket lookup
+    try {
+      ticketData = await getTicket(ticketNumber);
+      searchMethod = 'direct';
+    } catch (directError) {
+      // If direct lookup fails, try parallel department-specific searches
+      console.log(`→ Direct ticket lookup failed, trying department-specific searches...`);
+      
+      const departmentSearches = [];
+      
+      // Search in Support department
+      if (process.env.TECHSUPPORT_DEPTID) {
+        departmentSearches.push(
+          getTickets(null, { 
+            deptid: process.env.TECHSUPPORT_DEPTID,
+            limitnum: 100 // Increase limit to find the ticket
+          }).then(result => ({
+            department: 'Support',
+            deptid: process.env.TECHSUPPORT_DEPTID,
+            result
+          })).catch(error => ({
+            department: 'Support',
+            deptid: process.env.TECHSUPPORT_DEPTID,
+            error: error.message
+          }))
+        );
+      }
+      
+      // Search in Billing department
+      if (process.env.BILLING_DEPTID) {
+        departmentSearches.push(
+          getTickets(null, { 
+            deptid: process.env.BILLING_DEPTID,
+            limitnum: 100 // Increase limit to find the ticket
+          }).then(result => ({
+            department: 'Billing',
+            deptid: process.env.BILLING_DEPTID,
+            result
+          })).catch(error => ({
+            department: 'Billing',
+            deptid: process.env.BILLING_DEPTID,
+            error: error.message
+          }))
+        );
+      }
+      
+      // Execute parallel department searches
+      const departmentResults = await Promise.all(departmentSearches);
+      
+      // Look for the ticket in department results
+      for (const deptResult of departmentResults) {
+        if (deptResult.error) {
+          console.log(`→ ${deptResult.department} department search failed: ${deptResult.error}`);
+          continue;
+        }
+        
+        if (deptResult.result && deptResult.result.tickets && deptResult.result.tickets.ticket) {
+          const tickets = Array.isArray(deptResult.result.tickets.ticket) 
+            ? deptResult.result.tickets.ticket 
+            : [deptResult.result.tickets.ticket];
+          
+          // Find the specific ticket by ID
+          const foundTicket = tickets.find(ticket => 
+            (ticket.id && ticket.id.toString() === ticketNumber.toString()) ||
+            (ticket.tid && ticket.tid.toString() === ticketNumber.toString())
+          );
+          
+          if (foundTicket) {
+            console.log(`→ Ticket found in ${deptResult.department} department`);
+            // Get full ticket details
+            ticketData = await getTicket(foundTicket.id || foundTicket.tid);
+            searchMethod = `department_${deptResult.department.toLowerCase()}`;
+            break;
+          }
+        }
+      }
+      
+      // If still not found, throw the original error
+      if (!ticketData) {
+        throw directError;
+      }
+    }
+    
+    if (!ticketData || !ticketData.userid) {
+      throw new Error('Ticket not found or invalid ticket number');
+    }
+    
+    console.log(`→ Ticket found via ${searchMethod} search`);
+    console.log(`→ Ticket Department: ${ticketData.deptname || ticketData.department} (ID: ${ticketData.deptid || ticketData.departmentid})`);
+    
+    // Get client details to validate phone
+    const clientData = await getClientsDetails({ clientid: ticketData.userid });
+    
+    if (!clientData) {
+      throw new Error('Client not found for this ticket');
+    }
+    
+    // Validate phone number (normalize both for comparison)
+    const normalizePhone = (phoneNum) => {
+      if (!phoneNum) return '';
+      return phoneNum.toString().replace(/[\s\-\(\)\+]/g, '');
+    };
+    
+    const clientPhone = normalizePhone(clientData.phonenumber);
+    const providedPhone = normalizePhone(phone);
+    
+    // Check if phones match (exact match or provided phone is contained in client phone)
+    const phoneMatches = clientPhone === providedPhone || 
+                        clientPhone.includes(providedPhone) || 
+                        providedPhone.includes(clientPhone);
+    
+    if (!phoneMatches) {
+      // Create masked version of registered phone number
+      const maskedRegisteredPhone = clientData.phonenumber ? 
+        clientData.phonenumber.toString().substring(0, 4) + '***' + clientData.phonenumber.toString().slice(-3) :
+        'registered number';
+      
+      throw new Error(`Please contact from your registered number ${maskedRegisteredPhone}`);
+    }
+    
+    return {
+      ticket: ticketData,
+      client: clientData,
+      phoneValidated: true,
+      searchMethod: searchMethod,
+      departmentId: ticketData.deptid || ticketData.departmentid,
+      departmentName: ticketData.deptname || ticketData.department
+    };
+    
+  } catch (error) {
+    throw new Error(`Ticket lookup failed: ${error.message}`);
+  }
+}
+
 async function addOrder(params) {
   // Supports product purchase or domain renewal via domainrenewals[] syntax
   return callApi('AddOrder', params);
@@ -269,6 +451,9 @@ module.exports = {
   getSupportDepartments,
   resolveDepartmentId,
   openTicket,
+  getTicket,
+  getTickets,
+  getTicketWithClientValidation,
   addOrder,
   genInvoices,
   createInvoice,

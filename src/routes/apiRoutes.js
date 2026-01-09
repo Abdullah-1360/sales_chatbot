@@ -8,6 +8,7 @@ const billingController = require('../controllers/billingController');
 const userController = require('../controllers/userController');
 const leadsController = require('../controllers/leadsController');
 const chatsController = require('../controllers/chats');
+const ticketLookupController = require('../controllers/ticketLookupController');
 
 // GET /api/chats - Get chats with pagination
 router.get('/chats', chatsController.getChats);
@@ -20,6 +21,9 @@ router.delete('/chats/:id', chatsController.deleteChat);
 
 // GET /api/leads - Get leads with pagination  
 router.get('/leads', leadsController.getLeads);
+
+// POST /api/ticketLookup - Get ticket summary with client validation
+router.post('/ticketLookup', ticketLookupController.getTicketSummary);
 
 // DELETE /api/leads/:id - Delete a lead by ID
 router.delete('/leads/:id', leadsController.deleteLead);
