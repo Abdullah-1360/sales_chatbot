@@ -1,5 +1,5 @@
 const router = require('express').Router();
-const cphulkController = require('../controllers/cphulkController');
+const cphulkController = require('../controllers/cphulkControllerOptimized');
 
 /**
  * cPHulk Management Routes
