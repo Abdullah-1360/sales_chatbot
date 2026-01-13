@@ -143,22 +143,119 @@ exports.checkServiceStatus = async (req, res, next) => {
   // });
   
   try {
-    const { clientId, domain, serviceId, issue } = req.body || {};
+    const { clientId, domain, email, serviceId, issue } = req.body || {};
     
-    // Validate required parameters
-    if (!clientId || (!domain && !serviceId)) {
+    // Validate required parameters - need either:
+    // 1. domain (with optional email for validation)
+    // 2. email + serviceId 
+    // 3. serviceId alone (if clientId provided)
+    if (!domain && !serviceId && !email) {
       return res.status(400).json({ 
         success: false, 
-        error: 'clientId and domain or serviceId required' 
+        error: 'domain, email, or serviceId required' 
       });
     }
+    
+    let resolvedClientId = clientId;
+    let resolvedFrom = req.body._resolvedFrom;
+    
+    // PARALLEL CLIENT RESOLUTION: Try domain AND email in parallel if no clientId resolved
+    if (!resolvedClientId && (domain || email)) {
+      console.log('→ Starting parallel client resolution...');
+      
+      const parallelTasks = [];
+      
+      // Task 1: Domain resolution (if domain provided)
+      if (domain) {
+        parallelTasks.push(
+          resolveDomainToClient(domain)
+            .then(result => ({ type: 'domain', success: true, data: result }))
+            .catch(error => ({ type: 'domain', success: false, error: error.message }))
+        );
+      }
+      
+      // Task 2: Email resolution (if email provided)
+      if (email) {
+        parallelTasks.push(
+          resolveEmailToClient(email)
+            .then(result => ({ type: 'email', success: true, data: result }))
+            .catch(error => ({ type: 'email', success: false, error: error.message }))
+        );
+      }
+      
+      // Execute parallel resolution
+      const results = await Promise.allSettled(parallelTasks);
+      
+      // Process results - prioritize successful resolutions
+      let domainResult = null;
+      let emailResult = null;
+      
+      for (const result of results) {
+        if (result.status === 'fulfilled' && result.value.success) {
+          if (result.value.type === 'domain') {
+            domainResult = result.value.data;
+          } else if (result.value.type === 'email') {
+            emailResult = result.value.data;
+          }
+        }
+      }
+      
+      // Determine which resolution to use - handle edge cases
+      if (domainResult && emailResult) {
+        // Both resolved - check if they match
+        if (domainResult.clientId === emailResult.clientId) {
+          resolvedClientId = domainResult.clientId;
+          resolvedFrom = 'domain+email';
+          console.log('→ Client resolved from both domain and email (matching):', resolvedClientId);
+        } else {
+          // Edge case: Different clients found - prioritize domain over email
+          console.log('→ Domain and email resolve to different clients - prioritizing domain');
+          resolvedClientId = domainResult.clientId;
+          resolvedFrom = 'domain_priority';
+          console.log('→ Client resolved from domain (email mismatch ignored):', resolvedClientId);
+        }
+      } else if (domainResult) {
+        // Only domain resolved - email was wrong or not provided
+        resolvedClientId = domainResult.clientId;
+        resolvedFrom = 'domain';
+        console.log('→ Client resolved from domain:', resolvedClientId);
+      } else if (emailResult) {
+        // Only email resolved - domain was wrong or not provided
+        resolvedClientId = emailResult.clientId;
+        resolvedFrom = 'email';
+        console.log('→ Client resolved from email:', resolvedClientId);
+      } else {
+        // Neither resolved successfully
+        const errorMessages = [];
+        if (domain) errorMessages.push('No client found for the provided domain');
+        if (email) errorMessages.push('No client found for the provided email');
+        
+        return res.status(404).json({
+          success: false,
+          error: errorMessages.join(' and ') + '. Please verify your information.',
+          status: 'CLIENT_NOT_FOUND',
+          timestamp: new Date().toISOString()
+        });
+      }
+    }
+    
+    // If no clientId resolved, return error
+    if (!resolvedClientId) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Could not resolve client from provided information. Please provide domain or email.' 
+      });
+    }
+    
+    // Use the resolved clientId for the rest of the function
+    const finalClientId = resolvedClientId;
 
     // Parallelize initial WHMCS API calls
     const initialPromises = [];
     
     // Always get service/product from WHMCS
     initialPromises.push(
-      getServiceForClient({ clientId, domain, serviceId })
+      getServiceForClient({ clientId: finalClientId, domain, serviceId })
         .then(result => ({ type: 'service', data: result }))
         .catch(error => ({ type: 'service', error }))
     );
@@ -166,13 +263,13 @@ exports.checkServiceStatus = async (req, res, next) => {
     // If domain provided, also fetch domain registration and hosting products in parallel
     if (domain && !serviceId) {
       initialPromises.push(
-        getClientsDomains(clientId, { domain: domain })
+        getClientsDomains(finalClientId, { domain: domain })
           .then(result => ({ type: 'domains', data: result }))
           .catch(error => ({ type: 'domains', error }))
       );
       
       initialPromises.push(
-        getClientsProducts(clientId, { domain: domain })
+        getClientsProducts(finalClientId, { domain: domain })
           .then(result => ({ type: 'products', data: result }))
           .catch(error => ({ type: 'products', error }))
       );
@@ -1183,7 +1280,7 @@ exports.checkServiceStatus = async (req, res, next) => {
                           serverName, 
                           errorLogResult.last10SyntaxErrors,
                           checksStatus,
-                          clientId,
+                          finalClientId,
                           req.body.email // Pass email as fallback
                         );
                         
@@ -1622,7 +1719,7 @@ exports.checkServiceStatus = async (req, res, next) => {
       dnsZoneAnalysis,
       reachabilityAnalysis,
       svc,
-      clientId,
+      clientId: finalClientId,
       domain,
       serviceId
     });
@@ -1806,7 +1903,7 @@ exports.checkServiceStatus = async (req, res, next) => {
           deptname,
           subject,
           message: ticketMessage,
-          clientid: clientId,
+          clientid: finalClientId,
           priority: 'High',
           serviceid: svc.id
         });
@@ -1883,7 +1980,7 @@ exports.checkServiceStatus = async (req, res, next) => {
           deptname,
           subject,
           message: ticketMessage,
-          clientid: clientId,
+          clientid: finalClientId,
           priority: 'High',
           serviceid: svc.id
         });
@@ -2474,5 +2571,67 @@ exports.testReachability = async (req, res, next) => {
     next(error);
   }
 };
+
+/**
+ * Helper function to resolve domain to client
+ */
+async function resolveDomainToClient(domain) {
+  const { callApi } = require('../services/whmcsService');
+  
+  // Try GetClientsDomains first (more specific for domains)
+  const domainsData = await callApi('GetClientsDomains', { domain });
+  
+  if (domainsData && domainsData.domains) {
+    const domainsRaw = domainsData.domains;
+    const domains = domainsRaw.domain || domainsRaw;
+    const domainArray = Array.isArray(domains) ? domains : (domains ? [domains] : []);
+    
+    if (domainArray.length > 0) {
+      const uniqueUserIds = [...new Set(domainArray.map(d => String(d.userid)))];
+      
+      if (uniqueUserIds.length > 1) {
+        throw new Error('Multiple clients found for this domain');
+      }
+      
+      return { clientId: uniqueUserIds[0], source: 'domains' };
+    }
+  }
+  
+  // Fallback: Try GetClientsProducts with domain parameter
+  const productsData = await callApi('GetClientsProducts', { domain });
+  
+  if (productsData && productsData.products) {
+    const productsRaw = productsData.products;
+    const products = productsRaw.product || productsRaw;
+    const productArray = Array.isArray(products) ? products : (products ? [products] : []);
+    
+    if (productArray.length > 0) {
+      const uniqueUserIds = [...new Set(productArray.map(p => String(p.userid || p.clientid)))];
+      
+      if (uniqueUserIds.length > 1) {
+        throw new Error('Multiple clients found for this domain');
+      }
+      
+      return { clientId: uniqueUserIds[0], source: 'products' };
+    }
+  }
+  
+  throw new Error('No client found with that domain');
+}
+
+/**
+ * Helper function to resolve email to client
+ */
+async function resolveEmailToClient(email) {
+  const { getClientsDetails } = require('../services/whmcsService');
+  
+  const clientData = await getClientsDetails({ email });
+  
+  if (clientData && clientData.userid) {
+    return { clientId: String(clientData.userid), source: 'email' };
+  }
+  
+  throw new Error('No client found with that email address');
+}
 
 module.exports = exports;

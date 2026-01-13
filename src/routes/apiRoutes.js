@@ -40,8 +40,8 @@ router.post('/leads', leadsController.handleLeads);
 // POST /api/invoiceLookup - with enhanced parallel validation (phone validation handled in controller)
 router.post('/invoiceLookup', invoiceController.invoiceLookup);
 
-// POST /api/serviceStatus - with phone validation
-router.post('/serviceStatus', resolveClientId, validatePhoneNumber, serviceStatusController.checkServiceStatus);
+// POST /api/serviceStatus - with phone validation (parallel client resolution handled in controller)
+router.post('/serviceStatus', validatePhoneNumber, serviceStatusController.checkServiceStatus);
 
 // POST /api/myServices - Get all services for a client (email only)
 router.post('/myServices', resolveClientId, serviceStatusController.getMyServices);
