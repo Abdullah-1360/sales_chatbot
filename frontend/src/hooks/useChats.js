@@ -60,6 +60,7 @@ const useChats = () => {
 
   /**
    * Add a new chat to the top of the list or update existing chat
+   * Enhanced to handle message updates and User_Ns matching
    * 
    * @param {Object} newChat - The new chat object to add or update
    */
@@ -69,12 +70,18 @@ const useChats = () => {
     setChats((prevChats) => {
       console.log('📊 Current chats count:', prevChats.length);
       
-      // Check if chat already exists by ID
+      // Check if chat already exists by ID or User_Ns
       const existingChatIndex = prevChats.findIndex((chat) => {
         const chatId = chat.id || chat._id;
         const newChatId = newChat.id || newChat._id;
         
+        // Match by ID first
         if (chatId && newChatId && chatId === newChatId) {
+          return true;
+        }
+        
+        // Match by User_Ns if both have it
+        if (chat.userNs && newChat.userNs && chat.userNs === newChat.userNs) {
           return true;
         }
         
@@ -83,28 +90,106 @@ const useChats = () => {
 
       if (existingChatIndex !== -1) {
         // Chat exists - update it
-        console.log('🔄 Chat already exists, updating:', prevChats[existingChatIndex].id);
+        console.log('🔄 Chat already exists, updating:', prevChats[existingChatIndex].id || prevChats[existingChatIndex].userNs);
         
         const updatedChats = [...prevChats];
+        const existingChat = updatedChats[existingChatIndex];
+        
+        // Handle message appending for same userNs
+        let updatedMessages = existingChat.messages || [];
+        let isNewMessage = false;
+        
+        // If new chat has a message and it's different from the last message
+        if (newChat.message || newChat.comment || newChat.description) {
+          const newMessageText = newChat.message || newChat.comment || newChat.description;
+          const lastMessage = updatedMessages.length > 0 ? updatedMessages[updatedMessages.length - 1] : null;
+          
+          // Check if this is actually a new message (different from last message)
+          if (!lastMessage || lastMessage.text !== newMessageText) {
+            const newMessageObj = {
+              id: Date.now(), // Simple ID generation
+              text: newMessageText,
+              timestamp: new Date().toISOString()
+            };
+            
+            updatedMessages = [...updatedMessages, newMessageObj];
+            isNewMessage = true;
+            console.log('📝 New message appended to existing chat');
+          }
+        }
+        
+        // If newChat has messages array, merge them
+        if (newChat.messages && Array.isArray(newChat.messages)) {
+          // Merge messages, avoiding duplicates
+          const existingMessageTexts = new Set(updatedMessages.map(m => m.text));
+          const newMessages = newChat.messages.filter(m => !existingMessageTexts.has(m.text));
+          
+          if (newMessages.length > 0) {
+            updatedMessages = [...updatedMessages, ...newMessages];
+            isNewMessage = true;
+            console.log(`📝 ${newMessages.length} new messages merged to existing chat`);
+          }
+        }
+        
+        // Merge the chat data, preserving important fields
         updatedChats[existingChatIndex] = {
-          ...updatedChats[existingChatIndex],
+          ...existingChat,
           ...newChat,
           // Preserve the original createdAt if not provided
-          createdAt: newChat.createdAt || updatedChats[existingChatIndex].createdAt
+          createdAt: newChat.createdAt || existingChat.createdAt,
+          // Update lastMessageAt to current time if new message
+          lastMessageAt: isNewMessage ? new Date().toISOString() : (newChat.lastMessageAt || existingChat.lastMessageAt),
+          // Use updated messages array
+          messages: updatedMessages,
+          // Update message count
+          messageCount: updatedMessages.length,
+          // Mark if this is a message update
+          isMessageUpdate: isNewMessage
         };
         
+        // Re-sort to move updated chat to top based on lastMessageAt
+        const sortedChats = updatedChats.sort((a, b) => {
+          const dateA = new Date(a.lastMessageAt || a.createdAt);
+          const dateB = new Date(b.lastMessageAt || b.createdAt);
+          return dateB - dateA; // Descending order
+        });
+        
         console.log('✅ Chat updated successfully');
-        return updatedChats;
+        return sortedChats;
       }
 
       console.log('✨ Adding new chat to list');
       // Insert new chat at the top and maintain sort order
-      const updatedChats = [newChat, ...prevChats];
+      const initialMessages = [];
       
-      // Re-sort to ensure proper ordering
+      // Create initial message from the chat data
+      if (newChat.message || newChat.comment || newChat.description) {
+        initialMessages.push({
+          id: Date.now(),
+          text: newChat.message || newChat.comment || newChat.description,
+          timestamp: new Date().toISOString()
+        });
+      }
+      
+      // Add any existing messages
+      if (newChat.messages && Array.isArray(newChat.messages)) {
+        initialMessages.push(...newChat.messages);
+      }
+      
+      const newChatWithDefaults = {
+        ...newChat,
+        lastMessageAt: newChat.lastMessageAt || newChat.createdAt || new Date().toISOString(),
+        messageCount: initialMessages.length || 1,
+        messages: initialMessages,
+        isMessageUpdate: false
+      };
+      
+      const updatedChats = [newChatWithDefaults, ...prevChats];
+      
+      // Re-sort to ensure proper ordering by lastMessageAt
       const sortedChats = updatedChats.sort((a, b) => {
-        const dateA = new Date(a.createdAt);
-        const dateB = new Date(b.createdAt);
+        const dateA = new Date(a.lastMessageAt || a.createdAt);
+        const dateB = new Date(b.lastMessageAt || b.createdAt);
         return dateB - dateA; // Descending order
       });
       

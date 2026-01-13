@@ -1,12 +1,14 @@
 import React from 'react';
 import { formatRelativeTime } from '../utils/dateFormatter';
+import useChatNotifications from '../hooks/useChatNotifications';
 import '../styles/ChatCard.css';
 
 /**
  * ChatCard Component
- * Displays individual chat information in a modern card format with expand/collapse
+ * Enhanced to display multiple messages per chat with expand/collapse
  */
 const ChatCard = ({ chat, isExpanded = false, onToggleExpand, onDismiss }) => {
+  const { handleViewChat } = useChatNotifications();
   // Extract chat properties with fallbacks
   const {
     firstname = '',
@@ -15,16 +17,20 @@ const ChatCard = ({ chat, isExpanded = false, onToggleExpand, onDismiss }) => {
     phone = '',
     description = '',
     comment = '',
+    messages = [],
+    messageCount = 1,
+    lastMessageAt,
     createdAt,
     source = 'Chatbot',
     userNs = '',
   } = chat;
 
-  // Use comment if available, otherwise fall back to description
-  const messageText = comment || description;
+  // Use the latest message text for preview, fallback to description/comment
+  const latestMessage = messages.length > 0 ? messages[messages.length - 1] : null;
+  const messageText = latestMessage?.text || comment || description;
 
   const fullName = `${firstname} ${lastname}`.trim() || 'Unknown Name';
-  const relativeTime = formatRelativeTime(createdAt);
+  const relativeTime = formatRelativeTime(lastMessageAt || createdAt);
 
   // Get initials for avatar
   const getInitials = () => {
@@ -49,11 +55,39 @@ const ChatCard = ({ chat, isExpanded = false, onToggleExpand, onDismiss }) => {
     return `https://www.uchat.com.au/inbox/${userNs}`;
   };
 
+  // Handle view chat action with API call
+  const handleViewChatClick = async (e) => {
+    e.stopPropagation();
+    
+    try {
+      console.log('🔗 View Chat clicked for:', chat.userNs);
+      await handleViewChat(chat);
+    } catch (error) {
+      console.error('❌ Error handling view chat:', error);
+      // Fallback: still open the URL even if API call fails
+      const uchatUrl = getUChatUrl();
+      if (uchatUrl && uchatUrl !== '#') {
+        window.open(uchatUrl, '_blank', 'noopener,noreferrer');
+      }
+    }
+  };
+
   // Handle dismiss action
   const handleDismiss = () => {
     if (onDismiss) {
       onDismiss(chat);
     }
+  };
+
+  // Format message timestamp
+  const formatMessageTime = (timestamp) => {
+    return new Date(timestamp).toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true
+    });
   };
 
   return (
@@ -65,12 +99,22 @@ const ChatCard = ({ chat, isExpanded = false, onToggleExpand, onDismiss }) => {
       >
         <div className="chat-card-avatar" style={{ backgroundColor: getAvatarColor() }}>
           {getInitials()}
+          {messageCount > 1 && (
+            <div className="message-count-badge">{messageCount}</div>
+          )}
         </div>
         
         <div className="chat-card-info">
           <div className="chat-card-name-row">
             <h3 className="chat-card-name">{fullName}</h3>
-            <span className="chat-card-badge">{source}</span>
+            <div className="chat-card-badges">
+              <span className="chat-card-badge">{source}</span>
+              {messageCount > 1 && (
+                <span className="chat-card-badge messages-badge">
+                  {messageCount} messages
+                </span>
+              )}
+            </div>
           </div>
           <div className="chat-card-preview">
             {email && (
@@ -91,6 +135,11 @@ const ChatCard = ({ chat, isExpanded = false, onToggleExpand, onDismiss }) => {
               </span>
             )}
           </div>
+          {messageText && (
+            <div className="chat-card-message-preview">
+              <span className="latest-message-text">{messageText}</span>
+            </div>
+          )}
         </div>
 
         <div className="chat-card-meta">
@@ -150,7 +199,7 @@ const ChatCard = ({ chat, isExpanded = false, onToggleExpand, onDismiss }) => {
                 <div className="chat-detail-icon phone-icon">
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/>
-                  </svg>
+                </svg>
                 </div>
                 <div className="chat-detail-content">
                   <span className="chat-detail-label">Phone Number</span>
@@ -161,18 +210,31 @@ const ChatCard = ({ chat, isExpanded = false, onToggleExpand, onDismiss }) => {
               </div>
             )}
 
-            {messageText && (
+            {/* Messages Section */}
+            {messages.length > 0 && (
               <div className="chat-detail-item full-width">
-                <div className="chat-detail-icon description-icon">
+                <div className="chat-detail-icon messages-icon">
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
                   </svg>
                 </div>
                 <div className="chat-detail-content">
-                  <span className="chat-detail-label">Message</span>
-                  <p className="chat-detail-value description-text">
-                    {messageText}
-                  </p>
+                  <span className="chat-detail-label">
+                    Messages ({messageCount})
+                  </span>
+                  <div className="messages-container">
+                    {messages.map((message, index) => (
+                      <div key={message.id || index} className="message-item">
+                        <div className="message-header">
+                          <span className="message-number">#{index + 1}</span>
+                          <span className="message-time">
+                            {formatMessageTime(message.timestamp)}
+                          </span>
+                        </div>
+                        <p className="message-text">{message.text}</p>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
             )}
@@ -185,26 +247,46 @@ const ChatCard = ({ chat, isExpanded = false, onToggleExpand, onDismiss }) => {
                 </svg>
               </div>
               <div className="chat-detail-content">
-                <span className="chat-detail-label">Received</span>
+                <span className="chat-detail-label">
+                  {messageCount > 1 ? 'Last Message' : 'Received'}
+                </span>
                 <span className="chat-detail-value">
                   {relativeTime}
                   <span className="chat-detail-subtext">
-                    {new Date(createdAt).toLocaleString()}
+                    {new Date(lastMessageAt || createdAt).toLocaleString()}
                   </span>
                 </span>
               </div>
             </div>
+
+            {messageCount > 1 && (
+              <div className="chat-detail-item">
+                <div className="chat-detail-icon conversation-icon">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                    <path d="M13 8H7"/>
+                    <path d="M17 12H7"/>
+                  </svg>
+                </div>
+                <div className="chat-detail-content">
+                  <span className="chat-detail-label">First Message</span>
+                  <span className="chat-detail-value">
+                    {formatRelativeTime(createdAt)}
+                    <span className="chat-detail-subtext">
+                      {new Date(createdAt).toLocaleString()}
+                    </span>
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Action Buttons */}
           <div className="chat-card-actions">
             {userNs && (
-              <a 
-                href={getUChatUrl()} 
-                target="_blank" 
-                rel="noopener noreferrer"
+              <button 
                 className="chat-action-btn primary" 
-                onClick={(e) => e.stopPropagation()}
+                onClick={handleViewChatClick}
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
@@ -212,7 +294,7 @@ const ChatCard = ({ chat, isExpanded = false, onToggleExpand, onDismiss }) => {
                   <line x1="9" y1="14" x2="13" y2="14"/>
                 </svg>
                 View Chat
-              </a>
+              </button>
             )}
             <button 
               className="chat-action-btn danger" 

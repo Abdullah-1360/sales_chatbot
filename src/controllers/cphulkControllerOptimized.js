@@ -25,12 +25,13 @@ const whitelistIPSchema = Joi.object({
   phone: Joi.string().optional(),
   reason: Joi.string().max(255).optional()
 }).custom((value, helpers) => {
-  if (value.domain && !value.email && !value.phone) {
-    return helpers.error('custom.domainRequiresContact');
+  // Require at least domain or email for client identification
+  if (!value.domain && !value.email) {
+    return helpers.error('custom.clientIdentificationRequired');
   }
   return value;
-}, 'Domain contact validation').messages({
-  'custom.domainRequiresContact': 'When domain is provided, either email or phone is required for client identification'
+}, 'Client identification validation').messages({
+  'custom.clientIdentificationRequired': 'Either domain or email is required for client identification'
 });
 
 // Enhanced caching with TTL and LRU eviction
@@ -152,57 +153,187 @@ class OptimizedCphulkController {
         });
       }
 
-      // OPTIMIZATION 2: Parallel credential resolution and initial analysis
+      // OPTIMIZATION 2: Enhanced parallel client resolution with domain/email validation
       const parallelInitTasks = [];
       let clientInfo = null;
       let serverInfo = null;
+      let resolvedClientId = null;
+      let resolvedFrom = null;
 
-      if (value.domain) {
+      if (value.domain || value.email) {
         // Check credential cache first
-        const credCacheKey = `cred:${value.domain}:${value.email || value.phone}`;
+        const credCacheKey = `cred:${value.domain || 'no-domain'}:${value.email || value.phone || 'no-contact'}`;
         const cachedCredentials = credentialCache.get(credCacheKey);
         
         if (cachedCredentials) {
           clientInfo = cachedCredentials.clientInfo;
           serverInfo = cachedCredentials.serverInfo;
+          resolvedClientId = clientInfo?.id;
+          resolvedFrom = cachedCredentials.resolvedFrom;
         } else {
-          parallelInitTasks.push(
-            this.credentialResolver.resolveCpanelCredentials(value.domain, value.email, value.phone)
-              .then(result => ({ type: 'credentials', data: result }))
-              .catch(error => ({ type: 'credentials', error }))
-          );
+          // PARALLEL VALIDATION: Try domain OR email in parallel
+          const parallelResolutionTasks = [];
+          
+          // Task 1: Domain resolution (if domain provided)
+          if (value.domain) {
+            parallelResolutionTasks.push(
+              this.resolveDomainToClient(value.domain)
+                .then(result => ({ type: 'domain', success: true, data: result }))
+                .catch(error => ({ type: 'domain', success: false, error: error.message }))
+            );
+          }
+          
+          // Task 2: Email resolution (if email provided)
+          if (value.email) {
+            parallelResolutionTasks.push(
+              this.resolveEmailToClient(value.email)
+                .then(result => ({ type: 'email', success: true, data: result }))
+                .catch(error => ({ type: 'email', success: false, error: error.message }))
+            );
+          }
+          
+          // Execute parallel client resolution
+          const resolutionResults = await Promise.allSettled(parallelResolutionTasks);
+          
+          // Process results - prioritize successful resolutions
+          let domainResult = null;
+          let emailResult = null;
+          
+          for (const result of resolutionResults) {
+            if (result.status === 'fulfilled' && result.value.success) {
+              if (result.value.type === 'domain') {
+                domainResult = result.value.data;
+              } else if (result.value.type === 'email') {
+                emailResult = result.value.data;
+              }
+            }
+          }
+          
+          // Determine which resolution to use - handle edge cases
+          if (domainResult && emailResult) {
+            // Both resolved - check if they match
+            if (domainResult.clientId === emailResult.clientId) {
+              resolvedClientId = domainResult.clientId;
+              resolvedFrom = 'domain+email';
+              console.log('→ Client resolved from both domain and email (matching):', resolvedClientId);
+            } else {
+              // Edge case: Different clients found - prioritize domain over email
+              console.log('→ Domain and email resolve to different clients - prioritizing domain');
+              resolvedClientId = domainResult.clientId;
+              resolvedFrom = 'domain_priority';
+              console.log('→ Client resolved from domain (email mismatch ignored):', resolvedClientId);
+            }
+          } else if (domainResult) {
+            // Only domain resolved - email was wrong or not provided
+            resolvedClientId = domainResult.clientId;
+            resolvedFrom = 'domain';
+            console.log('→ Client resolved from domain:', resolvedClientId);
+          } else if (emailResult) {
+            // Only email resolved - domain was wrong or not provided
+            resolvedClientId = emailResult.clientId;
+            resolvedFrom = 'email';
+            console.log('→ Client resolved from email:', resolvedClientId);
+          } else {
+            // Neither resolved successfully
+            const errorMessages = [];
+            if (value.domain) errorMessages.push('No client found for the provided domain');
+            if (value.email) errorMessages.push('No client found for the provided email');
+            
+            return res.status(404).json({
+              success: false,
+              error: errorMessages.join(' and ') + '. Please verify your information.',
+              status: 'CLIENT_NOT_FOUND',
+              timestamp: new Date().toISOString()
+            });
+          }
+          
+          // Get client details and server info
+          if (resolvedClientId) {
+            try {
+              const { getClientsDetails } = require('../services/whmcsService');
+              const clientData = await getClientsDetails({ clientid: resolvedClientId });
+              
+              if (clientData) {
+                clientInfo = {
+                  id: resolvedClientId,
+                  email: clientData.email,
+                  firstname: clientData.firstname,
+                  lastname: clientData.lastname
+                };
+                
+                // Get server info for the domain if provided
+                if (value.domain) {
+                  serverInfo = await this.getServerInfoForDomain(value.domain, resolvedClientId);
+                }
+                
+                // Cache the resolved credentials
+                credentialCache.set(credCacheKey, { 
+                  clientInfo, 
+                  serverInfo, 
+                  resolvedFrom,
+                  timestamp: Date.now()
+                });
+              }
+            } catch (error) {
+              console.log('✗ Error getting client details:', error.message);
+              return res.status(500).json({
+                success: false,
+                error: 'Failed to retrieve client information',
+                status: 'CLIENT_LOOKUP_ERROR',
+                timestamp: new Date().toISOString()
+              });
+            }
+          }
         }
-      }
-
-      // Execute initial parallel tasks
-      if (parallelInitTasks.length > 0) {
-        const initResults = await Promise.allSettled(parallelInitTasks);
         
-        const credResult = initResults.find(r => r.value?.type === 'credentials');
-        if (credResult && credResult.status === 'fulfilled' && !credResult.value.error) {
-          if (!credResult.value.data.success) {
-            // Handle credential errors early
-            if (credResult.value.data.error?.type === 'phone_verification_failed') {
+        // SECOND-LEVEL VALIDATION: Phone validation if provided
+        if (value.phone && resolvedClientId) {
+          console.log('→ Performing second-level phone validation...');
+          
+          try {
+            const phoneValidationResult = await this.validateClientPhone(resolvedClientId, value.phone);
+            
+            if (!phoneValidationResult.valid) {
+              // Phone validation failed - return masked phone error with update instructions
+              const maskedPhone = phoneValidationResult.registeredPhone 
+                ? this.maskPhoneNumber(phoneValidationResult.registeredPhone)
+                : 'your registered number';
+                
               return res.status(400).json({
                 success: false,
-                error: credResult.value.data.error.message,
-                registeredPhone: credResult.value.data.error.registeredPhone
+                error: `Please contact from ${maskedPhone} or change the phone number from your client area to ${value.phone} (current number)`,
+                status: 'PHONE_VALIDATION_FAILED',
+                timestamp: new Date().toISOString()
               });
             }
             
-            const formattedError = ResponseFormatter.formatCredentialError(
-              value.domain,
-              credResult.value.data.error
-            );
-            return res.status(404).json(formattedError);
+            console.log('✓ Phone validation passed');
+          } catch (error) {
+            console.log('✗ Phone validation error:', error.message);
+            return res.status(500).json({
+              success: false,
+              error: 'Phone validation failed. Please try again or contact support.',
+              status: 'PHONE_VALIDATION_ERROR',
+              timestamp: new Date().toISOString()
+            });
           }
-          
-          clientInfo = credResult.value.data.clientInfo;
-          serverInfo = credResult.value.data.serverInfo;
-          
-          // Cache credentials for future use
-          const credCacheKey = `cred:${value.domain}:${value.email || value.phone}`;
-          credentialCache.set(credCacheKey, { clientInfo, serverInfo });
+        } else if (value.phone && !resolvedClientId) {
+          return res.status(400).json({
+            success: false,
+            error: 'Please provide either a domain name or email address along with phone number for validation.',
+            status: 'MISSING_CLIENT_IDENTIFIER',
+            timestamp: new Date().toISOString()
+          });
+        }
+        
+        // Validate that we have a resolved client
+        if (!resolvedClientId) {
+          return res.status(400).json({ 
+            success: false, 
+            error: 'Please provide either a domain name or email address to identify your account.',
+            status: 'CLIENT_IDENTIFICATION_REQUIRED',
+            timestamp: new Date().toISOString()
+          });
         }
       }
 
@@ -215,7 +346,6 @@ class OptimizedCphulkController {
         const cachedCSF = analysisCache.get(csfCacheKey);
         
         if (cachedCSF) {
-          console.log(`[${requestId}] ⚡ Using cached CSF analysis`);
           parallelTasks.push(Promise.resolve({ type: 'csf', data: cachedCSF, cached: true }));
         } else {
           parallelTasks.push(
@@ -244,7 +374,6 @@ class OptimizedCphulkController {
       const cachedCPHulk = analysisCache.get(cphulkCacheKey);
       
       if (cachedCPHulk) {
-        console.log(`[${requestId}] ⚡ Using cached cPHulk analysis`);
         parallelTasks.push(Promise.resolve({ type: 'cphulk', data: cachedCPHulk, cached: true }));
       } else {
         parallelTasks.push(
@@ -272,7 +401,6 @@ class OptimizedCphulkController {
       }
 
       // OPTIMIZATION 4: Execute all analysis tasks in parallel
-      console.log(`[${requestId}] ⚡ Executing ${parallelTasks.length} parallel analysis tasks`);
       this.metrics.parallelOperations += parallelTasks.length;
       
       const analysisResults = await Promise.allSettled(parallelTasks);
@@ -285,11 +413,6 @@ class OptimizedCphulkController {
       const csfAnalysis = csfResult?.value?.data || { success: false, error: 'CSF analysis failed' };
       const cphulkAnalysis = cphulkResult?.value?.data || { success: false, error: 'cPHulk analysis failed' };
       const serviceValidation = serviceResult?.value?.data;
-
-      console.log(`[${requestId}] 📊 Analysis results:`);
-      console.log(`   - CSF: ${csfAnalysis.success ? 'SUCCESS' : 'FAILED'} ${csfResult?.value?.cached ? '(cached)' : ''}`);
-      console.log(`   - cPHulk: ${cphulkAnalysis.success ? 'SUCCESS' : 'FAILED'} ${cphulkResult?.value?.cached ? '(cached)' : ''}`);
-      console.log(`   - Service: ${serviceValidation ? (serviceValidation.valid ? 'VALID' : 'INVALID') : 'SKIPPED'}`);
 
       // Handle service validation failure
       if (serviceValidation && !serviceValidation.valid) {
@@ -307,29 +430,21 @@ class OptimizedCphulkController {
       const csfIssueDetected = csfAnalysis.success && csfAnalysis.csf && csfAnalysis.csf.inDenyList;
       const cphulkIssueDetected = cphulkAnalysis.success && cphulkAnalysis.hasFailedLogins;
       
-      console.log(`[${requestId}] 🎯 Issue detection:`);
-      console.log(`   - CSF block: ${csfIssueDetected ? 'YES' : 'NO'}`);
-      console.log(`   - cPHulk failures: ${cphulkIssueDetected ? 'YES' : 'NO'}`);
-
       let result;
       
       if (csfIssueDetected && cphulkIssueDetected) {
-        console.log(`[${requestId}] ⚡ Executing optimized dual remediation`);
         result = await this.executeOptimizedDualRemediation(
           requestId, value.ip, serverInfo, clientInfo, value.domain, value.reason, csfAnalysis, cphulkAnalysis
         );
       } else if (csfIssueDetected) {
-        console.log(`[${requestId}] ⚡ Executing optimized CSF-only remediation`);
         result = await this.executeOptimizedCSFRemediation(
           requestId, value.ip, serverInfo, clientInfo, value.domain, value.reason, csfAnalysis
         );
       } else if (cphulkIssueDetected) {
-        console.log(`[${requestId}] ⚡ Executing optimized cPHulk-only remediation`);
         result = await this.executeOptimizedCPHulkRemediation(
           requestId, value.ip, serverInfo, clientInfo, value.domain, value.reason, cphulkAnalysis
         );
       } else {
-        console.log(`[${requestId}] ⚡ Executing optimized preventive whitelisting`);
         result = await this.executeOptimizedPreventiveWhitelisting(
           requestId, value.ip, serverInfo, clientInfo, value.domain, value.reason, csfAnalysis, cphulkAnalysis
         );
@@ -381,15 +496,11 @@ class OptimizedCphulkController {
         (Date.now() - startTime)
       ) / this.metrics.totalRequests;
 
-      console.log(`[${requestId}] ✅ Request completed in ${Date.now() - startTime}ms`);
-
       // Format clean response
       const cleanResponse = this.formatOptimizedResponse(result, value.ip, value.domain);
       return res.status(result.success ? 200 : 500).json(cleanResponse);
 
     } catch (error) {
-      console.error(`[${requestId}] ❌ Error:`, error.message);
-      
       return res.status(500).json({
         success: false,
         status: 'SYSTEM_ERROR',
@@ -410,8 +521,6 @@ class OptimizedCphulkController {
    * OPTIMIZED: Execute dual remediation with maximum parallelization
    */
   async executeOptimizedDualRemediation(requestId, ip, serverInfo, clientInfo, domain, reason, csfAnalysis, cphulkAnalysis) {
-    console.log(`[${requestId}] 🔄 Starting optimized dual remediation`);
-    
     const parallelOperations = [];
     
     // 1. CSF unblock (high priority)
@@ -456,7 +565,6 @@ class OptimizedCphulkController {
       .catch(error => ({ type: 'cphulk', error: error.message }))
     );
     
-    console.log(`[${requestId}] ⚡ Executing ${parallelOperations.length} dual remediation operations in parallel`);
     const results = await Promise.allSettled(parallelOperations);
     
     // Process results
@@ -480,11 +588,6 @@ class OptimizedCphulkController {
     result.cphulkAnalysis = cphulkAnalysis;
     result.success = unblockData.success && allowData.success && cphulkData.success;
     
-    console.log(`[${requestId}] 📊 Dual remediation results:`);
-    console.log(`   - CSF unblock: ${unblockData.success ? 'SUCCESS' : 'FAILED'}`);
-    console.log(`   - CSF whitelist: ${allowData.success ? 'SUCCESS' : 'FAILED'}`);
-    console.log(`   - cPHulk whitelist: ${cphulkData.success ? 'SUCCESS' : 'FAILED'}`);
-    
     return result;
   }
 
@@ -492,8 +595,6 @@ class OptimizedCphulkController {
    * OPTIMIZED: Execute CSF-only remediation with parallel operations
    */
   async executeOptimizedCSFRemediation(requestId, ip, serverInfo, clientInfo, domain, reason, csfAnalysis) {
-    console.log(`[${requestId}] 🔄 Starting optimized CSF-only remediation`);
-    
     const parallelOperations = [];
     
     // Execute CSF unblock and allow in parallel
@@ -515,7 +616,6 @@ class OptimizedCphulkController {
       .catch(error => ({ type: 'allow', error: error.message }))
     );
     
-    console.log(`[${requestId}] ⚡ Executing ${parallelOperations.length} CSF operations in parallel`);
     const results = await Promise.allSettled(parallelOperations);
     
     const unblockResult = results.find(r => r.value?.type === 'unblock');
@@ -535,10 +635,6 @@ class OptimizedCphulkController {
       csfAnalysis: csfAnalysis
     };
     
-    console.log(`[${requestId}] 📊 CSF remediation results:`);
-    console.log(`   - Unblock: ${unblockData.success ? 'SUCCESS' : 'FAILED'}`);
-    console.log(`   - Whitelist: ${allowData.success ? 'SUCCESS' : 'FAILED'}`);
-    
     return result;
   }
 
@@ -546,8 +642,6 @@ class OptimizedCphulkController {
    * OPTIMIZED: Execute cPHulk-only remediation using cached analysis
    */
   async executeOptimizedCPHulkRemediation(requestId, ip, serverInfo, clientInfo, domain, reason, cphulkAnalysis) {
-    console.log(`[${requestId}] 🔄 Starting optimized cPHulk-only remediation`);
-    
     const result = await this.manager.intelligentWhitelistWorkflowWithAnalysis(
       ip, 
       serverInfo?.serverName, 
@@ -561,8 +655,6 @@ class OptimizedCphulkController {
     result.optimizedExecution = true;
     result.cphulkAnalysis = cphulkAnalysis;
     
-    console.log(`[${requestId}] 📊 cPHulk remediation: ${result.success ? 'SUCCESS' : 'FAILED'}`);
-    
     return result;
   }
 
@@ -570,8 +662,6 @@ class OptimizedCphulkController {
    * OPTIMIZED: Execute preventive whitelisting using cached analysis
    */
   async executeOptimizedPreventiveWhitelisting(requestId, ip, serverInfo, clientInfo, domain, reason, csfAnalysis, cphulkAnalysis) {
-    console.log(`[${requestId}] 🔄 Starting optimized preventive whitelisting`);
-    
     const result = await this.manager.intelligentWhitelistWorkflowWithAnalysis(
       ip, 
       serverInfo?.serverName, 
@@ -585,8 +675,6 @@ class OptimizedCphulkController {
     result.optimizedExecution = true;
     result.csfAnalysis = csfAnalysis;
     result.cphulkAnalysis = cphulkAnalysis;
-    
-    console.log(`[${requestId}] 📊 Preventive whitelisting: ${result.success ? 'SUCCESS' : 'FAILED'}`);
     
     return result;
   }
@@ -661,12 +749,7 @@ class OptimizedCphulkController {
       success: result.success || false,
       message: this.generateOptimizedMessage(result, ip),
       ip: ip,
-      timestamp: new Date().toISOString(),
-      performance: {
-        processingTime: result.processingTime,
-        optimizations: result.optimizations,
-        cacheEfficiency: this.metrics.cacheHits / this.metrics.totalRequests
-      }
+      timestamp: new Date().toISOString()
     };
 
     if (domain) response.domain = domain;
@@ -677,36 +760,91 @@ class OptimizedCphulkController {
       };
     }
 
-    // Add action type
+    // Add meaningful action description
     if (result.success) {
       if (result.dualRemediation) {
-        response.action = 'Optimized dual security remediation completed';
+        response.status = 'SECURITY_ISSUES_RESOLVED';
+        response.details = {
+          action: 'Complete Security Remediation',
+          description: 'Your IP was blocked by both our firewall and anti-brute force systems. Both issues have been resolved.',
+          systems: ['Firewall (CSF)', 'Anti-Brute Force (cPHulk)'],
+          duration: '24 hours protection'
+        };
       } else if (result.csfOnlyRemediation) {
-        response.action = 'Optimized firewall remediation completed';
+        response.status = 'FIREWALL_UNBLOCKED';
+        response.details = {
+          action: 'Firewall Remediation',
+          description: 'Your IP was blocked by our firewall system and has been successfully unblocked and whitelisted.',
+          systems: ['Firewall (CSF)'],
+          duration: 'Permanent whitelist'
+        };
       } else if (result.cphulkOnlyRemediation) {
-        response.action = 'Optimized anti-brute force remediation completed';
+        response.status = 'BRUTE_FORCE_CLEARED';
+        response.details = {
+          action: 'Anti-Brute Force Remediation',
+          description: 'Failed login attempts from your IP have been cleared and your IP has been whitelisted.',
+          systems: ['Anti-Brute Force (cPHulk)'],
+          duration: '24 hours protection'
+        };
       } else if (result.preventiveWhitelisting) {
-        response.action = 'Optimized preventive whitelisting completed';
+        response.status = 'PREVENTIVE_PROTECTION';
+        response.details = {
+          action: 'Preventive Security Whitelisting',
+          description: 'No security issues detected. Your IP has been preventively whitelisted for smoother access.',
+          systems: ['Anti-Brute Force (cPHulk)'],
+          duration: '24 hours protection'
+        };
       } else {
-        response.action = 'Optimized security whitelisting completed';
+        response.status = 'SECURITY_OPTIMIZED';
+        response.details = {
+          action: 'Security Optimization',
+          description: 'Your IP has been processed through our security systems for optimal access.',
+          systems: ['Security Systems'],
+          duration: '24 hours protection'
+        };
       }
+
+      // Add next steps
+      response.nextSteps = [
+        'You can now access your services normally',
+        'The protection will remain active for the specified duration',
+        'Contact support if you continue experiencing access issues'
+      ];
+
+    } else {
+      response.status = 'REMEDIATION_FAILED';
+      response.details = {
+        action: 'Security Remediation Attempt',
+        description: 'We were unable to complete the security remediation for your IP address.',
+        recommendation: 'Please contact our support team for manual assistance'
+      };
+      
+      response.nextSteps = [
+        'Contact our support team with your IP address and domain',
+        'Provide details about the access issues you\'re experiencing',
+        'Our team will manually resolve the security blocks'
+      ];
     }
 
+    // Add support information
     if (result.ticketCreated) {
-      response.supportTicket = 'Support ticket created with action details';
+      response.support = {
+        ticket: 'A support ticket has been automatically created',
+        details: 'Our team has been notified of this security action',
+        reference: 'Use your IP address and domain as reference when contacting support'
+      };
     }
 
-    // Add debug info in development
-    if (process.env.NODE_ENV === 'development') {
-      response._debug = {
-        requestId: result.requestId,
-        optimizedExecution: result.optimizedExecution,
-        cacheMetrics: {
-          responseCache: responseCache.size(),
-          analysisCache: analysisCache.size(),
-          credentialCache: credentialCache.size()
+    // Add performance info only in development or if explicitly requested
+    if (process.env.NODE_ENV === 'development' || result.showPerformance) {
+      response.performance = {
+        processingTime: `${result.processingTime}ms`,
+        optimization: {
+          cacheHitsUsed: result.optimizations?.cacheHitsUsed || 0,
+          parallelTasksExecuted: result.optimizations?.parallelTasksExecuted || 0,
+          cacheEfficiency: `${Math.round((this.metrics.cacheHits / Math.max(this.metrics.totalRequests, 1)) * 100)}%`
         },
-        systemMetrics: this.metrics
+        systemStatus: 'Optimized performance active'
       };
     }
 
@@ -718,26 +856,26 @@ class OptimizedCphulkController {
    */
   generateOptimizedMessage(result, ip) {
     if (!result.success) {
-      return `Unable to complete optimized security whitelisting for IP ${ip}. Please contact support if the issue persists.`;
+      return `We encountered an issue while processing your IP address ${ip}. Our support team has been notified and will assist you shortly.`;
     }
 
     if (result.dualRemediation) {
-      return `Your IP address ${ip} has been successfully remediated using our optimized dual security system (Firewall + Anti-Brute Force).`;
+      return `Great news! Your IP address ${ip} was experiencing blocks from both our firewall and anti-brute force systems. We've successfully resolved both issues and your access has been restored.`;
     }
 
     if (result.csfOnlyRemediation) {
-      return `Your IP address ${ip} has been successfully unblocked and whitelisted using our optimized firewall system.`;
+      return `Your IP address ${ip} was blocked by our firewall system. We've successfully unblocked it and added it to our whitelist for continued access.`;
     }
 
     if (result.cphulkOnlyRemediation) {
-      return `Your IP address ${ip} has been successfully whitelisted using our optimized anti-brute force system for 24 hours.`;
+      return `We detected failed login attempts from your IP address ${ip}. These have been cleared and your IP has been whitelisted for the next 24 hours.`;
     }
 
     if (result.preventiveWhitelisting) {
-      return `Your IP address ${ip} has been preventively whitelisted using our optimized security systems for 24 hours.`;
+      return `Your IP address ${ip} has been successfully whitelisted in our security systems. No issues were detected, and you now have optimized access for the next 24 hours.`;
     }
 
-    return `Your IP address ${ip} has been successfully processed using our optimized security systems.`;
+    return `Your IP address ${ip} has been successfully processed through our security systems and is now optimized for access.`;
   }
 
   /**
@@ -798,13 +936,14 @@ class OptimizedCphulkController {
 
       console.log(`[${requestId}] 🔍 Optimized failed logins check for IP ${value.ip}`);
 
+      console.log(`[${requestId}] 🔍 Optimized failed logins check for IP ${value.ip}`);
+
       // Check cache first
       const cacheKey = `failed_logins:${value.ip}:${value.domain || 'no-domain'}`;
       const cachedResponse = responseCache.get(cacheKey);
       
       if (cachedResponse) {
         this.metrics.cacheHits++;
-        console.log(`[${requestId}] ⚡ Cache hit - returning cached response`);
         return res.status(cachedResponse.success ? 200 : 500).json({
           ...cachedResponse,
           cached: true,
@@ -821,7 +960,6 @@ class OptimizedCphulkController {
         const cachedCredentials = credentialCache.get(credCacheKey);
         
         if (cachedCredentials) {
-          console.log(`[${requestId}] ⚡ Using cached credentials`);
           clientInfo = cachedCredentials.clientInfo;
           serverInfo = cachedCredentials.serverInfo;
         } else {
@@ -899,8 +1037,6 @@ class OptimizedCphulkController {
       return res.status(result.success ? 200 : 500).json(cleanResponse);
 
     } catch (error) {
-      console.error(`[${requestId}] ❌ Error:`, error.message);
-      
       return res.status(500).json({
         success: false,
         status: 'SYSTEM_ERROR',
@@ -937,20 +1073,48 @@ class OptimizedCphulkController {
 
     if (result.success) {
       if (result.hasFailedLogins) {
-        response.message = `Failed login attempts detected for IP ${ip}. Use the whitelist endpoint to resolve access issues.`;
         response.status = 'FAILED_LOGINS_DETECTED';
-        response.failedLogins = {
-          count: result.totalFailures || 0,
-          services: result.authServices || [],
-          recommendation: 'Consider whitelisting this IP if these are legitimate access attempts'
+        response.message = `We found ${result.totalFailures || 'multiple'} failed login attempts from your IP address ${ip}.`;
+        response.details = {
+          issue: 'Failed Login Attempts Detected',
+          description: 'Your IP has been flagged due to unsuccessful login attempts',
+          affectedServices: result.authServices || [],
+          totalAttempts: result.totalFailures || 0
         };
+        response.solution = {
+          action: 'Use our whitelist endpoint to resolve access issues',
+          steps: [
+            'Verify you are using the correct login credentials',
+            'Use the whitelist-ip endpoint to clear these failed attempts',
+            'Contact support if you continue experiencing issues'
+          ]
+        };
+        response.recommendation = 'If these are legitimate access attempts from your IP, we recommend whitelisting your IP address.';
       } else {
-        response.message = `No failed login attempts found for IP ${ip}. Your access appears to be working normally.`;
         response.status = 'NO_ISSUES_DETECTED';
+        response.message = `Excellent! No failed login attempts were found for your IP address ${ip}.`;
+        response.details = {
+          status: 'Clean Access Record',
+          description: 'Your IP address has a clean security record with no failed login attempts',
+          accessStatus: 'Normal'
+        };
+        response.information = 'Your access appears to be working normally. No security actions are needed.';
       }
     } else {
-      response.message = `Unable to check failed logins for IP ${ip}. Please contact support if you're experiencing access issues.`;
       response.status = 'CHECK_FAILED';
+      response.message = `We're currently unable to check the login history for IP address ${ip}.`;
+      response.details = {
+        issue: 'Security Check Unavailable',
+        description: 'Our security systems are temporarily unable to process your request'
+      };
+      response.solution = {
+        action: 'Contact support for assistance',
+        steps: [
+          'Try again in a few minutes',
+          'Contact our support team if the issue persists',
+          'Provide your IP address and domain when contacting support'
+        ]
+      };
     }
 
     return response;
@@ -1029,7 +1193,6 @@ class OptimizedCphulkController {
       });
 
     } catch (error) {
-      console.error('Get cPHulk capabilities error:', error);
       return res.status(500).json({
         success: false,
         error: 'Internal server error',
@@ -1054,8 +1217,6 @@ class OptimizedCphulkController {
         });
       }
       
-      console.log(`→ Debug CSF response for IP: ${ip} on server: ${server}`);
-      
       const debugResult = await this.csfService.debugCSFResponse(ip, server);
       
       return res.json({
@@ -1068,7 +1229,6 @@ class OptimizedCphulkController {
       });
       
     } catch (error) {
-      console.error('CSF debug error:', error);
       return res.status(500).json({
         success: false,
         error: error.message,
@@ -1092,8 +1252,6 @@ class OptimizedCphulkController {
           example: '/cphulk/test-csf?ip=8.8.8.8&server=pcp3'
         });
       }
-      
-      console.log(`→ Testing CSF integration for IP: ${ip} on server: ${server}`);
       
       let csfResult;
       try {
@@ -1122,7 +1280,6 @@ class OptimizedCphulkController {
       });
       
     } catch (error) {
-      console.error('CSF test error:', error);
       return res.status(500).json({
         success: false,
         error: error.message,
@@ -1162,7 +1319,6 @@ class OptimizedCphulkController {
       });
 
     } catch (error) {
-      console.error('cPHulk health check error:', error);
       return res.status(500).json({
         success: false,
         error: 'Service unhealthy',
@@ -1191,7 +1347,6 @@ class OptimizedCphulkController {
       });
 
     } catch (error) {
-      console.error('Get scheduled removals error:', error);
       return res.status(500).json({
         success: false,
         error: 'Internal server error',
@@ -1225,7 +1380,6 @@ class OptimizedCphulkController {
       });
 
     } catch (error) {
-      console.error('Cancel scheduled removal error:', error);
       return res.status(500).json({
         success: false,
         error: 'Internal server error',
@@ -1259,7 +1413,6 @@ class OptimizedCphulkController {
       });
 
     } catch (error) {
-      console.error('Get scheduler stats error:', error);
       return res.status(500).json({
         success: false,
         error: 'Internal server error',
@@ -1267,6 +1420,224 @@ class OptimizedCphulkController {
       });
     }
   }
+  /**
+   * Helper method to resolve domain to client
+   */
+  async resolveDomainToClient(domain) {
+    const { callApi } = require('../services/whmcsService');
+    
+    // Try GetClientsDomains first
+    const domainsData = await callApi('GetClientsDomains', { domain });
+    
+    if (domainsData && domainsData.domains) {
+      const domainsRaw = domainsData.domains;
+      const domains = domainsRaw.domain || domainsRaw;
+      const domainArray = Array.isArray(domains) ? domains : (domains ? [domains] : []);
+      
+      if (domainArray.length > 0) {
+        const uniqueUserIds = [...new Set(domainArray.map(d => String(d.userid)))];
+        
+        if (uniqueUserIds.length > 1) {
+          throw new Error('Multiple clients found for this domain');
+        }
+        
+        return { clientId: uniqueUserIds[0], source: 'domains' };
+      }
+    }
+    
+    // Fallback: Try GetClientsProducts
+    const productsData = await callApi('GetClientsProducts', { domain });
+    
+    if (productsData && productsData.products) {
+      const productsRaw = productsData.products;
+      const products = productsRaw.product || productsRaw;
+      const productArray = Array.isArray(products) ? products : (products ? [products] : []);
+      
+      if (productArray.length > 0) {
+        const uniqueUserIds = [...new Set(productArray.map(p => String(p.userid || p.clientid)))];
+        
+        if (uniqueUserIds.length > 1) {
+          throw new Error('Multiple clients found for this domain');
+        }
+        
+        return { clientId: uniqueUserIds[0], source: 'products' };
+      }
+    }
+    
+    throw new Error('No client found with that domain');
+  }
+
+  /**
+   * Helper method to resolve email to client
+   */
+  async resolveEmailToClient(email) {
+    const { getClientsDetails } = require('../services/whmcsService');
+    
+    const clientData = await getClientsDetails({ email });
+    
+    if (clientData && clientData.userid) {
+      return { clientId: String(clientData.userid), source: 'email' };
+    }
+    
+    throw new Error('No client found with that email address');
+  }
+
+  /**
+   * Helper method to validate client phone number
+   */
+  async validateClientPhone(clientId, providedPhone) {
+    const { getClientsDetails } = require('../services/whmcsService');
+    
+    try {
+      const clientData = await getClientsDetails({ clientid: clientId });
+      
+      if (!clientData) {
+        throw new Error('Client not found');
+      }
+      
+      const registeredPhone = clientData.phonenumber || clientData.phone;
+      
+      if (!registeredPhone) {
+        return { valid: true, reason: 'no_phone_on_file' };
+      }
+      
+      // Normalize phone numbers for comparison
+      const normalizePhone = (phone) => {
+        if (!phone) return '';
+        return phone.replace(/[\s\-\(\)\+]/g, '').replace(/^0+/, '');
+      };
+      
+      const normalizedProvided = normalizePhone(providedPhone);
+      const normalizedRegistered = normalizePhone(registeredPhone);
+      
+      // Check if phones match
+      const isMatch = normalizedProvided === normalizedRegistered ||
+                     normalizedProvided.endsWith(normalizedRegistered.slice(-10)) ||
+                     normalizedRegistered.endsWith(normalizedProvided.slice(-10));
+      
+      return {
+        valid: isMatch,
+        registeredPhone: registeredPhone,
+        reason: isMatch ? 'phone_match' : 'phone_mismatch'
+      };
+      
+    } catch (error) {
+      throw new Error(`Phone validation failed: ${error.message}`);
+    }
+  }
+
+  /**
+   * Helper method to mask phone number
+   */
+  maskPhoneNumber(phone) {
+    if (!phone || phone.length < 4) return phone;
+    
+    const cleaned = phone.replace(/[\s\-\(\)]/g, '');
+    const visibleStart = Math.min(3, Math.floor(cleaned.length / 3));
+    const visibleEnd = Math.min(3, Math.floor(cleaned.length / 4));
+    
+    if (cleaned.length <= visibleStart + visibleEnd) {
+      return phone;
+    }
+    
+    const start = cleaned.substring(0, visibleStart);
+    const end = cleaned.substring(cleaned.length - visibleEnd);
+    const middle = '*'.repeat(Math.min(3, cleaned.length - visibleStart - visibleEnd));
+    
+    return start + middle + end;
+  }
+
+  /**
+   * Helper method to get server info for domain
+   */
+  async getServerInfoForDomain(domain, clientId) {
+    try {
+      console.log(`→ Resolving server for domain: ${domain}, clientId: ${clientId}`);
+      
+      // Method 1: Try to get server info from WHMCS service lookup
+      const { getServiceForClient } = require('../utils/helpers');
+      const service = await getServiceForClient({ clientId, domain });
+      
+      if (service && service.server) {
+        console.log(`→ Found server from service data: ${service.server}`);
+        return {
+          serverName: service.server,
+          hostname: service.server
+        };
+      }
+      
+      // Method 2: Use WHM service to find domain server from WHMCS accounts
+      const whmService = require('../services/whmService');
+      
+      // Create WHMCS hint from service data if available
+      let whmcsHint = null;
+      if (service && service.serverip) {
+        whmcsHint = {
+          serverName: service.servername || service.server,
+          serverIP: service.serverip
+        };
+        console.log(`→ Using WHMCS hint: ${JSON.stringify(whmcsHint)}`);
+      }
+      
+      const serverName = await whmService.findDomainServerByAccounts(domain, whmcsHint);
+      
+      if (serverName) {
+        console.log(`→ Found server from WHMCS accounts: ${serverName}`);
+        return {
+          serverName: serverName,
+          hostname: serverName
+        };
+      }
+      
+      // Method 3: Try general domain server lookup (includes DNS resolution)
+      const domainServer = await whmService.findDomainServer(domain, whmcsHint);
+      
+      if (domainServer) {
+        console.log(`→ Found server from domain lookup: ${domainServer}`);
+        return {
+          serverName: domainServer,
+          hostname: domainServer
+        };
+      }
+      
+      // Method 4: Use cPHulk manager's default server selection as last resort
+      const cphulkManager = require('../services/cphulkManager');
+      const defaultServer = cphulkManager.getDefaultServer();
+      
+      if (defaultServer) {
+        console.log(`→ Using cPHulk default server: ${defaultServer}`);
+        return {
+          serverName: defaultServer,
+          hostname: defaultServer
+        };
+      }
+      
+      // This should not happen if API keys are properly configured
+      throw new Error('No server could be determined for domain and no default server available');
+      
+    } catch (error) {
+      console.log(`→ Error resolving server for domain ${domain}: ${error.message}`);
+      
+      // Final fallback - try to get any available server
+      try {
+        const cphulkManager = require('../services/cphulkManager');
+        const defaultServer = cphulkManager.getDefaultServer();
+        
+        if (defaultServer) {
+          console.log(`→ Using fallback server due to error: ${defaultServer}`);
+          return {
+            serverName: defaultServer,
+            hostname: defaultServer
+          };
+        }
+      } catch (fallbackError) {
+        console.log(`→ Fallback server selection also failed: ${fallbackError.message}`);
+      }
+      
+      throw new Error(`Could not determine server for domain ${domain}: ${error.message}`);
+    }
+  }
+
 }
 
 module.exports = new OptimizedCphulkController();

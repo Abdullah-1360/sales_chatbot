@@ -104,6 +104,45 @@ async function startServer() {
       scheduleLeadCleanup();
     }
     
+    // Set up graceful shutdown for chat notifications
+    const gracefulShutdown = async (signal) => {
+      console.log(`\n🛑 Received ${signal}, shutting down gracefully...`);
+      
+      try {
+        // Stop all chat notifications only if MongoDB is enabled and connected
+        if (cfg.USE_MONGODB) {
+          const mongoose = require('mongoose');
+          
+          // Check if mongoose is connected before trying to stop notifications
+          if (mongoose.connection.readyState === 1) {
+            const chatNotificationService = require('./src/services/chatNotificationService');
+            const stoppedCount = await chatNotificationService.stopAllNotifications();
+            console.log(`✅ Stopped ${stoppedCount} active chat notifications`);
+          } else {
+            console.log('⚠️  MongoDB not connected, skipping notification cleanup');
+          }
+        }
+      } catch (error) {
+        console.error('❌ Error stopping chat notifications:', error.message);
+      }
+      
+      // Close HTTP server
+      httpServer.close(() => {
+        console.log('✅ HTTP server closed');
+        process.exit(0);
+      });
+      
+      // Force exit after 10 seconds
+      setTimeout(() => {
+        console.log('⚠️  Forced shutdown after timeout');
+        process.exit(1);
+      }, 10000);
+    };
+    
+    // Listen for shutdown signals
+    process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+    process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+    
     httpServer.listen(PORT, () => {
       const localIP = localIPCache.getCachedIP();
       console.log(`🚀 API running on :${PORT}`);
@@ -116,6 +155,7 @@ async function startServer() {
       }
       if (cfg.USE_MONGODB) {
         console.log(`🧹 Lead cleanup: enabled (runs every hour, deletes leads > 24h old)`);
+        console.log(`🔔 Chat notifications: enabled (2-minute intervals, 5 max per chat)`);
       }
     });
   } catch (error) {

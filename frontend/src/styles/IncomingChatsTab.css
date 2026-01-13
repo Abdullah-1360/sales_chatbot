@@ -163,3 +163,105 @@
     font-size: 1.125rem;
   }
 }
+/* Notification Status Styles */
+
+.incoming-chats-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.5rem;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.notification-status {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 1rem;
+  background: #fef3c7;
+  border: 1px solid #f59e0b;
+  border-radius: 8px;
+  font-size: 0.875rem;
+}
+
+.notification-count {
+  color: #92400e;
+  font-weight: 500;
+}
+
+.stop-all-notifications-btn {
+  background: #f59e0b;
+  color: white;
+  border: none;
+  padding: 0.375rem 0.75rem;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.stop-all-notifications-btn:hover {
+  background: #d97706;
+  transform: translateY(-1px);
+}
+
+.stop-all-notifications-btn:active {
+  transform: translateY(0);
+}
+
+.connection-warning {
+  color: #dc2626;
+  font-size: 0.875rem;
+  font-weight: 500;
+  padding: 0.5rem 1rem;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+}
+
+/* Mobile Responsive */
+@media (max-width: 768px) {
+  .incoming-chats-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  
+  .header-actions {
+    justify-content: space-between;
+  }
+  
+  .notification-status {
+    flex: 1;
+    justify-content: space-between;
+  }
+  
+  .stop-all-notifications-btn {
+    flex-shrink: 0;
+  }
+}
+
+/* Dark mode support */
+@media (prefers-color-scheme: dark) {
+  .notification-status {
+    background: #451a03;
+    border-color: #92400e;
+  }
+  
+  .notification-count {
+    color: #fbbf24;
+  }
+  
+  .connection-warning {
+    background: #450a0a;
+    border-color: #dc2626;
+    color: #fca5a5;
+  }
+}

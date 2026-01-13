@@ -576,95 +576,289 @@ This ticket was automatically generated from an early domain renewal request.`;
 };
 
 /**
- * Confirm payment for an invoice
+ * Confirm payment for an invoice with enhanced parallel validation
  */
 exports.confirmPayment = async (req, res, next) => {
   console.log('[POST /api/confirmPayment]', { 
     clientId: req.body.clientId, 
     invoiceId: req.body.invoiceId,
+    domain: req.body.domain,
+    email: req.body.email ? '[PROVIDED]' : undefined,
+    phone: req.body.phone ? '[PROVIDED]' : undefined,
     hasImage: !!req.body.image_url,
-    hasPaymentUrl: !!req.body.payment_url
+    hasPaymentUrl: !!req.body.payment_url,
+    resolvedFrom: req.body._resolvedFrom
   });
   
   try {
-    const { clientId, invoiceId, details, domain, image_url, image_base64, image_filename, payment_url } = req.body || {};
+    const { clientId, invoiceId, details, domain, email, phone, image_url, image_base64, image_filename, payment_url } = req.body || {};
     
-    if (!clientId || !invoiceId) {
-      console.log('✗ Missing required parameters');
+    // Validate email if provided
+    if (email !== undefined && email !== null && email !== '') {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email.trim())) {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'Invalid email format provided' 
+        });
+      }
+    }
+    
+    let resolvedClientId = clientId;
+    let resolvedFrom = req.body._resolvedFrom;
+    
+    // PARALLEL VALIDATION: If no clientId was resolved, try domain OR email in parallel
+    if (!resolvedClientId && (domain || email)) {
+      console.log('→ Starting parallel client resolution...');
+      
+      const parallelTasks = [];
+      
+      // Task 1: Domain resolution (if domain provided)
+      if (domain) {
+        parallelTasks.push(
+          resolveDomainToClient(domain)
+            .then(result => ({ type: 'domain', success: true, data: result }))
+            .catch(error => ({ type: 'domain', success: false, error: error.message }))
+        );
+      }
+      
+      // Task 2: Email resolution (if email provided)
+      if (email) {
+        parallelTasks.push(
+          resolveEmailToClient(email)
+            .then(result => ({ type: 'email', success: true, data: result }))
+            .catch(error => ({ type: 'email', success: false, error: error.message }))
+        );
+      }
+      
+      // Execute parallel resolution
+      const results = await Promise.allSettled(parallelTasks);
+      
+      // Process results - prioritize successful resolutions
+      let domainResult = null;
+      let emailResult = null;
+      
+      for (const result of results) {
+        if (result.status === 'fulfilled' && result.value.success) {
+          if (result.value.type === 'domain') {
+            domainResult = result.value.data;
+          } else if (result.value.type === 'email') {
+            emailResult = result.value.data;
+          }
+        }
+      }
+      
+      // Determine which resolution to use - handle edge cases
+      if (domainResult && emailResult) {
+        // Both resolved - check if they match
+        if (domainResult.clientId === emailResult.clientId) {
+          resolvedClientId = domainResult.clientId;
+          resolvedFrom = 'domain+email';
+          console.log('→ Client resolved from both domain and email (matching):', resolvedClientId);
+        } else {
+          // Edge case: Different clients found - prioritize domain over email for payment confirmation
+          // This handles cases where email is wrong but domain is correct
+          console.log('→ Domain and email resolve to different clients - prioritizing domain');
+          resolvedClientId = domainResult.clientId;
+          resolvedFrom = 'domain_priority';
+          console.log('→ Client resolved from domain (email mismatch ignored):', resolvedClientId);
+        }
+      } else if (domainResult) {
+        // Only domain resolved - email was wrong or not provided
+        resolvedClientId = domainResult.clientId;
+        resolvedFrom = 'domain';
+        console.log('→ Client resolved from domain:', resolvedClientId);
+      } else if (emailResult) {
+        // Only email resolved - domain was wrong or not provided
+        resolvedClientId = emailResult.clientId;
+        resolvedFrom = 'email';
+        console.log('→ Client resolved from email:', resolvedClientId);
+      } else {
+        // Neither resolved successfully
+        const errorMessages = [];
+        if (domain) errorMessages.push('No client found for the provided domain');
+        if (email) errorMessages.push('No client found for the provided email');
+        
+        return res.status(404).json({
+          success: false,
+          error: errorMessages.join(' and ') + '. Please verify your information.'
+        });
+      }
+    }
+    
+    // SECOND-LEVEL VALIDATION: Phone validation if provided
+    if (phone && resolvedClientId) {
+      console.log('→ Performing second-level phone validation...');
+      
+      try {
+        const phoneValidationResult = await validateClientPhone(resolvedClientId, phone);
+        
+        if (!phoneValidationResult.valid) {
+          // Phone validation failed - return masked phone error with update instructions
+          const maskedPhone = phoneValidationResult.registeredPhone 
+            ? maskPhoneNumber(phoneValidationResult.registeredPhone)
+            : 'your registered number';
+            
+          return res.status(400).json({
+            success: false,
+            error: `Please contact from ${maskedPhone} or change the phone number from your client area to ${phone} `
+          });
+        }
+        
+        console.log('✓ Phone validation passed');
+      } catch (error) {
+        console.log('✗ Phone validation error:', error.message);
+        return res.status(500).json({
+          success: false,
+          error: 'Phone validation failed. Please try again or contact support.'
+        });
+      }
+    } else if (phone && !resolvedClientId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Please provide either a domain name or email address along with phone number for validation.'
+      });
+    }
+    
+    // Validate that we have a resolved client
+    if (!resolvedClientId) {
       return res.status(400).json({ 
         success: false, 
-        error: 'clientId and invoiceId required' 
+        error: 'Please provide either a domain name or email address to identify your account.' 
       });
     }
     
-    // Get all invoices for the user using the new WHMCS API
-    console.log('→ Fetching invoices for user:', clientId);
-    const invoicesResponse = await getInvoicesForUser(clientId);
-    
-    if (!invoicesResponse || !invoicesResponse.invoices || !invoicesResponse.invoices.invoice) {
-      console.log('✗ No invoices found for user:', clientId);
-      return res.status(404).json({ 
-        success: false, 
-        error: 'No invoices found for this account.' 
-      });
+    // Handle empty or invalid invoice ID
+    let targetInvoiceId = invoiceId;
+    if (targetInvoiceId !== undefined && targetInvoiceId !== null && targetInvoiceId !== '') {
+      if (!String(targetInvoiceId).match(/^\d+$/)) {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'Invalid invoice ID format. Invoice ID must be numeric.' 
+        });
+      }
+    } else {
+      // Empty, null, or undefined invoice ID - find unpaid invoice
+      targetInvoiceId = null;
     }
     
-    // Handle both single invoice and array of invoices
-    const invoiceList = Array.isArray(invoicesResponse.invoices.invoice) 
-      ? invoicesResponse.invoices.invoice 
-      : [invoicesResponse.invoices.invoice];
+    let matchedInvoice = null;
+    let fallbackUsed = false;
     
-    // Find the requested invoice by matching either id or invoicenum
-    const requestedInvoiceId = String(invoiceId);
-    console.log('→ Looking for invoice:', requestedInvoiceId, 'in', invoiceList.length, 'invoices');
+    // Try to find specific invoice if ID provided
+    if (targetInvoiceId) {
+      try {
+        console.log('→ Fetching invoices for user:', resolvedClientId);
+        const invoicesResponse = await getInvoicesForUser(resolvedClientId);
+        
+        if (invoicesResponse && invoicesResponse.invoices && invoicesResponse.invoices.invoice) {
+          const invoiceList = Array.isArray(invoicesResponse.invoices.invoice) 
+            ? invoicesResponse.invoices.invoice 
+            : [invoicesResponse.invoices.invoice];
+          
+          const requestedInvoiceId = String(targetInvoiceId);
+          console.log('→ Looking for invoice:', requestedInvoiceId, 'in', invoiceList.length, 'invoices');
+          
+          matchedInvoice = invoiceList.find(inv => {
+            const idMatch = String(inv.id) === requestedInvoiceId;
+            const invoiceNumMatch = String(inv.invoicenum) === requestedInvoiceId;
+            return idMatch || invoiceNumMatch;
+          });
+          
+          if (matchedInvoice) {
+            console.log('→ Found specific invoice:', matchedInvoice.id);
+          } else {
+            console.log('→ Specific invoice not found, will search for unpaid invoice');
+          }
+        }
+      } catch (error) {
+        console.log('→ Error fetching specific invoice, will search for unpaid invoice:', error.message);
+      }
+    }
     
-    const matchedInvoice = invoiceList.find(inv => {
-      const idMatch = String(inv.id) === requestedInvoiceId;
-      const invoiceNumMatch = String(inv.invoicenum) === requestedInvoiceId;
-      return idMatch || invoiceNumMatch;
-    });
+    // If no specific invoice found or no invoice ID provided, search for unpaid invoice
+    if (!matchedInvoice) {
+      console.log('→ Searching for unpaid invoice for client:', resolvedClientId);
+      fallbackUsed = !!targetInvoiceId; // Mark as fallback if specific ID was requested
+      
+      try {
+        // Always search for any unpaid invoice for this client first
+        const { getInvoices } = require('../services/whmcsService');
+        const unpaidInvoices = await getInvoices({ 
+          userid: resolvedClientId, 
+          status: 'Unpaid', 
+          limitnum: 1 
+        });
+        
+        const invoiceArray = unpaidInvoices.invoices?.invoice || unpaidInvoices.invoices?.invoices || [];
+        const invoices = Array.isArray(invoiceArray) ? invoiceArray : (invoiceArray ? [invoiceArray] : []);
+        
+        if (invoices.length > 0) {
+          const firstInvoice = invoices[0];
+          const invoiceId = firstInvoice.id || firstInvoice.invoiceid;
+          
+          if (invoiceId) {
+            const { getInvoice } = require('../services/whmcsService');
+            matchedInvoice = await getInvoice(invoiceId);
+            console.log('→ Found unpaid invoice for client:', matchedInvoice.invoiceid || matchedInvoice.id);
+          }
+        } else if (domain && domain.trim() !== '') {
+          // Only try domain-specific search if no general unpaid invoices found AND domain is valid
+          console.log('→ No general unpaid invoices found, trying domain-specific search for:', domain);
+          const { findRelatedUnpaidInvoice } = require('../utils/helpers');
+          const found = await findRelatedUnpaidInvoice(resolvedClientId, { domain });
+          if (found) {
+            matchedInvoice = found;
+            console.log('→ Found unpaid invoice via domain:', found.invoiceid || found.id);
+          }
+        }
+      } catch (error) {
+        console.log('✗ Error searching for unpaid invoices:', error.message);
+      }
+    }
     
     if (!matchedInvoice) {
-      console.log('✗ Invoice not found:', invoiceId, 'for user:', clientId);
-      // Log first few invoices for debugging
-      console.log('→ Sample invoices:', invoiceList.slice(0, 3).map(inv => ({
-        id: inv.id,
-        invoicenum: inv.invoicenum,
-        status: inv.status
-      })));
+      let message = 'No unpaid invoices found for this account.';
+      if (targetInvoiceId) {
+        message = `The specified invoice was not found and no unpaid invoices are available.`;
+      }
+      
       return res.status(404).json({ 
         success: false, 
-        error: 'Invoice not found or does not belong to this account.' 
+        error: 'No invoice found.',
+        message: message
       });
     }
     
-    console.log('→ Found invoice:', {
-      id: matchedInvoice.id,
-      invoicenum: matchedInvoice.invoicenum,
-      status: matchedInvoice.status,
-      total: matchedInvoice.total
-    });
+    const finalInvoiceId = matchedInvoice.invoiceid || matchedInvoice.id;
+    console.log('→ Using invoice:', finalInvoiceId, 'Status:', matchedInvoice.status);
     
     if (String(matchedInvoice.status) === 'Paid') {
       const paidDate = matchedInvoice.datepaid || null;
-      console.log('→ Invoice already paid:', invoiceId);
+      console.log('→ Invoice already paid:', finalInvoiceId);
+      
+      let message = `Invoice #${finalInvoiceId} is already paid. Thank you!`;
+      if (fallbackUsed) {
+        message += ` Note: The requested invoice was not found, but this invoice was already paid.`;
+      }
+      
       return res.json({ 
         success: true, 
         paid: true, 
-        invoiceId, 
+        invoiceId: finalInvoiceId, 
         paidDate, 
-        message: `Invoice #${invoiceId} is marked as Paid. Thank you!` 
+        message: message,
+        requestedInvoiceId: fallbackUsed ? targetInvoiceId : undefined
       });
     }
     
     const deptid = process.env.BILLING_DEPTID;
-    // Only use deptname if deptid is not provided (deptid takes priority)
     const deptname = deptid ? undefined : (process.env.BILLING_DEPTNAME || 'Billing');
     
     // Add domain to subject if provided in request
     const subject = domain 
-      ? `Payment clarification for Invoice #${invoiceId} - ${domain}`
-      : `Payment clarification for Invoice #${invoiceId}`;
+      ? `Payment confirmation for Invoice #${finalInvoiceId} - ${domain}`
+      : `Payment confirmation for Invoice #${finalInvoiceId}`;
     
     // Build detailed message with invoice information
     let ticketMessage = `=== PAYMENT CONFIRMATION ===\n`;
@@ -673,8 +867,16 @@ exports.confirmPayment = async (req, res, next) => {
     ticketMessage += `Invoice Total: ${matchedInvoice.total}\n`;
     ticketMessage += `Invoice Status: ${matchedInvoice.status}\n`;
     ticketMessage += `Due Date: ${matchedInvoice.duedate}\n`;
+    
     if (domain) {
       ticketMessage += `Domain: ${domain}\n`;
+    }
+    
+    if (fallbackUsed) {
+      ticketMessage += `\n=== INVOICE RESOLUTION ===\n`;
+      ticketMessage += `Requested Invoice ID: ${targetInvoiceId}\n`;
+      ticketMessage += `Actual Invoice Used: ${finalInvoiceId}\n`;
+      ticketMessage += `Reason: Requested invoice not found, using current unpaid invoice\n`;
     }
     
     // Add payment URL to ticket message if provided
@@ -690,34 +892,38 @@ exports.confirmPayment = async (req, res, next) => {
       ticketMessage += String(details);
     }
     
-    // Note: Image parameters (image_base64, image_url, image_filename) are accepted but not used
-    // They are kept for API compatibility but no image processing is performed
-    
     const t = await openTicket({ 
       deptid, 
       deptname, 
       subject, 
       message: ticketMessage, 
-      clientid: clientId, 
+      clientid: resolvedClientId, 
       priority: 'Medium',
-      invoiceid: matchedInvoice.id // Use the actual invoice ID from WHMCS
+      invoiceid: matchedInvoice.id
     });
     
     const ticketId = t.tid || t.ticketid || t.id;
-    console.log('→ Billing ticket created:', ticketId, 'for invoice:', invoiceId);
+    console.log('→ Billing ticket created:', ticketId, 'for invoice:', finalInvoiceId);
     
-    // Build response without payment_url
+    // Build clean response
+    let message = `Support ticket (#${ticketId}) created for payment confirmation of Invoice #${finalInvoiceId}.`;
+    
+    if (fallbackUsed) {
+      message += ` Note: The requested invoice was not found, so we're processing your current unpaid invoice instead.`;
+    }
+    
+    
+    
     const response = { 
       success: true, 
       paid: false, 
       ticketId: ticketId,
-      invoiceId: invoiceId,
-      message: `I've opened a support ticket (#${ticketId}) for our billing team to verify your payment for Invoice #${invoiceId}.` 
+      invoiceId: finalInvoiceId,
+      message: message
     };
     
-    // Add note about payment URL being included in ticket if it was provided
-    if (payment_url) {
-      response.message += ` Payment URL has been included in the ticket.`;
+    if (fallbackUsed) {
+      response.requestedInvoiceId = targetInvoiceId;
     }
     
     res.json(response);
@@ -1357,5 +1563,132 @@ This ticket was automatically generated from a renewal request.`;
     next(err);
   }
 };
+
+/**
+ * Helper function to resolve domain to client (for confirmPayment)
+ */
+async function resolveDomainToClient(domain) {
+  const { callApi } = require('../services/whmcsService');
+  
+  // Try GetClientsDomains first
+  const domainsData = await callApi('GetClientsDomains', { domain });
+  
+  if (domainsData && domainsData.domains) {
+    const domainsRaw = domainsData.domains;
+    const domains = domainsRaw.domain || domainsRaw;
+    const domainArray = Array.isArray(domains) ? domains : (domains ? [domains] : []);
+    
+    if (domainArray.length > 0) {
+      const uniqueUserIds = [...new Set(domainArray.map(d => String(d.userid)))];
+      
+      if (uniqueUserIds.length > 1) {
+        throw new Error('Multiple clients found for this domain');
+      }
+      
+      return { clientId: uniqueUserIds[0], source: 'domains' };
+    }
+  }
+  
+  // Fallback: Try GetClientsProducts
+  const productsData = await callApi('GetClientsProducts', { domain });
+  
+  if (productsData && productsData.products) {
+    const productsRaw = productsData.products;
+    const products = productsRaw.product || productsRaw;
+    const productArray = Array.isArray(products) ? products : (products ? [products] : []);
+    
+    if (productArray.length > 0) {
+      const uniqueUserIds = [...new Set(productArray.map(p => String(p.userid || p.clientid)))];
+      
+      if (uniqueUserIds.length > 1) {
+        throw new Error('Multiple clients found for this domain');
+      }
+      
+      return { clientId: uniqueUserIds[0], source: 'products' };
+    }
+  }
+  
+  throw new Error('No client found with that domain');
+}
+
+/**
+ * Helper function to resolve email to client (for confirmPayment)
+ */
+async function resolveEmailToClient(email) {
+  const { getClientsDetails } = require('../services/whmcsService');
+  
+  const clientData = await getClientsDetails({ email });
+  
+  if (clientData && clientData.userid) {
+    return { clientId: String(clientData.userid), source: 'email' };
+  }
+  
+  throw new Error('No client found with that email address');
+}
+
+/**
+ * Helper function to validate client phone number (for confirmPayment)
+ */
+async function validateClientPhone(clientId, providedPhone) {
+  const { getClientsDetails } = require('../services/whmcsService');
+  
+  try {
+    const clientData = await getClientsDetails({ clientid: clientId });
+    
+    if (!clientData) {
+      throw new Error('Client not found');
+    }
+    
+    const registeredPhone = clientData.phonenumber || clientData.phone;
+    
+    if (!registeredPhone) {
+      return { valid: true, reason: 'no_phone_on_file' };
+    }
+    
+    // Normalize phone numbers for comparison
+    const normalizePhone = (phone) => {
+      if (!phone) return '';
+      return phone.replace(/[\s\-\(\)\+]/g, '').replace(/^0+/, '');
+    };
+    
+    const normalizedProvided = normalizePhone(providedPhone);
+    const normalizedRegistered = normalizePhone(registeredPhone);
+    
+    // Check if phones match
+    const isMatch = normalizedProvided === normalizedRegistered ||
+                   normalizedProvided.endsWith(normalizedRegistered.slice(-10)) ||
+                   normalizedRegistered.endsWith(normalizedProvided.slice(-10));
+    
+    return {
+      valid: isMatch,
+      registeredPhone: registeredPhone,
+      reason: isMatch ? 'phone_match' : 'phone_mismatch'
+    };
+    
+  } catch (error) {
+    throw new Error(`Phone validation failed: ${error.message}`);
+  }
+}
+
+/**
+ * Helper function to mask phone number (for confirmPayment)
+ */
+function maskPhoneNumber(phone) {
+  if (!phone || phone.length < 4) return phone;
+  
+  const cleaned = phone.replace(/[\s\-\(\)]/g, '');
+  const visibleStart = Math.min(3, Math.floor(cleaned.length / 3));
+  const visibleEnd = Math.min(3, Math.floor(cleaned.length / 4));
+  
+  if (cleaned.length <= visibleStart + visibleEnd) {
+    return phone;
+  }
+  
+  const start = cleaned.substring(0, visibleStart);
+  const end = cleaned.substring(cleaned.length - visibleEnd);
+  const middle = '*'.repeat(Math.min(3, cleaned.length - visibleStart - visibleEnd));
+  
+  return start + middle + end;
+}
 
 module.exports = exports;

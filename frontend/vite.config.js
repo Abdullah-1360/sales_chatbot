@@ -12,5 +12,23 @@ export default defineConfig({
       '.ngrok.io', // Allow legacy ngrok hosts
       'granularly-meticulous-sarahi.ngrok-free.dev', // Your specific ngrok host
     ],
+    proxy: {
+      // Proxy API calls to backend when in development
+      '/api': {
+        target: 'https://middleware.hostbreak.com',
+        changeOrigin: true,
+        secure: true
+      },
+      '/chats': {
+        target: 'https://middleware.hostbreak.com',
+        changeOrigin: true,
+        secure: true
+      },
+      '/chat-notifications': {
+        target: 'https://middleware.hostbreak.com',
+        changeOrigin: true,
+        secure: true
+      }
+    }
   },
 })

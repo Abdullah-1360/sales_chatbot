@@ -13,7 +13,10 @@ const ticketLookupController = require('../controllers/ticketLookupController');
 // GET /api/chats - Get chats with pagination
 router.get('/chats', chatsController.getChats);
 
-// POST /api/chats - Create a new chat
+// GET /api/chats/:id - Get individual chat with all messages
+router.get('/chats/:id', chatsController.getChatById);
+
+// POST /api/chats - Create a new chat or append to existing
 router.post('/chats', chatsController.createChat);
 
 // DELETE /api/chats/:id - Delete a chat by ID
@@ -34,8 +37,8 @@ router.delete('/leads/:id', leadsController.deleteLead);
 // POST /api/leads - Combined endpoint: check user exists in WHMCS, create lead in VTiger if not exists
 router.post('/leads', leadsController.handleLeads);
 
-// POST /api/invoiceLookup - with phone validation
-router.post('/invoiceLookup', resolveClientId, validatePhoneNumber, invoiceController.invoiceLookup);
+// POST /api/invoiceLookup - with enhanced parallel validation (phone validation handled in controller)
+router.post('/invoiceLookup', invoiceController.invoiceLookup);
 
 // POST /api/serviceStatus - with phone validation
 router.post('/serviceStatus', resolveClientId, validatePhoneNumber, serviceStatusController.checkServiceStatus);
@@ -67,8 +70,8 @@ router.post('/renewService', resolveClientId, billingController.renewService);
 // POST /api/renewservice - New endpoint with phone/email resolution and validation
 router.post('/renewservice', resolveClientId, validatePhoneNumber, billingController.renewServiceEndpoint);
 
-// POST /api/confirmPayment - with phone validation
-router.post('/confirmPayment', resolveClientId, validatePhoneNumber, billingController.confirmPayment);
+// POST /api/confirmPayment - with enhanced parallel validation (phone validation handled in controller)
+router.post('/confirmPayment', billingController.confirmPayment);
 
 // POST /api/triageIssue
 router.post('/triageIssue', resolveClientId, billingController.triageIssue);

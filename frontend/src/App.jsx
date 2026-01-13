@@ -1,7 +1,9 @@
 import { useEffect } from 'react';
 import Dashboard from './components/Dashboard';
 import { useNotifications } from './hooks/useNotifications';
+import chatNotificationService from './services/chatNotificationService';
 import './App.css';
+import './styles/ChatNotifications.css';
 
 function App() {
   const { requestPermission, permission } = useNotifications();
@@ -16,19 +18,18 @@ function App() {
           const result = await requestPermission();
           console.log('Notification permission:', result);
           
-          // Preload sounds after permission is granted
+          // Initialize chat notification service after permission is granted
           if (result === 'granted') {
-            // Import notification service to preload sounds
-            const notificationService = (await import('./services/notifications.js')).default;
-            await notificationService.preloadSounds();
+            await chatNotificationService.initialize();
+            console.log('✅ Chat notification service initialized');
           }
         } catch (error) {
           console.error('Error requesting notification permission:', error);
         }
       } else if (permission === 'granted') {
-        // Preload sounds if permission already granted
-        const notificationService = (await import('./services/notifications.js')).default;
-        await notificationService.preloadSounds();
+        // Initialize chat notification service if permission already granted
+        await chatNotificationService.initialize();
+        console.log('✅ Chat notification service initialized');
       }
     };
 
@@ -38,9 +39,8 @@ function App() {
   // Enable audio on first user interaction
   useEffect(() => {
     const enableAudio = async () => {
-      const notificationService = (await import('./services/notifications.js')).default;
-      await notificationService.preloadSounds();
-      console.log('🔊 Audio enabled after user interaction');
+      await chatNotificationService.initialize();
+      console.log('🔊 Chat notification service enabled after user interaction');
     };
 
     // Listen for first click to enable audio

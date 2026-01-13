@@ -15,6 +15,7 @@ const apiRoutes = require('./apiRoutes');
 const whmRoutes = require('./whmRoutes');
 const serverRoutes = require('./serverRoutes');
 const serverCacheRoutes = require('./serverCacheRoutes');
+const chatNotificationRoutes = require('./chatNotificationRoutes');
 const startAutosslTestRoute = require('./startAutosslTestRoute'); // TEMPORARY - DELETE AFTER TESTING
 const focusedAutosslTestRoute = require('./focusedAutosslTestRoute'); // TEMPORARY - DELETE AFTER TESTING
 const testFocusedAutosslRoute = require('./testFocusedAutosslRoute'); // TEMPORARY - DELETE AFTER TESTING
@@ -31,6 +32,7 @@ router.use('/api', apiRoutes);
 router.use('/whm', whmRoutes);
 router.use('/servers', serverRoutes);
 router.use('/server-cache', serverCacheRoutes);
+router.use('/chat-notifications', chatNotificationRoutes);
 router.use('/test-start-autossl', startAutosslTestRoute); // TEMPORARY - DELETE AFTER TESTING
 router.use('/focused-autossl-test', focusedAutosslTestRoute); // TEMPORARY - DELETE AFTER TESTING
 router.use('/test-focused-autossl', testFocusedAutosslRoute); // TEMPORARY - DELETE AFTER TESTING

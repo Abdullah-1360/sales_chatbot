@@ -3,6 +3,7 @@ const { callApi, getClientsDetails } = require('../services/whmcsService');
 /**
  * Middleware to resolve clientId from domain or email
  * Adds clientId to req.body if found
+ * Updated to support parallel validation in invoice lookup
  */
 async function resolveClientId(req, res, next) {
   try {
@@ -20,7 +21,12 @@ async function resolveClientId(req, res, next) {
       return next();
     }
 
-    // CASE 1: Resolve from email
+    // For invoice lookup endpoint, skip middleware resolution to allow parallel validation
+    if (req.path === '/api/invoiceLookup' || req.path === '/invoiceLookup') {
+      return next();
+    }
+
+    // CASE 1: Resolve from email (prioritized for non-invoice endpoints)
     if (email) {
       try {
         const clientData = await getClientsDetails({ email });

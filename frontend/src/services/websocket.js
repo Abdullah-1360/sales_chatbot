@@ -99,6 +99,14 @@ class WebSocketService {
           this.triggerEvent('new_chat', chatData);
         });
 
+        // Listen for chat notification events from backend
+        this.socket.on('chat_notification', (notificationData) => {
+          console.log('🔔 WebSocket: chat_notification event received');
+          console.log('📦 Notification data:', JSON.stringify(notificationData, null, 2));
+          
+          this.triggerEvent('chat_notification', notificationData);
+        });
+
         // Generic error handler
         this.socket.on('error', (error) => {
           console.error('WebSocket error:', error);

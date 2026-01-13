@@ -28,19 +28,31 @@ router.post('/check-failed-logins', cphulkController.checkFailedLogins);
 /**
  * POST /cphulk/whitelist-ip
  * 
- * Whitelist an IP address in cPHulk including:
- * - Client credential resolution and validation
+ * Whitelist an IP address in cPHulk with enhanced parallel validation including:
+ * - Parallel domain/email client resolution
+ * - Phone as second-level validation
  * - Service/domain status checks
  * - IP whitelisting in cPHulk system
  * - Automatic failed login cleanup for the IP
  * 
  * Body Parameters:
  * - ip (required): IP address to whitelist
- * - domain (optional): Domain to validate ownership and server location
- * - email (optional): Client email address for identification
- * - phone (optional): Client phone number for identification
+ * - domain (optional): Domain name for client identification
+ * - email (optional): Email address for client identification
+ * - phone (optional): Phone number for second-level validation
  * - reason (optional): Reason for whitelisting (for logging purposes)
- * Note: Either email or phone is required for client identification when domain is provided
+ * 
+ * Client Identification:
+ * - Either domain OR email is required for client identification
+ * - Both can be provided for enhanced validation
+ * - Phone serves as second-level validation when provided
+ * 
+ * Edge Case Handling:
+ * - If both domain and email resolve to different clients, domain takes priority
+ * - If one parameter is wrong but the other is correct, uses the correct one
+ * - Phone validation provides masked error messages with update instructions
+ * 
+ * Note: Enhanced parallel validation with intelligent fallback for edge cases
  */
 router.post('/whitelist-ip', cphulkController.whitelistIP);
 
