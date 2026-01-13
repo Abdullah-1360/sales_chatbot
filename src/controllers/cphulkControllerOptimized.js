@@ -21,12 +21,16 @@ try {
 const whitelistIPSchema = Joi.object({
   ip: Joi.string().ip().required(),
   domain: Joi.string().domain().optional(),
-  email: Joi.string().email().optional(),
-  phone: Joi.string().optional(),
+  email: Joi.string().email().allow('').optional(),
+  phone: Joi.string().allow('').optional(),
   reason: Joi.string().max(255).optional()
 }).custom((value, helpers) => {
   // Require at least domain or email for client identification
-  if (!value.domain && !value.email) {
+  // Empty strings are treated as not provided
+  const hasDomain = value.domain && value.domain.trim() !== '';
+  const hasEmail = value.email && value.email.trim() !== '';
+  
+  if (!hasDomain && !hasEmail) {
     return helpers.error('custom.clientIdentificationRequired');
   }
   return value;
@@ -1589,51 +1593,24 @@ class OptimizedCphulkController {
         };
       }
       
-      // Method 3: Try general domain server lookup (includes DNS resolution)
-      const domainServer = await whmService.findDomainServer(domain, whmcsHint);
-      
-      if (domainServer) {
-        console.log(`→ Found server from domain lookup: ${domainServer}`);
-        return {
-          serverName: domainServer,
-          hostname: domainServer
-        };
+      // Method 3: Try general domain server lookup (includes DNS resolution) - but only if we have WHMCS hint
+      if (whmcsHint) {
+        const domainServer = await whmService.findDomainServer(domain, whmcsHint);
+        
+        if (domainServer) {
+          console.log(`→ Found server from domain lookup: ${domainServer}`);
+          return {
+            serverName: domainServer,
+            hostname: domainServer
+          };
+        }
       }
       
-      // Method 4: Use cPHulk manager's default server selection as last resort
-      const cphulkManager = require('../services/cphulkManager');
-      const defaultServer = cphulkManager.getDefaultServer();
-      
-      if (defaultServer) {
-        console.log(`→ Using cPHulk default server: ${defaultServer}`);
-        return {
-          serverName: defaultServer,
-          hostname: defaultServer
-        };
-      }
-      
-      // This should not happen if API keys are properly configured
-      throw new Error('No server could be determined for domain and no default server available');
+      // No fallback to checking all servers - if we can't determine the server from WHMCS data, fail gracefully
+      throw new Error(`Could not determine server for domain ${domain} from WHMCS data. Domain may not be hosted with us or WHMCS data may be incomplete.`);
       
     } catch (error) {
       console.log(`→ Error resolving server for domain ${domain}: ${error.message}`);
-      
-      // Final fallback - try to get any available server
-      try {
-        const cphulkManager = require('../services/cphulkManager');
-        const defaultServer = cphulkManager.getDefaultServer();
-        
-        if (defaultServer) {
-          console.log(`→ Using fallback server due to error: ${defaultServer}`);
-          return {
-            serverName: defaultServer,
-            hostname: defaultServer
-          };
-        }
-      } catch (fallbackError) {
-        console.log(`→ Fallback server selection also failed: ${fallbackError.message}`);
-      }
-      
       throw new Error(`Could not determine server for domain ${domain}: ${error.message}`);
     }
   }

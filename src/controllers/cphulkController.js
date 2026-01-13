@@ -37,12 +37,15 @@ const checkFailedLoginsSchema = Joi.object({
 const whitelistIPSchema = Joi.object({
   ip: Joi.string().ip().required(),
   domain: Joi.string().domain().optional(),
-  email: Joi.string().email().optional(),
-  phone: Joi.string().optional(),
+  email: Joi.string().email().allow('').optional(),
+  phone: Joi.string().allow('').optional(),
   reason: Joi.string().max(255).optional()
 }).custom((value, helpers) => {
-  // If domain is provided, require either email or phone
-  if (value.domain && !value.email && !value.phone) {
+  // If domain is provided, require either email or phone (empty strings don't count)
+  const hasEmail = value.email && value.email.trim() !== '';
+  const hasPhone = value.phone && value.phone.trim() !== '';
+  
+  if (value.domain && !hasEmail && !hasPhone) {
     return helpers.error('custom.domainRequiresContact');
   }
   return value;

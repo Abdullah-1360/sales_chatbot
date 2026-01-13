@@ -2578,8 +2578,9 @@ class WHMService {
         console.log(`→ Domain ${domain} resolves to IPs: ${domainIPs.join(', ')}`);
       } catch (dnsError) {
         console.log(`→ DNS lookup failed: ${dnsError.message}`);
-        // Fall back to server search if DNS lookup fails
-        return await this.findDomainServerFallback(domain);
+        // Don't fall back to checking all servers - return null if DNS fails
+        console.log(`→ Skipping server search fallback to avoid timeouts`);
+        return null;
       }
       
       // Step 2: Find which of our servers has the matching IP
@@ -2618,32 +2619,20 @@ class WHMService {
       console.log(`❌ No matching server found for IPs: ${domainIPs.join(', ')}`);
       console.log(`🔧 Domain is pointing to wrong IP - need to find correct server and fix DNS`);
       
-      // Step 4: Domain points to wrong IP - find the correct server via fallback search
-      console.log(`→ Step 4: Finding correct server for domain (wrong IP detected)...`);
-      const correctServer = await this.findDomainServerFallback(domain);
+      // Step 4: Domain points to wrong IP - don't search all servers, just return null
+      console.log(`→ Step 4: Domain points to wrong IP, but skipping expensive server search`);
+      console.log(`🚨 DNS ISSUE DETECTED: Domain ${domain} points to ${domainIPs.join(', ')} but not found on expected servers`);
+      console.log(`→ Current IP: ${domainIPs.join(', ')} (not matching our servers)`);
+      console.log(`→ Skipping fallback server search to avoid timeouts`);
       
-      if (correctServer) {
-        console.log(`✅ Found correct server: ${correctServer.toUpperCase()}`);
-        console.log(`🚨 DNS ISSUE DETECTED: Domain ${domain} points to ${domainIPs.join(', ')} but should point to server ${correctServer.toUpperCase()}`);
-        
-        // Get the correct server IP for comparison
-        const correctIP = await this.getServerIPFromCache(correctServer);
-        if (correctIP) {
-          console.log(`→ Expected IP: ${correctIP} (server ${correctServer.toUpperCase()})`);
-          console.log(`→ Current IP: ${domainIPs.join(', ')} (wrong)`);
-          console.log(`🔧 A record needs to be updated from ${domainIPs.join(', ')} to ${correctIP}`);
-        }
-        
-        return correctServer;
-      }
-      
-      console.log(`❌ Domain ${domain} not found on any server - may be external hosting or not configured`);
+      console.log(`❌ Domain ${domain} not found on expected servers - may be external hosting or DNS misconfiguration`);
       return null;
       
     } catch (error) {
       console.error(`❌ Error in optimized domain search: ${error.message}`);
-      // Fall back to traditional server search
-      return await this.findDomainServerFallback(domain);
+      // Don't fall back to checking all servers - return null to avoid timeouts
+      console.log(`→ Skipping fallback server search to avoid timeouts`);
+      return null;
     }
   }
 
