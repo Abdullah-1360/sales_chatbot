@@ -72,7 +72,7 @@ class CpanelCredentialResolver {
   }
 
   /**
-   * Optimized credential resolution with phone number verification and timeouts
+   * Optimized credential resolution with parallel email/domain lookup and phone verification
    */
   async resolveCpanelCredentials(domain, email = null, phone = null) {
     try {
@@ -88,45 +88,115 @@ class CpanelCredentialResolver {
         error: null
       };
 
-      // Step 1: Client lookup with multiple strategies (parallel where possible)
+      // Step 1: PARALLEL client lookup with email AND domain
       let clientId = null;
       let foundClient = null;
+      let resolvedFrom = null;
       
-      // Strategy 1: Try email lookup first (most reliable)
+      // PARALLEL RESOLUTION: Try email AND domain simultaneously
+      const parallelTasks = [];
+      
+      // Task 1: Email lookup (if provided)
       if (email) {
         const cacheKey = `client:email:${email}`;
         const cached = clientCache.get(cacheKey);
         
         if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
-          clientId = cached.data.id;
+          // Use cached result immediately
           foundClient = cached.data;
+          clientId = cached.data.id;
+          resolvedFrom = 'email_cache';
         } else {
-          // Add timeout to email lookup
-          try {
-            foundClient = await Promise.race([
+          // Add to parallel tasks
+          parallelTasks.push(
+            Promise.race([
               this.findClientByEmail(email),
               new Promise((_, reject) => 
                 setTimeout(() => reject(new Error('Email lookup timeout')), 10000)
               )
-            ]);
-            
-            if (foundClient) {
-              clientId = foundClient.id;
-              if (clientCache.size < MAX_CACHE_SIZE) {
-                clientCache.set(cacheKey, {
-                  data: foundClient,
-                  timestamp: Date.now()
-                });
-              }
-            }
-          } catch (error) {
-            // Continue to next strategy on timeout
-            foundClient = null;
-          }
+            ])
+              .then(result => ({ type: 'email', success: true, data: result, cacheKey }))
+              .catch(error => ({ type: 'email', success: false, error: error.message }))
+          );
         }
       }
-
-      // Strategy 2: Try phone lookup if no email or email failed
+      
+      // Task 2: Domain lookup (always try in parallel with email)
+      if (!foundClient) { // Only if not found in cache
+        parallelTasks.push(
+          Promise.race([
+            this.findClientByDomain(domain),
+            new Promise((_, reject) => 
+              setTimeout(() => reject(new Error('Domain lookup timeout')), 15000)
+            )
+          ])
+            .then(result => ({ type: 'domain', success: true, data: result }))
+            .catch(error => ({ type: 'domain', success: false, error: error.message }))
+        );
+      }
+      
+      // Execute parallel lookups if we have tasks
+      if (parallelTasks.length > 0 && !foundClient) {
+        const lookupResults = await Promise.allSettled(parallelTasks);
+        
+        // Process results - prioritize successful resolutions
+        let emailResult = null;
+        let domainResult = null;
+        
+        for (const result of lookupResults) {
+          if (result.status === 'fulfilled' && result.value.success && result.value.data) {
+            if (result.value.type === 'email') {
+              emailResult = result.value;
+            } else if (result.value.type === 'domain') {
+              domainResult = result.value;
+            }
+          }
+        }
+        
+        // Determine which resolution to use - handle edge cases
+        if (emailResult && domainResult) {
+          // Both resolved - check if they match
+          if (emailResult.data.id === domainResult.data.id) {
+            foundClient = emailResult.data;
+            clientId = emailResult.data.id;
+            resolvedFrom = 'email+domain';
+            
+            // Cache email result
+            if (clientCache.size < MAX_CACHE_SIZE && emailResult.cacheKey) {
+              clientCache.set(emailResult.cacheKey, {
+                data: foundClient,
+                timestamp: Date.now()
+              });
+            }
+          } else {
+            // Edge case: Different clients found - prioritize domain over email
+            // This handles cases where email is wrong but domain is correct
+            foundClient = domainResult.data;
+            clientId = domainResult.data.id;
+            resolvedFrom = 'domain_priority';
+          }
+        } else if (emailResult) {
+          // Only email resolved - domain was wrong or lookup failed
+          foundClient = emailResult.data;
+          clientId = emailResult.data.id;
+          resolvedFrom = 'email';
+          
+          // Cache email result
+          if (clientCache.size < MAX_CACHE_SIZE && emailResult.cacheKey) {
+            clientCache.set(emailResult.cacheKey, {
+              data: foundClient,
+              timestamp: Date.now()
+            });
+          }
+        } else if (domainResult) {
+          // Only domain resolved - email was wrong or not provided
+          foundClient = domainResult.data;
+          clientId = domainResult.data.id;
+          resolvedFrom = 'domain';
+        }
+      }
+      
+      // Strategy 2: Try phone lookup if still no client found
       if (!foundClient && phone) {
         try {
           foundClient = await Promise.race([
@@ -138,28 +208,10 @@ class CpanelCredentialResolver {
           
           if (foundClient) {
             clientId = foundClient.id;
+            resolvedFrom = 'phone';
           }
         } catch (error) {
-          // Continue to next strategy on timeout
-          foundClient = null;
-        }
-      }
-
-      // Strategy 3: Try domain lookup as fallback (with timeout)
-      if (!foundClient) {
-        try {
-          foundClient = await Promise.race([
-            this.findClientByDomain(domain),
-            new Promise((_, reject) => 
-              setTimeout(() => reject(new Error('Domain lookup timeout')), 15000)
-            )
-          ]);
-          
-          if (foundClient) {
-            clientId = foundClient.id;
-          }
-        } catch (error) {
-          // Final fallback failed
+          // Phone lookup failed
           foundClient = null;
         }
       }
@@ -187,6 +239,7 @@ class CpanelCredentialResolver {
       }
 
       result.clientInfo = foundClient;
+      result.resolvedFrom = resolvedFrom; // Track how client was resolved
 
       // Step 2: Find hosting service (with caching and timeout)
       const hostingCacheKey = `hosting:${clientId}:${domain}`;

@@ -229,13 +229,14 @@ exports.handleLeads = async (req, res, next) => {
       });
     }
     
-    // Step 1: Check if user exists in WHMCS (parallel email, phone, and domain check)
+    // Step 1: Check if user exists in WHMCS (PARALLEL email and domain check with smart prioritization)
     let userExists = false;
     let foundBy = null;
     let clientResolutionDetails = null;
     
     const checkPromises = [];
     
+    // PARALLEL RESOLUTION: Check email AND domain simultaneously
     // Check by email if provided
     if (email) {
       const emailCheck = getClientsDetails({ email })
@@ -270,7 +271,7 @@ exports.handleLeads = async (req, res, next) => {
       checkPromises.push(phoneCheck);
     }
     
-    // Check by domain if provided
+    // Check by domain if provided (runs in parallel with email/phone)
     if (domain) {
       const domainCheck = checkClientByDomain(domain);
       checkPromises.push(domainCheck);
@@ -279,34 +280,74 @@ exports.handleLeads = async (req, res, next) => {
     // Wait for all checks to complete
     const checkResults = await Promise.all(checkPromises);
     
-    // Determine if user exists from any check
+    // SMART PRIORITIZATION: Process results with domain priority over email
+    let emailResult = null;
+    let phoneResult = null;
+    let domainResult = null;
+    
     for (const result of checkResults) {
-      if (result.exists) {
-        userExists = true;
-        foundBy = result.foundBy;
-        clientResolutionDetails = result;
-        
-        // Handle special case for domain with multiple clients
-        if (result.multipleClients) {
-          console.log('→ Multiple clients found for domain:', result.clientIds);
-          return res.status(400).json({
-            success: false,
-            error: 'Multiple clients found for this domain. Please provide email or phone for clarification.',
-            domain: domain,
-            clientIds: result.clientIds,
-            foundBy: 'domain',
-            method: result.method
-          });
-        }
-        
-        break;
+      if (result.foundBy === 'email' && result.exists) {
+        emailResult = result;
+      } else if (result.foundBy === 'phone' && result.exists) {
+        phoneResult = result;
+      } else if (result.foundBy === 'domain' && result.exists) {
+        domainResult = result;
       }
+    }
+    
+    // Handle special case for domain with multiple clients
+    if (domainResult && domainResult.multipleClients) {
+      console.log('→ Multiple clients found for domain:', domainResult.clientIds);
+      return res.status(400).json({
+        success: false,
+        error: 'Multiple clients found for this domain. Please provide email or phone for clarification.',
+        domain: domain,
+        clientIds: domainResult.clientIds,
+        foundBy: 'domain',
+        method: domainResult.method
+      });
+    }
+    
+    // Determine which resolution to use - prioritize domain over email
+    if (domainResult && emailResult) {
+      // Both resolved - check if they match
+      if (domainResult.clientId === emailResult.clientId) {
+        userExists = true;
+        foundBy = 'domain+email';
+        clientResolutionDetails = domainResult;
+        console.log('→ Client resolved from both domain and email (matching):', domainResult.clientId);
+      } else {
+        // Edge case: Different clients found - prioritize domain over email
+        console.log('→ Domain and email resolve to different clients - prioritizing domain');
+        userExists = true;
+        foundBy = 'domain_priority';
+        clientResolutionDetails = domainResult;
+        console.log('→ Client resolved from domain (email mismatch ignored):', domainResult.clientId);
+      }
+    } else if (domainResult) {
+      // Only domain resolved - email was wrong or not provided
+      userExists = true;
+      foundBy = 'domain';
+      clientResolutionDetails = domainResult;
+      console.log('→ Client resolved from domain:', domainResult.clientId);
+    } else if (emailResult) {
+      // Only email resolved - domain was wrong or not provided
+      userExists = true;
+      foundBy = 'email';
+      clientResolutionDetails = emailResult;
+      console.log('→ Client resolved from email:', emailResult.clientId);
+    } else if (phoneResult) {
+      // Only phone resolved - domain and email were wrong or not provided
+      userExists = true;
+      foundBy = 'phone';
+      clientResolutionDetails = phoneResult;
+      console.log('→ Client resolved from phone:', phoneResult.clientId);
     }
     
     console.log('→ User exists in WHMCS:', userExists, foundBy ? `(found by ${foundBy})` : '');
     
     // Log resolution details for domain-based resolution
-    if (foundBy === 'domain' && clientResolutionDetails) {
+    if (foundBy && foundBy.includes('domain') && clientResolutionDetails) {
       console.log('→ Domain resolution details:', {
         clientId: clientResolutionDetails.clientId,
         method: clientResolutionDetails.method,

@@ -18,9 +18,9 @@ try {
 // Optimized validation schemas (reused for better performance)
 const diagnosticSchema = Joi.object({
   domain: Joi.string().domain().required(),
-  email: Joi.string().email().optional(),
-  phone: Joi.string().optional()
-}).or('email', 'phone');
+  email: Joi.string().email().allow('').optional(),
+  phone: Joi.string().allow('').optional()
+});
 
 const quickTestSchema = diagnosticSchema; // Reuse same schema
 

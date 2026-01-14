@@ -1079,21 +1079,151 @@ exports.createOrder = async (req, res, next) => {
  */
 exports.renewServiceEndpoint = async (req, res, next) => {
   console.log('[POST /api/renewservice]', { 
-    clientId: req.body.clientId, 
-    domain: req.body.domain, 
-    number: req.body.number 
+    hasEmail: !!req.body.email,
+    hasDomain: !!req.body.domain,
+    hasPhone: !!req.body.phone
   });
   
   try {
-    const { clientId, domain, number } = req.body || {};
+    const { clientId, email, phone, domain, number } = req.body || {};
     
-    if (!clientId || !domain) {
-      console.log('✗ Missing required parameters');
+    // Validate required parameters
+    if (!domain) {
+      console.log('✗ Missing domain parameter');
       return res.status(400).json({ 
         success: false, 
-        error: 'clientId and domain are required' 
+        error: 'domain is required' 
       });
     }
+    
+    if (!email && !phone && !clientId) {
+      console.log('✗ Missing client identification parameters');
+      return res.status(400).json({ 
+        success: false, 
+        error: 'email, phone, or clientId is required for client identification' 
+      });
+    }
+    
+    let resolvedClientId = clientId;
+    let resolvedFrom = req.body._resolvedFrom;
+    
+    // PARALLEL CLIENT RESOLUTION: Try email AND domain in parallel if no clientId provided
+    if (!resolvedClientId && (email || domain)) {
+      console.log('→ Starting parallel client resolution...');
+      
+      const parallelTasks = [];
+      
+      // Task 1: Email resolution (if provided)
+      if (email) {
+        parallelTasks.push(
+          resolveEmailToClient(email)
+            .then(result => ({ type: 'email', success: true, data: result }))
+            .catch(error => ({ type: 'email', success: false, error: error.message }))
+        );
+      }
+      
+      // Task 2: Domain resolution (always try)
+      parallelTasks.push(
+        resolveDomainToClient(domain)
+          .then(result => ({ type: 'domain', success: true, data: result }))
+          .catch(error => ({ type: 'domain', success: false, error: error.message }))
+      );
+      
+      // Execute parallel resolution
+      const results = await Promise.allSettled(parallelTasks);
+      
+      // Process results - prioritize successful resolutions
+      let emailResult = null;
+      let domainResult = null;
+      
+      for (const result of results) {
+        if (result.status === 'fulfilled' && result.value.success) {
+          if (result.value.type === 'email') {
+            emailResult = result.value.data;
+          } else if (result.value.type === 'domain') {
+            domainResult = result.value.data;
+          }
+        }
+      }
+      
+      // Determine which resolution to use - handle edge cases
+      if (domainResult && emailResult) {
+        // Both resolved - check if they match
+        if (domainResult.clientId === emailResult.clientId) {
+          resolvedClientId = domainResult.clientId;
+          resolvedFrom = 'domain+email';
+          console.log('→ Client resolved from both domain and email (matching):', resolvedClientId);
+        } else {
+          // Edge case: Different clients found - prioritize domain over email
+          console.log('→ Domain and email resolve to different clients - prioritizing domain');
+          resolvedClientId = domainResult.clientId;
+          resolvedFrom = 'domain_priority';
+          console.log('→ Client resolved from domain (email mismatch ignored):', resolvedClientId);
+        }
+      } else if (domainResult) {
+        // Only domain resolved - email was wrong or not provided
+        resolvedClientId = domainResult.clientId;
+        resolvedFrom = 'domain';
+        console.log('→ Client resolved from domain:', resolvedClientId);
+      } else if (emailResult) {
+        // Only email resolved - domain was wrong or not provided
+        resolvedClientId = emailResult.clientId;
+        resolvedFrom = 'email';
+        console.log('→ Client resolved from email:', resolvedClientId);
+      } else {
+        // Neither resolved successfully
+        const errorMessages = [];
+        if (email) errorMessages.push('No client found for the provided email');
+        if (domain) errorMessages.push('No client found for the provided domain');
+        
+        return res.status(404).json({
+          success: false,
+          error: errorMessages.join(' and ') + '. Please verify your information.'
+        });
+      }
+    }
+    
+    // Validate that we have a resolved client
+    if (!resolvedClientId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Could not resolve client from provided information. Please provide email or domain.'
+      });
+    }
+    
+    // PHONE VALIDATION: Validate phone number if provided (after client resolution)
+    if (phone && resolvedClientId) {
+      console.log('→ Performing phone validation...');
+      
+      try {
+        const phoneValidationResult = await validateClientPhone(resolvedClientId, phone);
+        
+        if (!phoneValidationResult.valid) {
+          // Phone validation failed - return masked phone error
+          const maskedPhone = phoneValidationResult.registeredPhone 
+            ? maskPhoneNumber(phoneValidationResult.registeredPhone)
+            : 'your registered number';
+            
+          return res.status(400).json({
+            success: false,
+            error: `Please contact from ${maskedPhone} or change the phone number from your client area to ${phone} (current number)`,
+            status: 'PHONE_VALIDATION_FAILED',
+            timestamp: new Date().toISOString()
+          });
+        }
+        
+        console.log('✓ Phone validation passed');
+      } catch (error) {
+        console.log('✗ Phone validation error:', error.message);
+        return res.status(500).json({
+          success: false,
+          error: 'Phone validation failed. Please try again or contact support.'
+        });
+      }
+    }
+    
+    // Use the resolved clientId for the rest of the function
+    const finalClientId = resolvedClientId;
     
     // Step 1: Service Validation (Pre-check)
     console.log('→ Step 1: Service Validation');
@@ -1107,7 +1237,7 @@ exports.renewServiceEndpoint = async (req, res, next) => {
     
     // Check for hosting service first
     try {
-      const productsResponse = await getClientsProducts(clientId);
+      const productsResponse = await getClientsProducts(finalClientId);
       const products = productsResponse.products?.product || [];
       const productArray = Array.isArray(products) ? products : (products ? [products] : []);
       
@@ -1161,7 +1291,7 @@ This ticket was automatically generated from a renewal request.`;
               deptname,
               subject: `[${serviceData.status}] Renewal Request - ${domain} (Service ID: ${serviceId})`,
               message: ticketMessage,
-              clientid: clientId,
+              clientid: finalClientId,
               priority: 'Medium',
               serviceid: serviceId
             });
@@ -1204,7 +1334,7 @@ This ticket was automatically generated from a renewal request.`;
     // Check for domain registration if no hosting service found
     if (!isHostingService) {
       try {
-        const domainsResponse = await getClientsDomains(clientId);
+        const domainsResponse = await getClientsDomains(finalClientId);
         const domains = domainsResponse.domains?.domain || [];
         const domainArray = Array.isArray(domains) ? domains : (domains ? [domains] : []);
         
@@ -1255,7 +1385,7 @@ This ticket was automatically generated from a renewal request.`;
                 deptname,
                 subject: `[Cancelled] Domain Renewal Request - ${domain} (Domain ID: ${domainId})`,
                 message: ticketMessage,
-                clientid: clientId,
+                clientid: finalClientId,
                 priority: 'Medium'
               });
               
@@ -1311,7 +1441,7 @@ This ticket was automatically generated from a renewal request.`;
     
     try {
       const invoicesResponse = await getInvoices({ 
-        userid: clientId, 
+        userid: finalClientId, 
         status: 'Unpaid',
         limitnum: 50 // Check more invoices to be thorough
       });
@@ -1367,7 +1497,7 @@ This ticket was automatically generated from a renewal request.`;
     
     const paymentMethod = 'banktransfer'; // Default payment method
     let orderParams = {
-      clientid: clientId,
+      clientid: finalClientId,
       paymentmethod: paymentMethod
     };
     
@@ -1445,7 +1575,7 @@ This ticket was automatically generated from a renewal request.`;
               deptname,
               subject: `[Renewal Issue] ${isHostingService ? 'Service' : 'Domain'} Renewal Not Available - ${domain}`,
               message: ticketMessage,
-              clientid: clientId,
+              clientid: finalClientId,
               priority: 'Medium',
               ...(isHostingService && serviceId ? { serviceid: serviceId } : {})
             });
@@ -1526,7 +1656,7 @@ This ticket was automatically generated from a renewal request.`;
             deptname,
             subject: `[Exception] Domain Renewal Failed - ${domain}`,
             message: ticketMessage,
-            clientid: clientId,
+            clientid: finalClientId,
             priority: 'High'
           });
           

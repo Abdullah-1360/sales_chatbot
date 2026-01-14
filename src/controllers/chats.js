@@ -14,17 +14,18 @@ const logger = createLogger('CHATS_CONTROLLER');
 /**
  * Create chat endpoint - Enhanced to handle multiple messages per user
  * POST /api/chats
- * Body: { username, email, phone, description, User_Ns }
+ * Body: { username, email, phone, description, comment, User_Ns, domain }
  */
 exports.createChat = async (req, res, next) => {
   try {
-    let { username, email, phone, description, comment, User_Ns } = req.body;
+    let { username, email, phone, description, comment, User_Ns, domain } = req.body;
     
     // Use comment if description is not provided
     const messageText = description || comment;
     
     logger.info('Incoming chat request received', { 
       email,
+      domain,
       hasPhone: !!phone,
       hasDescription: !!description,
       hasComment: !!comment,

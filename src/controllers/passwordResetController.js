@@ -8,37 +8,171 @@ const {
 } = require('../services/passwordResetService');
 
 /**
- * Handle password reset request
+ * Handle password reset request with parallel client resolution
  */
 async function handlePasswordReset(req, res) {
   try {
-    const { contact, domain } = req.body;
+    const { contact, email, phone, domain } = req.body;
+
+    // Support both old format (contact) and new format (email/phone/domain)
+    const emailToUse = email || (contact && contact.includes('@') ? contact : null);
+    const phoneToUse = phone || (contact && !contact.includes('@') ? contact : null);
 
     // Validate input
-    if (!contact || !domain) {
+    if (!domain) {
       return res.status(400).json({
         success: false,
-        error: 'Missing required fields: contact (email/phone) and domain are required'
+        error: 'domain is required'
       });
     }
 
-    console.log(`🔐 Password reset request for contact: ${contact}, domain: ${domain}`);
+    if (!emailToUse && !phoneToUse) {
+      return res.status(400).json({
+        success: false,
+        error: 'email or phone is required for client identification'
+      });
+    }
 
-    // Step 1: Find client by email or phone
-    console.log('📞 Step 1: Finding client...');
-    const client = await getClientByContact(contact);
+    console.log(`🔐 Password reset request for domain: ${domain}`, {
+      hasEmail: !!emailToUse,
+      hasPhone: !!phoneToUse
+    });
+
+    // Step 1: PARALLEL client resolution by email AND domain
+    console.log('📞 Step 1: Resolving client (parallel email/domain lookup)...');
     
-    if (!client) {
+    let resolvedClient = null;
+    let resolvedFrom = null;
+    
+    const resolutionPromises = [];
+    
+    // Task 1: Email resolution (if provided)
+    if (emailToUse) {
+      resolutionPromises.push(
+        resolveClientByEmail(emailToUse)
+          .then(result => ({ type: 'email', success: true, data: result }))
+          .catch(error => ({ type: 'email', success: false, error: error.message }))
+      );
+    }
+    
+    // Task 2: Domain resolution (always try)
+    resolutionPromises.push(
+      resolveClientByDomain(domain)
+        .then(result => ({ type: 'domain', success: true, data: result }))
+        .catch(error => ({ type: 'domain', success: false, error: error.message }))
+    );
+    
+    // Execute parallel resolution
+    const resolutionResults = await Promise.allSettled(resolutionPromises);
+    
+    // Process results - prioritize successful resolutions
+    let emailResult = null;
+    let domainResult = null;
+    
+    for (const result of resolutionResults) {
+      if (result.status === 'fulfilled' && result.value.success && result.value.data) {
+        if (result.value.type === 'email') {
+          emailResult = result.value;
+        } else if (result.value.type === 'domain') {
+          domainResult = result.value;
+        }
+      }
+    }
+    
+    // Handle special case for domain with multiple clients
+    if (domainResult && domainResult.data.multipleClients) {
+      console.log('→ Multiple clients found for domain:', domainResult.data.clientIds);
+      return res.status(400).json({
+        success: false,
+        error: 'Multiple clients found for this domain. Please provide email for clarification.',
+        domain: domain,
+        clientIds: domainResult.data.clientIds
+      });
+    }
+    
+    // Determine which resolution to use - prioritize domain over email
+    if (domainResult && emailResult) {
+      // Both resolved - check if they match
+      if (domainResult.data.clientId === emailResult.data.id) {
+        resolvedClient = emailResult.data;
+        resolvedFrom = 'domain+email';
+        console.log('→ Client resolved from both domain and email (matching):', resolvedClient.id);
+      } else {
+        // Edge case: Different clients found - prioritize domain over email
+        console.log('→ Domain and email resolve to different clients - prioritizing domain');
+        // Get full client details for domain-resolved client
+        const { callWhmcsApi } = require('../services/passwordResetService');
+        const clientDetails = await callWhmcsApi('GetClientsDetails', {
+          clientid: domainResult.data.clientId,
+          stats: false
+        });
+        resolvedClient = clientDetails.client;
+        resolvedFrom = 'domain_priority';
+        console.log('→ Client resolved from domain (email mismatch ignored):', resolvedClient.id);
+      }
+    } else if (domainResult) {
+      // Only domain resolved - email was wrong or not provided
+      const { callWhmcsApi } = require('../services/passwordResetService');
+      const clientDetails = await callWhmcsApi('GetClientsDetails', {
+        clientid: domainResult.data.clientId,
+        stats: false
+      });
+      resolvedClient = clientDetails.client;
+      resolvedFrom = 'domain';
+      console.log('→ Client resolved from domain:', resolvedClient.id);
+    } else if (emailResult) {
+      // Only email resolved - domain was wrong or not provided
+      resolvedClient = emailResult.data;
+      resolvedFrom = 'email';
+      console.log('→ Client resolved from email:', resolvedClient.id);
+    } else {
+      // Neither resolved successfully
+      const errorMessages = [];
+      if (emailToUse) errorMessages.push('No client found for the provided email');
+      if (domain) errorMessages.push('No client found for the provided domain');
+      
       return res.status(404).json({
         success: false,
-        error: 'Client not found with the provided email or phone number'
+        error: errorMessages.join(' and ') + '. Please verify your information.'
       });
     }
 
-    console.log(`✅ Client found: ${client.firstname} ${client.lastname} (ID: ${client.id})`);
+    console.log(`✅ Client found: ${resolvedClient.firstname} ${resolvedClient.lastname} (ID: ${resolvedClient.id}, resolved from: ${resolvedFrom})`);
 
-    // Step 2: Get client's products/services for the specific domain
-    console.log('🛍️ Step 2: Getting client products for domain...');
+    // Step 2: Validate phone number if provided
+    if (phoneToUse) {
+      console.log('📱 Step 2: Validating phone number...');
+      
+      const registeredPhone = resolvedClient.phonenumber;
+      
+      if (!registeredPhone) {
+        return res.status(400).json({
+          success: false,
+          error: 'No phone number registered for this client. Please contact support.'
+        });
+      }
+      
+      // Normalize and compare phone numbers
+      const { phoneNumbersMatch } = require('../services/passwordResetService');
+      
+      if (!phoneNumbersMatch(registeredPhone, phoneToUse)) {
+        // Mask the registered phone number for security
+        const maskedPhone = registeredPhone.replace(/(\d{3})\d+(\d{2})/, '$1***$2');
+        
+        return res.status(400).json({
+          success: false,
+          error: `Phone number verification failed. Please contact from ${maskedPhone} or update your phone number in the client area.`,
+          registeredPhone: maskedPhone
+        });
+      }
+      
+      console.log('✅ Phone number validated successfully');
+    }
+
+    const client = resolvedClient;
+
+    // Step 3: Get client's products/services for the specific domain
+    console.log('🛍️ Step 3: Getting client products for domain...');
     const products = await getClientProductsByDomain(client.id, domain);
     
     if (!products || products.length === 0) {
@@ -50,8 +184,8 @@ async function handlePasswordReset(req, res) {
 
     console.log(`📦 Found ${products.length} product(s) for domain ${domain}`);
 
-    // Step 3: Find the service for the domain
-    console.log('🔍 Step 3: Finding service for domain...');
+    // Step 4: Find the service for the domain
+    console.log('🔍 Step 4: Finding service for domain...');
     let matchedService = null;
 
     // Find service that matches the domain exactly
@@ -89,15 +223,15 @@ async function handlePasswordReset(req, res) {
 
     console.log(`✅ Service found: ${matchedService.name || matchedService.productname} (Service ID: ${matchedService.id})`);
 
-    // Step 4: Check service status
-    console.log('📊 Step 4: Checking service status...');
+    // Step 5: Check service status
+    console.log('📊 Step 5: Checking service status...');
     const statusCheck = checkServiceStatus(matchedService);
     
     console.log(`📋 Service status: ${statusCheck.status} (Active: ${statusCheck.isActive}, Suspended: ${statusCheck.isSuspended})`);
 
-    // Step 5: Handle suspended/terminated services
+    // Step 6: Handle suspended/terminated services
     if (statusCheck.needsTicket) {
-      console.log('🎫 Step 5: Creating support ticket for suspended/terminated service...');
+      console.log('🎫 Step 6: Creating support ticket for suspended/terminated service...');
       
       const ticketSubject = `Password Reset Request - Service Suspended/Terminated`;
       const ticketMessage = `
@@ -153,8 +287,8 @@ This ticket was automatically generated by the password reset system.
       }
     }
 
-    // Step 6: Reset password for active service
-    console.log('🔐 Step 6: Resetting cPanel password...');
+    // Step 7: Reset password for active service
+    console.log('🔐 Step 7: Resetting cPanel password...');
     
     try {
       // Reset password using WHMCS ModuleChangePw API
@@ -167,7 +301,7 @@ This ticket was automatically generated by the password reset system.
       console.log('✅ Password reset successful');
       
       // Send email notification with new password information
-      console.log('📧 Step 7: Sending email notification...');
+      console.log('📧 Step 8: Sending email notification...');
       const emailResult = await sendEmailNotification(
         matchedService.id, 
         'Hosting Account - cPanel Login Email',
@@ -293,6 +427,81 @@ async function getClientHostingServices(req, res) {
       error: `Failed to get hosting services: ${error.message}`
     });
   }
+}
+
+/**
+ * Helper function to resolve client by email
+ */
+async function resolveClientByEmail(email) {
+  const { callWhmcsApi } = require('../services/passwordResetService');
+  
+  const result = await callWhmcsApi('GetClientsDetails', {
+    email: email,
+    stats: false
+  });
+  
+  if (result && result.client && result.client.id) {
+    return result.client;
+  }
+  
+  throw new Error('No client found with that email address');
+}
+
+/**
+ * Helper function to resolve client by domain
+ */
+async function resolveClientByDomain(domain) {
+  const { callWhmcsApi } = require('../services/passwordResetService');
+  
+  // Try GetClientsDomains first (for domain registrations)
+  const domainsData = await callWhmcsApi('GetClientsDomains', { domain });
+  
+  if (domainsData && domainsData.domains) {
+    const domainsRaw = domainsData.domains;
+    const domains = domainsRaw.domain || domainsRaw;
+    const domainArray = Array.isArray(domains) ? domains : (domains ? [domains] : []);
+    
+    if (domainArray.length > 0) {
+      const uniqueUserIds = [...new Set(domainArray.map(d => String(d.userid)))];
+      
+      if (uniqueUserIds.length === 1) {
+        return { clientId: uniqueUserIds[0], source: 'domains' };
+      } else if (uniqueUserIds.length > 1) {
+        return { 
+          clientId: null, 
+          multipleClients: true, 
+          clientIds: uniqueUserIds,
+          source: 'domains'
+        };
+      }
+    }
+  }
+  
+  // Fallback: Try GetClientsProducts with domain parameter
+  const productsData = await callWhmcsApi('GetClientsProducts', { domain });
+  
+  if (productsData && productsData.products) {
+    const productsRaw = productsData.products;
+    const products = productsRaw.product || productsRaw;
+    const productArray = Array.isArray(products) ? products : (products ? [products] : []);
+    
+    if (productArray.length > 0) {
+      const uniqueUserIds = [...new Set(productArray.map(p => String(p.userid || p.clientid)))];
+      
+      if (uniqueUserIds.length === 1) {
+        return { clientId: uniqueUserIds[0], source: 'products' };
+      } else if (uniqueUserIds.length > 1) {
+        return { 
+          clientId: null, 
+          multipleClients: true, 
+          clientIds: uniqueUserIds,
+          source: 'products'
+        };
+      }
+    }
+  }
+  
+  throw new Error('No client found with that domain');
 }
 
 module.exports = {

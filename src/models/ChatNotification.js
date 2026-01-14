@@ -42,12 +42,36 @@ const chatNotificationSchema = new mongoose.Schema({
   },
   stopReason: { 
     type: String, 
-    enum: ['viewed', 'dismissed', 'max_reached', 'manual'],
+    enum: ['viewed', 'dismissed', 'max_reached', 'manual', 'auto_ticket_created', 'reset', 'chat_not_found', 'system_shutdown'],
     default: null 
   },
   intervalId: { 
     type: String, 
     default: null 
+  },
+  agentJoinedMessageSent: {
+    type: Boolean,
+    default: false
+  },
+  agentJoinedMessageSentAt: {
+    type: Date,
+    default: null
+  },
+  autoTicketScheduled: {
+    type: Boolean,
+    default: false
+  },
+  autoTicketCreated: {
+    type: Boolean,
+    default: false
+  },
+  autoTicketCreatedAt: {
+    type: Date,
+    default: null
+  },
+  autoTicketId: {
+    type: String,
+    default: null
   }
 }, {
   timestamps: true,

@@ -9,6 +9,13 @@ const userController = require('../controllers/userController');
 const leadsController = require('../controllers/leadsController');
 const chatsController = require('../controllers/chats');
 const ticketLookupController = require('../controllers/ticketLookupController');
+const ticketStatusController = require('../controllers/ticketStatusController');
+
+// GET /whmcs/ticket-status - WHMCS ticket status webhook/callback
+router.get('/whmcs/ticket-status', ticketStatusController.getTicketStatus);
+
+// POST /whmcs/ticket-status - WHMCS ticket status webhook/callback (POST method)
+router.post('/whmcs/ticket-status', ticketStatusController.getTicketStatus);
 
 // GET /api/chats - Get chats with pagination
 router.get('/chats', chatsController.getChats);
@@ -67,8 +74,8 @@ router.post('/test-syntax-error-ticket', serviceStatusController.testSyntaxError
 // POST /api/renewService
 router.post('/renewService', resolveClientId, billingController.renewService);
 
-// POST /api/renewservice - New endpoint with phone/email resolution and validation
-router.post('/renewservice', resolveClientId, validatePhoneNumber, billingController.renewServiceEndpoint);
+// POST /api/renewservice - New endpoint with parallel client resolution and phone validation
+router.post('/renewservice', billingController.renewServiceEndpoint);
 
 // POST /api/confirmPayment - with enhanced parallel validation (phone validation handled in controller)
 router.post('/confirmPayment', billingController.confirmPayment);
