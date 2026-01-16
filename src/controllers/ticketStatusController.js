@@ -21,7 +21,6 @@ exports.getTicketStatus = async (req, res, next) => {
     const expectedToken = process.env.WHMCS_TICKET_STATUS_BEARER_TOKEN;
 
     if (!expectedToken) {
-      logger.error('❌ WHMCS_TICKET_STATUS_BEARER_TOKEN not configured in .env');
       return res.json({
         success: true,
         message: 'Ticket status received',
@@ -63,7 +62,6 @@ exports.getTicketStatus = async (req, res, next) => {
     const { ticket_id, status, client_id, subject, department, priority, timestamp } = req.body;
 
     if (!ticket_id) {
-      logger.error('❌ No ticket_id provided in request body');
       return res.json({
         success: true,
         message: 'Ticket status received',
@@ -121,6 +119,20 @@ async function processTicketStatusUpdate(webhookData) {
   const { ticket_id, status, subject } = webhookData;
 
   try {
+    // Skip notification for Customer-Reply status
+    // Only send notifications for Answered or In Progress statuses
+    if (status === 'Customer-Reply') {
+      
+      return;
+    }
+
+    // Only send notifications for specific statuses
+    const notifiableStatuses = ['Answered', 'In Progress'];
+    if (!notifiableStatuses.includes(status)) {
+      
+      return;
+    }
+
     // Fetch ticket details from WHMCS
     const ticketData = await getTicket(ticket_id);
 
@@ -170,9 +182,9 @@ async function processTicketStatusUpdate(webhookData) {
     
     // Prepare ticket status message
     const ticketStatus = status || 'Updated';
-    const ticketSubject = ticketData.subject || subject || 'Your Support Ticket';
     
-    const messageContent = `Ticket #${ticket_id} Status: ${ticketStatus}\n\nSubject: ${ticketSubject}\n\nYour ticket has been updated. Please check your email for details.`;
+    // Build message without the subject line
+    const messageContent = `Ticket #${ticket_id} Status: ${ticketStatus}\n\nYour ticket has been updated. Please check your email for details.`;
     
     // Send message to subscriber via UChat
     const sendTextUrl = `${process.env.UCHAT_API_URL}/subscriber/send-text`;
@@ -188,11 +200,7 @@ async function processTicketStatusUpdate(webhookData) {
       timeout: 10000
     });
 
-    logger.info('✅ Ticket status notification sent', {
-      ticket_id,
-      status: ticketStatus,
-      userNs
-    });
+    
 
   } catch (error) {
     logger.error('❌ Error processing ticket status update', {

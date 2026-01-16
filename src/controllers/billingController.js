@@ -41,11 +41,12 @@ exports.renewService = async (req, res, next) => {
   console.log('[POST /api/renewService]', { 
     clientId: req.body.clientId, 
     domain: req.body.domain, 
-    serviceId: req.body.serviceId 
+    serviceId: req.body.serviceId,
+    hasUserNs: !!req.body.user_ns
   });
   
   try {
-    const { clientId, serviceId, domain, period, billingcycle, paymentmethod } = req.body || {};
+    const { clientId, serviceId, domain, period, billingcycle, paymentmethod, user_ns } = req.body || {};
     
     if (!clientId || (!serviceId && !domain)) {
       console.log('✗ Missing required parameters');
@@ -318,6 +319,21 @@ This ticket was automatically generated from an early renewal request.`;
           const ticketId = ticket.tid || ticket.ticketid || ticket.id;
           console.log(`→ Support ticket created: ${ticketId} for ${isOverdue ? 'overdue' : 'early'} service renewal`);
           
+          // Send UChat notification if user_ns provided
+          try {
+            console.log(`→ Checking user_ns for notification: ${typeof user_ns}, value: ${user_ns}`);
+            if (typeof user_ns !== 'undefined' && user_ns) {
+              console.log(`→ Calling sendUChatTicketNotification with user_ns: ${user_ns}, ticketId: ${ticketId}`);
+              sendUChatTicketNotification(user_ns, ticketId).catch(err => {
+                console.error('✗ UChat notification promise failed:', err.message);
+              });
+            } else {
+              console.log(`→ Skipping UChat notification - user_ns not provided`);
+            }
+          } catch (notificationError) {
+            console.error('✗ UChat notification setup failed:', notificationError.message);
+          }
+          
           return res.status(400).json({
             success: false,
             error: isOverdue 
@@ -515,6 +531,13 @@ This ticket was automatically generated from an early domain renewal request.`;
           const ticketId = ticket.tid || ticket.ticketid || ticket.id;
           console.log(`→ Support ticket created: ${ticketId} for ${isDomainOverdue ? 'overdue' : 'early'} domain renewal`);
           
+          // Send UChat notification if user_ns provided
+          if (typeof user_ns !== 'undefined' && user_ns) {
+            sendUChatTicketNotification(user_ns, ticketId).catch(err => {
+              console.error('✗ UChat notification failed:', err.message);
+            });
+          }
+          
           return res.status(400).json({
             success: false,
             error: isDomainOverdue
@@ -577,6 +600,7 @@ This ticket was automatically generated from an early domain renewal request.`;
 
 /**
  * Confirm payment for an invoice with enhanced parallel validation
+ * Also supports invoice-only lookup when domain and email are empty
  */
 exports.confirmPayment = async (req, res, next) => {
   console.log('[POST /api/confirmPayment]', { 
@@ -587,11 +611,12 @@ exports.confirmPayment = async (req, res, next) => {
     phone: req.body.phone ? '[PROVIDED]' : undefined,
     hasImage: !!req.body.image_url,
     hasPaymentUrl: !!req.body.payment_url,
+    hasUserNs: !!req.body.user_ns,
     resolvedFrom: req.body._resolvedFrom
   });
   
   try {
-    const { clientId, invoiceId, details, domain, email, phone, image_url, image_base64, image_filename, payment_url } = req.body || {};
+    const { clientId, invoiceId, details, domain, email, phone, image_url, image_base64, image_filename, payment_url, user_ns } = req.body || {};
     
     // Validate email if provided
     if (email !== undefined && email !== null && email !== '') {
@@ -604,10 +629,50 @@ exports.confirmPayment = async (req, res, next) => {
       }
     }
     
+    // Validate invoiceId format if provided
+    let targetInvoiceId = invoiceId;
+    if (targetInvoiceId !== undefined && targetInvoiceId !== null && targetInvoiceId !== '' && targetInvoiceId !== 0) {
+      if (!String(targetInvoiceId).match(/^\d+$/)) {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'Invalid invoice ID format. Invoice ID must be numeric.' 
+        });
+      }
+    } else {
+      // Empty, null, undefined, or 0 invoice ID - treat as no invoice provided
+      targetInvoiceId = null;
+    }
+    
     let resolvedClientId = clientId;
     let resolvedFrom = req.body._resolvedFrom;
+    let invoiceClientId = null; // Track client ID from invoice
     
-    // PARALLEL VALIDATION: If no clientId was resolved, try domain OR email in parallel
+    // PRIORITY 1: If invoice number is provided, try to resolve client from invoice first
+    // This handles cases where domain/email might be wrong but invoice is correct
+    if (targetInvoiceId) {
+      console.log('→ Invoice provided - attempting to resolve client from invoice:', targetInvoiceId);
+      
+      try {
+        const { getInvoice } = require('../services/whmcsService');
+        const invoice = await getInvoice(targetInvoiceId);
+        
+        if (invoice && invoice.invoiceid) {
+          invoiceClientId = String(invoice.userid || invoice.user_id || invoice.clientid);
+          console.log('→ Client resolved from invoice:', invoiceClientId);
+          
+          // If no other client resolution method was used, use invoice client
+          if (!resolvedClientId) {
+            resolvedClientId = invoiceClientId;
+            resolvedFrom = 'invoice';
+          }
+        }
+      } catch (err) {
+        console.log('→ Invoice lookup failed:', err.message, '- will try domain/email resolution');
+        // Don't return error yet - try domain/email resolution
+      }
+    }
+    
+    // PRIORITY 2: If no clientId resolved yet, try domain OR email in parallel
     if (!resolvedClientId && (domain || email)) {
       console.log('→ Starting parallel client resolution...');
       
@@ -652,38 +717,87 @@ exports.confirmPayment = async (req, res, next) => {
       if (domainResult && emailResult) {
         // Both resolved - check if they match
         if (domainResult.clientId === emailResult.clientId) {
-          resolvedClientId = domainResult.clientId;
-          resolvedFrom = 'domain+email';
-          console.log('→ Client resolved from both domain and email (matching):', resolvedClientId);
+          // If invoice client exists and matches, use it; otherwise use domain+email
+          if (invoiceClientId && invoiceClientId === domainResult.clientId) {
+            resolvedClientId = invoiceClientId;
+            resolvedFrom = 'invoice+domain+email';
+            console.log('→ Client resolved from invoice, domain, and email (all matching):', resolvedClientId);
+          } else if (!invoiceClientId) {
+            resolvedClientId = domainResult.clientId;
+            resolvedFrom = 'domain+email';
+            console.log('→ Client resolved from both domain and email (matching):', resolvedClientId);
+          } else {
+            // Invoice client exists but doesn't match domain/email - prioritize invoice
+            console.log('→ Invoice client differs from domain/email - prioritizing invoice');
+            resolvedClientId = invoiceClientId;
+            resolvedFrom = 'invoice_priority';
+            console.log('→ Client resolved from invoice (domain/email mismatch ignored):', resolvedClientId);
+          }
         } else {
-          // Edge case: Different clients found - prioritize domain over email for payment confirmation
-          // This handles cases where email is wrong but domain is correct
-          console.log('→ Domain and email resolve to different clients - prioritizing domain');
-          resolvedClientId = domainResult.clientId;
-          resolvedFrom = 'domain_priority';
-          console.log('→ Client resolved from domain (email mismatch ignored):', resolvedClientId);
+          // Domain and email resolve to different clients
+          if (invoiceClientId) {
+            // Prioritize invoice when domain/email conflict
+            console.log('→ Domain and email conflict, but invoice provided - prioritizing invoice');
+            resolvedClientId = invoiceClientId;
+            resolvedFrom = 'invoice_priority';
+            console.log('→ Client resolved from invoice (domain/email conflict ignored):', resolvedClientId);
+          } else {
+            // No invoice - prioritize domain over email
+            console.log('→ Domain and email resolve to different clients - prioritizing domain');
+            resolvedClientId = domainResult.clientId;
+            resolvedFrom = 'domain_priority';
+            console.log('→ Client resolved from domain (email mismatch ignored):', resolvedClientId);
+          }
         }
       } else if (domainResult) {
-        // Only domain resolved - email was wrong or not provided
-        resolvedClientId = domainResult.clientId;
-        resolvedFrom = 'domain';
-        console.log('→ Client resolved from domain:', resolvedClientId);
+        // Only domain resolved
+        if (invoiceClientId && invoiceClientId !== domainResult.clientId) {
+          // Invoice client differs from domain - prioritize invoice
+          console.log('→ Domain resolved but differs from invoice - prioritizing invoice');
+          resolvedClientId = invoiceClientId;
+          resolvedFrom = 'invoice_priority';
+        } else if (!invoiceClientId) {
+          resolvedClientId = domainResult.clientId;
+          resolvedFrom = 'domain';
+          console.log('→ Client resolved from domain:', resolvedClientId);
+        }
       } else if (emailResult) {
-        // Only email resolved - domain was wrong or not provided
-        resolvedClientId = emailResult.clientId;
-        resolvedFrom = 'email';
-        console.log('→ Client resolved from email:', resolvedClientId);
+        // Only email resolved
+        if (invoiceClientId && invoiceClientId !== emailResult.clientId) {
+          // Invoice client differs from email - prioritize invoice
+          console.log('→ Email resolved but differs from invoice - prioritizing invoice');
+          resolvedClientId = invoiceClientId;
+          resolvedFrom = 'invoice_priority';
+        } else if (!invoiceClientId) {
+          resolvedClientId = emailResult.clientId;
+          resolvedFrom = 'email';
+          console.log('→ Client resolved from email:', resolvedClientId);
+        }
       } else {
-        // Neither resolved successfully
-        const errorMessages = [];
-        if (domain) errorMessages.push('No client found for the provided domain');
-        if (email) errorMessages.push('No client found for the provided email');
-        
-        return res.status(404).json({
-          success: false,
-          error: errorMessages.join(' and ') + '. Please verify your information.'
-        });
+        // Neither domain nor email resolved successfully
+        if (invoiceClientId) {
+          // Invoice resolved but domain/email failed - use invoice
+          console.log('→ Domain/email resolution failed but invoice succeeded');
+          resolvedClientId = invoiceClientId;
+          resolvedFrom = 'invoice';
+        } else {
+          // All resolution methods failed
+          const errorMessages = [];
+          if (domain) errorMessages.push('No client found for the provided domain');
+          if (email) errorMessages.push('No client found for the provided email');
+          if (targetInvoiceId) errorMessages.push('Invoice not found');
+          
+          return res.status(404).json({
+            success: false,
+            error: errorMessages.join(' and ') + '. Please verify your information.'
+          });
+        }
       }
+    } else if (invoiceClientId && !resolvedClientId) {
+      // No domain/email provided, but invoice resolved successfully
+      resolvedClientId = invoiceClientId;
+      resolvedFrom = 'invoice';
+      console.log('→ Client resolved from invoice only:', resolvedClientId);
     }
     
     // SECOND-LEVEL VALIDATION: Phone validation if provided
@@ -716,30 +830,28 @@ exports.confirmPayment = async (req, res, next) => {
     } else if (phone && !resolvedClientId) {
       return res.status(400).json({
         success: false,
-        error: 'Please provide either a domain name or email address along with phone number for validation.'
+        error: 'Unable to identify client for phone validation. Please verify your domain, email, or invoice number.'
       });
     }
     
     // Validate that we have a resolved client
     if (!resolvedClientId) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Please provide either a domain name or email address to identify your account.' 
-      });
-    }
-    
-    // Handle empty or invalid invoice ID
-    let targetInvoiceId = invoiceId;
-    if (targetInvoiceId !== undefined && targetInvoiceId !== null && targetInvoiceId !== '') {
-      if (!String(targetInvoiceId).match(/^\d+$/)) {
+      if (targetInvoiceId) {
         return res.status(400).json({ 
           success: false, 
-          error: 'Invalid invoice ID format. Invoice ID must be numeric.' 
+          error: 'Unable to identify client from invoice. Please provide domain or email address.' 
+        });
+      } else if (phone) {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'Please provide either a domain name, email address, or invoice number along with phone number for validation.' 
+        });
+      } else {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'Please provide either a domain name, email address, or invoice number to identify your account.' 
         });
       }
-    } else {
-      // Empty, null, or undefined invoice ID - find unpaid invoice
-      targetInvoiceId = null;
     }
     
     let matchedInvoice = null;
@@ -748,31 +860,25 @@ exports.confirmPayment = async (req, res, next) => {
     // Try to find specific invoice if ID provided
     if (targetInvoiceId) {
       try {
-        console.log('→ Fetching invoices for user:', resolvedClientId);
-        const invoicesResponse = await getInvoicesForUser(resolvedClientId);
+        const { getInvoice } = require('../services/whmcsService');
+        matchedInvoice = await getInvoice(targetInvoiceId);
+        console.log('→ Invoice fetched:', matchedInvoice.invoiceid || matchedInvoice.id, 'Owner:', matchedInvoice.userid || matchedInvoice.clientid);
         
-        if (invoicesResponse && invoicesResponse.invoices && invoicesResponse.invoices.invoice) {
-          const invoiceList = Array.isArray(invoicesResponse.invoices.invoice) 
-            ? invoicesResponse.invoices.invoice 
-            : [invoicesResponse.invoices.invoice];
-          
-          const requestedInvoiceId = String(targetInvoiceId);
-          console.log('→ Looking for invoice:', requestedInvoiceId, 'in', invoiceList.length, 'invoices');
-          
-          matchedInvoice = invoiceList.find(inv => {
-            const idMatch = String(inv.id) === requestedInvoiceId;
-            const invoiceNumMatch = String(inv.invoicenum) === requestedInvoiceId;
-            return idMatch || invoiceNumMatch;
+        // Validate ownership of the specific invoice
+        const ownerId = String(matchedInvoice.userid || matchedInvoice.user_id || matchedInvoice.clientid);
+        if (String(ownerId) !== String(resolvedClientId)) {
+          console.log('✗ Invoice ownership mismatch - invoice belongs to different client');
+          return res.status(403).json({
+            success: false,
+            error: 'The provided invoice does not belong to the identified account. Please verify your information.'
           });
-          
-          if (matchedInvoice) {
-            console.log('→ Found specific invoice:', matchedInvoice.id);
-          } else {
-            console.log('→ Specific invoice not found, will search for unpaid invoice');
-          }
         }
       } catch (error) {
-        console.log('→ Error fetching specific invoice, will search for unpaid invoice:', error.message);
+        console.log('✗ Invoice fetch failed:', error.message);
+        return res.status(404).json({
+          success: false,
+          error: 'Invoice not found. Please check the invoice number.'
+        });
       }
     }
     
@@ -905,11 +1011,19 @@ exports.confirmPayment = async (req, res, next) => {
     const ticketId = t.tid || t.ticketid || t.id;
     console.log('→ Billing ticket created:', ticketId, 'for invoice:', finalInvoiceId);
     
+    // Send UChat notification if user_ns provided
+    if (typeof user_ns !== 'undefined' && user_ns) {
+      console.log(`→ Calling sendUChatTicketNotification with user_ns: ${user_ns}, ticketId: ${ticketId}`);
+      sendUChatTicketNotification(user_ns, ticketId).catch(err => {
+        console.error('✗ UChat notification failed:', err.message);
+      });
+    }
+    
     // Build clean response
-    let message = `Support ticket (#${ticketId}) created for payment confirmation of Invoice #${finalInvoiceId}.`;
+    let message = `Your payment confirmation for Invoice #${finalInvoiceId} has been received and logged.\n\nA billing ticket (#${ticketId}) is now in progress, and our billing team will review it and update you shortly.`;
     
     if (fallbackUsed) {
-      message += ` Note: The requested invoice was not found, so we're processing your current unpaid invoice instead.`;
+      message += `\n\nNote: The requested invoice was not found, so we're processing your current unpaid invoice instead.`;
     }
     
     
@@ -1081,11 +1195,12 @@ exports.renewServiceEndpoint = async (req, res, next) => {
   console.log('[POST /api/renewservice]', { 
     hasEmail: !!req.body.email,
     hasDomain: !!req.body.domain,
-    hasPhone: !!req.body.phone
+    hasPhone: !!req.body.phone,
+    hasUserNs: !!req.body.user_ns
   });
   
   try {
-    const { clientId, email, phone, domain, number } = req.body || {};
+    const { clientId, email, phone, domain, number, user_ns } = req.body || {};
     
     // Validate required parameters
     if (!domain) {
@@ -1299,6 +1414,13 @@ This ticket was automatically generated from a renewal request.`;
             const ticketId = ticket.tid || ticket.ticketid || ticket.id;
             console.log(`→ Support ticket created: ${ticketId} for non-renewable service`);
             
+            // Send UChat notification if user_ns provided
+            if (typeof user_ns !== 'undefined' && user_ns) {
+              sendUChatTicketNotification(user_ns, ticketId).catch(err => {
+                console.error('✗ UChat notification failed:', err.message);
+              });
+            }
+            
             return res.status(400).json({
               success: false,
               error: 'Service cannot be renewed',
@@ -1391,6 +1513,13 @@ This ticket was automatically generated from a renewal request.`;
               
               const ticketId = ticket.tid || ticket.ticketid || ticket.id;
               console.log(`→ Support ticket created: ${ticketId} for cancelled domain`);
+              
+              // Send UChat notification if user_ns provided
+              if (typeof user_ns !== 'undefined' && user_ns) {
+                sendUChatTicketNotification(user_ns, ticketId).catch(err => {
+                  console.error('✗ UChat notification failed:', err.message);
+                });
+              }
               
               return res.status(400).json({
                 success: false,
@@ -1583,6 +1712,13 @@ This ticket was automatically generated from a renewal request.`;
             const ticketId = ticket.tid || ticket.ticketid || ticket.id;
             console.log(`→ Support ticket created: ${ticketId} for renewal restriction`);
             
+            // Send UChat notification if user_ns provided
+            if (typeof user_ns !== 'undefined' && user_ns) {
+              sendUChatTicketNotification(user_ns, ticketId).catch(err => {
+                console.error('✗ UChat notification failed:', err.message);
+              });
+            }
+            
             return res.status(400).json({
               success: false,
               error: 'Renewal not available',
@@ -1662,6 +1798,13 @@ This ticket was automatically generated from a renewal request.`;
           
           const ticketId = ticket.tid || ticket.ticketid || ticket.id;
           console.log(`→ Support ticket created: ${ticketId} for domain renewal exception`);
+          
+          // Send UChat notification if user_ns provided
+          if (typeof user_ns !== 'undefined' && user_ns) {
+            sendUChatTicketNotification(user_ns, ticketId).catch(err => {
+              console.error('✗ UChat notification failed:', err.message);
+            });
+          }
           
           return res.status(400).json({
             success: false,
@@ -1819,6 +1962,73 @@ function maskPhoneNumber(phone) {
   const middle = '*'.repeat(Math.min(3, cleaned.length - visibleStart - visibleEnd));
   
   return start + middle + end;
+}
+
+/**
+ * Helper function to send UChat notification when ticket is created
+ * @param {string} user_ns - UChat user namespace
+ * @param {string} ticketId - Ticket ID or number
+ */
+async function sendUChatTicketNotification(user_ns, ticketId) {
+  console.log(`→ sendUChatTicketNotification called with user_ns: ${user_ns}, ticketId: ${ticketId}`);
+  
+  if (!user_ns) {
+    console.log('→ Skipping UChat notification - no user_ns provided');
+    return; // Skip if no user_ns provided
+  }
+
+  try {
+    const axios = require('axios');
+    
+    // Wait 5 seconds before sending notification (to ensure response is sent first)
+    console.log(`→ Waiting 5 seconds before sending UChat notification...`);
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    
+    console.log(`→ Sending UChat notification to ${process.env.UCHAT_API_URL}/subscriber/send-text`);
+    
+    // Send ticket notification message
+    const messageContent = `Your ticket has been generated #${ticketId}. Please contact support for assistance.`;
+    
+    const sendTextResponse = await axios.post(`${process.env.UCHAT_API_URL}/subscriber/send-text`, {
+      user_ns: user_ns,
+      content: messageContent
+    }, {
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${process.env.UCHAT_BEARER_TOKEN}`
+      },
+      timeout: 10000
+    });
+    
+    console.log(`✅ UChat notification sent for ticket #${ticketId}`, sendTextResponse.data);
+    
+    // Wait 1 second before moving chat to done
+    console.log(`→ Waiting 1 second before moving chat to done...`);
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // Move chat to done status
+    console.log(`→ Moving chat to done status for user_ns: ${user_ns}`);
+    const moveChatResponse = await axios.post(`${process.env.UCHAT_API_URL}/subscriber/move-chat-to`, {
+      user_ns: user_ns,
+      status: 'done'
+    }, {
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${process.env.UCHAT_BEARER_TOKEN}`
+      },
+      timeout: 10000
+    });
+    
+    console.log(`✅ UChat chat moved to done for ticket #${ticketId}`, moveChatResponse.data);
+    
+  } catch (error) {
+    console.error('✗ Failed to send UChat notification:', error.message);
+    if (error.response) {
+      console.error('✗ UChat API error response:', error.response.data);
+      console.error('✗ UChat API status:', error.response.status);
+    }
+    // Don't throw error - notification failure shouldn't break the main flow
+  }
 }
 
 module.exports = exports;

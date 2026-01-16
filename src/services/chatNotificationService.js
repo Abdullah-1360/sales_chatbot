@@ -836,7 +836,7 @@ ${messageContext}
 
       const payload = {
         user_ns: userNs,
-        content: `No agent is currently available, raised ticket #${ticketNumber}`
+        content: `As no live agent is available right now, we've automatically created support ticket #${ticketNumber} on your behalf.\n\nOur 24x7 helpdesk support team will review it and update you at the earliest opportunity.`
       };
 
       logger.info('📤 Sending to UChat API', { 
