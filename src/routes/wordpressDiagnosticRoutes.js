@@ -1,5 +1,6 @@
 const router = require('express').Router();
 const wordpressDiagnosticController = require('../controllers/wordpressDiagnosticController');
+const wordpressSiteFixesController = require('../controllers/wordpressSiteFixesController');
 
 /**
  * WordPress Database Diagnostic Routes
@@ -67,5 +68,76 @@ router.get('/capabilities', wordpressDiagnosticController.getCapabilities);
  * Health check endpoint for monitoring service status
  */
 router.get('/health', wordpressDiagnosticController.healthCheck);
+
+/**
+ * WordPress Site Fixes Routes
+ * 
+ * These endpoints provide automated fixes for common WordPress issues
+ * with minimal response time and maximum accuracy.
+ */
+
+/**
+ * POST /wordpress/fix/deactivate-plugin
+ * 
+ * Branch A: Plugin Deactivation (The "Rename" Trick)
+ * Safely deactivates a plugin by renaming its directory without deletion.
+ * 
+ * Body Parameters:
+ * - domain (required): Domain name
+ * - email (optional): Client email for identification
+ * - phone (optional): Client phone for identification
+ * - pluginName (required): Plugin directory name to deactivate
+ * - docRoot (optional): Document root path (default: 'public_html')
+ */
+router.post('/fix/deactivate-plugin', wordpressSiteFixesController.deactivatePlugin);
+
+/**
+ * POST /wordpress/fix/increase-memory
+ * 
+ * Branch B: Memory Increase
+ * Increases PHP memory limit to resolve memory exhaustion errors.
+ * 
+ * Body Parameters:
+ * - domain (required): Domain name
+ * - email (optional): Client email for identification
+ * - phone (optional): Client phone for identification
+ * - memoryLimit (optional): Memory limit value (default: '256M')
+ * - method (optional): 'php_ini' or 'wp_config' (default: 'php_ini')
+ * - docRoot (optional): Document root path (default: 'public_html')
+ */
+router.post('/fix/increase-memory', wordpressSiteFixesController.increaseMemory);
+
+/**
+ * POST /wordpress/fix/htaccess
+ * 
+ * Branch C: Fix .htaccess (The "Default" Fix)
+ * Writes standard WordPress rewrite rules to fix 404/500 errors.
+ * 
+ * Body Parameters:
+ * - domain (required): Domain name
+ * - email (optional): Client email for identification
+ * - phone (optional): Client phone for identification
+ * - backup (optional): Whether to backup existing .htaccess (default: true)
+ * - docRoot (optional): Document root path (default: 'public_html')
+ */
+router.post('/fix/htaccess', wordpressSiteFixesController.fixHtaccess);
+
+/**
+ * POST /wordpress/fix/auto
+ * 
+ * Auto-diagnose and apply appropriate fixes
+ * Analyzes error logs and applies the most suitable fix automatically.
+ * 
+ * Body Parameters:
+ * - domain (required): Domain name
+ * - email (optional): Client email for identification
+ * - phone (optional): Client phone for identification
+ * - docRoot (optional): Document root path (default: 'public_html')
+ * - memoryLimit (optional): Memory limit for memory fixes (default: '256M')
+ * - memoryMethod (optional): 'php_ini' or 'wp_config' (default: 'php_ini')
+ * - deactivatePlugin (optional): Whether to deactivate problematic plugins (default: true)
+ * - applyDefaultFix (optional): Apply .htaccess fix if no specific issue found (default: true)
+ */
+router.post('/fix/auto', wordpressSiteFixesController.autoFix);
 
 module.exports = router;

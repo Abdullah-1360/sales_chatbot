@@ -1,5 +1,6 @@
 const { getInvoice, getInvoices, summarizeInvoice } = require('../services/whmcsService');
 const { amountFromInvoice, findRelatedUnpaidInvoice, toMessageStatus } = require('../utils/helpers');
+const { normalizePhone, phonesMatch, maskPhone } = require('../utils/phoneNormalizer');
 
 /**
  * Get single invoice by ID
@@ -638,19 +639,10 @@ async function validateClientPhone(clientId, providedPhone) {
       return { valid: true, reason: 'no_phone_on_file' };
     }
     
-    // Normalize phone numbers for comparison
-    const normalizePhone = (phone) => {
-      if (!phone) return '';
-      return phone.replace(/[\s\-\(\)\+]/g, '').replace(/^0+/, '');
-    };
+    // Use the phone normalizer utility for consistent validation
+    const isMatch = phonesMatch(registeredPhone, providedPhone);
     
-    const normalizedProvided = normalizePhone(providedPhone);
-    const normalizedRegistered = normalizePhone(registeredPhone);
-    
-    // Check if phones match (allowing for country code variations)
-    const isMatch = normalizedProvided === normalizedRegistered ||
-                   normalizedProvided.endsWith(normalizedRegistered.slice(-10)) ||
-                   normalizedRegistered.endsWith(normalizedProvided.slice(-10));
+    console.log(`→ Phone validation: Registered=${normalizePhone(registeredPhone).substring(0, 3)}***, Provided=${normalizePhone(providedPhone).substring(0, 3)}***, Match=${isMatch}`);
     
     return {
       valid: isMatch,

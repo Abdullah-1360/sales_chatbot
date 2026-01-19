@@ -46,12 +46,26 @@ const getTicketSummary = async (req, res, next) => {
     
     // Validate phone format (basic validation)
     const phoneStr = phone.toString().trim();
-    if (phoneStr.length < 10) {
+    
+    // Remove all non-digit characters for validation
+    const digitsOnly = phoneStr.replace(/\D/g, '');
+    
+    // After removing country code prefix (92 or 0), should have at least 10 digits
+    let minDigits = 10;
+    if (digitsOnly.startsWith('92')) {
+      minDigits = 12; // 92 + 10 digits
+    } else if (digitsOnly.startsWith('0')) {
+      minDigits = 11; // 0 + 10 digits
+    }
+    
+    if (digitsOnly.length < 10) {
       return res.status(400).json({ 
         success: false, 
         error: 'phone number must be at least 10 digits' 
       });
     }
+    
+    console.log(`→ Phone format: ${digitsOnly.substring(0, 3)}*** (${digitsOnly.length} digits)`);
     
     // Validate ticket format (should be numeric)
     const ticketStr = ticket.toString().trim();

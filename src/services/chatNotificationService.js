@@ -1,6 +1,6 @@
 /**
  * Backend Chat Notification Service
- * Handles periodic notifications for chats with 2-minute intervals and 5-notification limit
+ * Handles periodic notifications for chats with 40-second intervals and 5-notification limit
  */
 
 const ChatNotification = require('../models/ChatNotification');
@@ -15,7 +15,7 @@ class ChatNotificationService {
   constructor() {
     this.activeIntervals = new Map(); // chatId -> intervalId
     this.autoTicketTimeouts = new Map(); // chatId -> timeoutId
-    this.notificationInterval = 2 * 60 * 1000; // 2 minutes
+    this.notificationInterval = 40 * 1000; // 40 seconds
     this.maxNotifications = 5;
     this.autoTicketDelay = 5 * 60 * 1000; // 5 minutes
     this.uchatApiUrl = 'https://www.uchat.com.au/api/subscriber/send-text';

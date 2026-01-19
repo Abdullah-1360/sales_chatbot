@@ -1,4 +1,5 @@
 const axios = require('axios');
+const { normalizePhone, phonesMatch, maskPhone } = require('../utils/phoneNormalizer');
 
 const WHMCS_URL = process.env.WHMCS_URL;
 const WHMCS_IDENTIFIER = process.env.WHMCS_IDENTIFIER || process.env.WHMCS_API_IDENTIFIER;
@@ -344,28 +345,23 @@ async function getTicketWithClientValidation(ticketNumber, phone) {
       throw new Error('Client not found for this ticket');
     }
     
-    // Validate phone number (normalize both for comparison)
-    const normalizePhone = (phoneNum) => {
-      if (!phoneNum) return '';
-      return phoneNum.toString().replace(/[\s\-\(\)\+]/g, '');
-    };
-    
+    // Validate phone number using utility functions
     const clientPhone = normalizePhone(clientData.phonenumber);
     const providedPhone = normalizePhone(phone);
     
-    // Check if phones match (exact match or provided phone is contained in client phone)
-    const phoneMatches = clientPhone === providedPhone || 
-                        clientPhone.includes(providedPhone) || 
-                        providedPhone.includes(clientPhone);
+    console.log(`→ Phone validation: Client=${clientPhone.substring(0, 3)}***, Provided=${providedPhone.substring(0, 3)}***`);
+    
+    // Use the phonesMatch utility for comprehensive matching
+    const phoneMatches = phonesMatch(clientData.phonenumber, phone);
     
     if (!phoneMatches) {
       // Create masked version of registered phone number
-      const maskedRegisteredPhone = clientData.phonenumber ? 
-        clientData.phonenumber.toString().substring(0, 4) + '***' + clientData.phonenumber.toString().slice(-3) :
-        'registered number';
+      const maskedRegisteredPhone = maskPhone(clientData.phonenumber);
       
       throw new Error(`Please contact from your registered number ${maskedRegisteredPhone}`);
     }
+    
+    console.log(`✅ Phone validation successful`);
     
     return {
       ticket: ticketData,

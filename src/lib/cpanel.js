@@ -144,6 +144,67 @@ class CpanelClient {
   }
 
   /**
+   * Check if file or directory exists using cPanel UAPI
+   */
+  async fileExists(filePath) {
+    try {
+      this.logger.info(`Checking if file exists: ${filePath}`);
+      
+      const pathParts = filePath.split('/');
+      const fileName = pathParts.pop();
+      const dirPath = pathParts.join('/') || '.';
+      
+      try {
+        const result = await this.makeApiCall('Fileman', 'stat', {
+          dir: dirPath,
+          file: fileName
+        });
+        
+        return {
+          exists: result && result.type !== undefined,
+          type: result?.type,
+          size: result?.size
+        };
+      } catch (error) {
+        // If stat fails, file doesn't exist
+        return { exists: false };
+      }
+    } catch (error) {
+      this.logger.error(`Failed to check file existence ${filePath}: ${error.message}`);
+      return { exists: false, error: error.message };
+    }
+  }
+
+  /**
+   * Rename file or directory using cPanel UAPI
+   */
+  async renameFile(sourcePath, targetPath) {
+    try {
+      this.logger.info(`Renaming: ${sourcePath} -> ${targetPath}`);
+      
+      const sourcePathParts = sourcePath.split('/');
+      const sourceFileName = sourcePathParts.pop();
+      const sourceDirPath = sourcePathParts.join('/') || '.';
+      
+      const targetPathParts = targetPath.split('/');
+      const targetFileName = targetPathParts.pop();
+      
+      const result = await this.makeApiCall('Fileman', 'fileop', {
+        op: 'rename',
+        sourcefiles: sourceFileName,
+        destfiles: targetFileName,
+        dir: sourceDirPath
+      });
+      
+      this.logger.info(`Successfully renamed: ${sourcePath} -> ${targetPath}`);
+      return { success: true, result };
+    } catch (error) {
+      this.logger.error(`Failed to rename ${sourcePath}: ${error.message}`);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
    * Read file content using cPanel UAPI
    */
   async readFile(filePath) {

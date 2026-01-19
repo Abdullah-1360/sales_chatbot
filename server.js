@@ -155,7 +155,7 @@ async function startServer() {
       }
       if (cfg.USE_MONGODB) {
         console.log(`🧹 Lead cleanup: enabled (runs every hour, deletes leads > 24h old)`);
-        console.log(`🔔 Chat notifications: enabled (2-minute intervals, 5 max per chat)`);
+        console.log(`🔔 Chat notifications: enabled (40-second intervals, 5 max per chat)`);
       }
     });
   } catch (error) {

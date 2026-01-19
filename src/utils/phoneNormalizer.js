@@ -1,80 +1,90 @@
 /**
- * Phone number normalization and masking utilities
+ * Phone Number Normalization Utility
+ * Handles different phone number formats for Pakistan
  */
 
 /**
- * Normalize phone number by removing all non-digit characters
- * @param {string} phone - Phone number to normalize
- * @returns {string} - Normalized phone number (digits only)
+ * Normalize phone number by removing non-digits and handling prefixes
+ * @param {string|number} phoneNum - Phone number to normalize
+ * @returns {string} Normalized phone number (digits only)
+ * 
+ * Examples:
+ * - "923001234567" -> "923001234567"
+ * - "+92 300 1234567" -> "923001234567"
+ * - "0300-1234567" -> "3001234567"
+ * - "3001234567" -> "3001234567"
  */
-function normalizePhone(phone) {
-  if (!phone) return '';
-  return String(phone).replace(/\D/g, '');
-}
-
-/**
- * Mask phone number for security (shows first 3 and last 2 digits)
- * Example: 1234567890 -> 123*****90
- * @param {string} phone - Phone number to mask
- * @returns {string} - Masked phone number
- */
-function maskPhone(phone) {
-  if (!phone) return '';
-  const normalized = normalizePhone(phone);
+function normalizePhone(phoneNum) {
+  if (!phoneNum) return '';
   
-  if (normalized.length < 5) {
-    // Too short to mask meaningfully
-    return '*'.repeat(normalized.length);
+  // Remove all non-digit characters
+  let normalized = phoneNum.toString().replace(/\D/g, '');
+  
+  // Handle different formats:
+  // If starts with 0 (local format), remove it
+  // This converts 03001234567 -> 3001234567
+  if (normalized.startsWith('0') && !normalized.startsWith('00')) {
+    normalized = normalized.substring(1);
   }
   
-  const firstThree = normalized.substring(0, 3);
-  const lastTwo = normalized.substring(normalized.length - 2);
-  const middleLength = normalized.length - 5;
+  // If starts with 92 (country code), keep as is
+  // This keeps 923001234567 as 923001234567
   
-  return `${firstThree}${'*'.repeat(middleLength)}${lastTwo}`;
+  return normalized;
 }
 
 /**
- * Compare two phone numbers after normalization
- * Handles country code variations (e.g., +92 vs without country code)
+ * Compare two phone numbers with multiple matching strategies
  * @param {string} phone1 - First phone number
  * @param {string} phone2 - Second phone number
- * @returns {boolean} - True if phones match
+ * @returns {boolean} True if phones match
  */
 function phonesMatch(phone1, phone2) {
   const normalized1 = normalizePhone(phone1);
   const normalized2 = normalizePhone(phone2);
   
-  if (!normalized1 || !normalized2) return false;
+  // Strategy 1: Exact match
+  if (normalized1 === normalized2) {
+    return true;
+  }
   
-  // Direct match
-  if (normalized1 === normalized2) return true;
+  // Strategy 2: One contains the other (handles partial matches)
+  if (normalized1.includes(normalized2) || normalized2.includes(normalized1)) {
+    return true;
+  }
   
-  // Try matching with common country code variations
-  // If one has country code and other doesn't, try matching without it
+  // Strategy 3: Both end with same last 10 digits (handles country code variations)
+  // This handles cases like:
+  // - 923001234567 vs 3001234567
+  // - 03001234567 vs 923001234567
+  const last10_1 = normalized1.slice(-10);
+  const last10_2 = normalized2.slice(-10);
   
-  // Common country codes to try removing
-  const countryCodes = ['92', '1', '44', '91', '86', '61', '81', '49', '33', '39'];
-  
-  for (const code of countryCodes) {
-    // Check if phone1 starts with country code and phone2 doesn't
-    if (normalized1.startsWith(code) && !normalized2.startsWith(code)) {
-      const phone1WithoutCode = normalized1.substring(code.length);
-      if (phone1WithoutCode === normalized2) return true;
-    }
-    
-    // Check if phone2 starts with country code and phone1 doesn't
-    if (normalized2.startsWith(code) && !normalized1.startsWith(code)) {
-      const phone2WithoutCode = normalized2.substring(code.length);
-      if (phone2WithoutCode === normalized1) return true;
-    }
+  if (last10_1.length >= 10 && last10_2.length >= 10 && last10_1 === last10_2) {
+    return true;
   }
   
   return false;
 }
 
+/**
+ * Mask phone number for display (show first 4 and last 3 digits)
+ * @param {string|number} phoneNum - Phone number to mask
+ * @returns {string} Masked phone number
+ */
+function maskPhone(phoneNum) {
+  if (!phoneNum) return 'registered number';
+  
+  const phoneStr = phoneNum.toString();
+  if (phoneStr.length <= 7) {
+    return phoneStr.substring(0, 2) + '***';
+  }
+  
+  return phoneStr.substring(0, 4) + '***' + phoneStr.slice(-3);
+}
+
 module.exports = {
   normalizePhone,
-  maskPhone,
-  phonesMatch
+  phonesMatch,
+  maskPhone
 };

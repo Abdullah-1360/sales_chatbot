@@ -16,6 +16,8 @@ const {
   amountFromInvoice
 } = require('../utils/helpers');
 
+const { normalizePhone, phonesMatch, maskPhone } = require('../utils/phoneNormalizer');
+
 /**
  * Renew a service or domain
  * 
@@ -751,24 +753,34 @@ exports.confirmPayment = async (req, res, next) => {
         }
       } else if (domainResult) {
         // Only domain resolved
-        if (invoiceClientId && invoiceClientId !== domainResult.clientId) {
-          // Invoice client differs from domain - prioritize invoice
-          console.log('→ Domain resolved but differs from invoice - prioritizing invoice');
+        if (invoiceClientId) {
+          // Invoice exists - ALWAYS prioritize invoice over domain
+          if (invoiceClientId !== domainResult.clientId) {
+            console.log('→ Domain resolved but differs from invoice - prioritizing invoice');
+          } else {
+            console.log('→ Domain and invoice match');
+          }
           resolvedClientId = invoiceClientId;
           resolvedFrom = 'invoice_priority';
-        } else if (!invoiceClientId) {
+        } else {
+          // No invoice - use domain
           resolvedClientId = domainResult.clientId;
           resolvedFrom = 'domain';
           console.log('→ Client resolved from domain:', resolvedClientId);
         }
       } else if (emailResult) {
         // Only email resolved
-        if (invoiceClientId && invoiceClientId !== emailResult.clientId) {
-          // Invoice client differs from email - prioritize invoice
-          console.log('→ Email resolved but differs from invoice - prioritizing invoice');
+        if (invoiceClientId) {
+          // Invoice exists - ALWAYS prioritize invoice over email
+          if (invoiceClientId !== emailResult.clientId) {
+            console.log('→ Email resolved but differs from invoice - prioritizing invoice');
+          } else {
+            console.log('→ Email and invoice match');
+          }
           resolvedClientId = invoiceClientId;
           resolvedFrom = 'invoice_priority';
-        } else if (!invoiceClientId) {
+        } else {
+          // No invoice - use email
           resolvedClientId = emailResult.clientId;
           resolvedFrom = 'email';
           console.log('→ Client resolved from email:', resolvedClientId);
@@ -1019,14 +1031,12 @@ exports.confirmPayment = async (req, res, next) => {
       });
     }
     
-    // Build clean response
-    let message = `Your payment confirmation for Invoice #${finalInvoiceId} has been received and logged.\n\nA billing ticket (#${ticketId}) is now in progress, and our billing team will review it and update you shortly.`;
+    // Build clean response with the new format
+    let message = `I've sent your payment proof for invoice ${finalInvoiceId} to our billing team under ticket ${ticketId}.\nOnce they verify it, they'll update the invoice and restore service${domain ? ` for ${domain}` : ''}.\nPlease wait for the billing team's confirmation on this ticket`;
     
     if (fallbackUsed) {
       message += `\n\nNote: The requested invoice was not found, so we're processing your current unpaid invoice instead.`;
     }
-    
-    
     
     const response = { 
       success: true, 
@@ -1918,19 +1928,10 @@ async function validateClientPhone(clientId, providedPhone) {
       return { valid: true, reason: 'no_phone_on_file' };
     }
     
-    // Normalize phone numbers for comparison
-    const normalizePhone = (phone) => {
-      if (!phone) return '';
-      return phone.replace(/[\s\-\(\)\+]/g, '').replace(/^0+/, '');
-    };
+    // Use the phone normalizer utility for consistent validation
+    const isMatch = phonesMatch(registeredPhone, providedPhone);
     
-    const normalizedProvided = normalizePhone(providedPhone);
-    const normalizedRegistered = normalizePhone(registeredPhone);
-    
-    // Check if phones match
-    const isMatch = normalizedProvided === normalizedRegistered ||
-                   normalizedProvided.endsWith(normalizedRegistered.slice(-10)) ||
-                   normalizedRegistered.endsWith(normalizedProvided.slice(-10));
+    console.log(`→ Phone validation: Registered=${normalizePhone(registeredPhone).substring(0, 3)}***, Provided=${normalizePhone(providedPhone).substring(0, 3)}***, Match=${isMatch}`);
     
     return {
       valid: isMatch,
@@ -1939,7 +1940,7 @@ async function validateClientPhone(clientId, providedPhone) {
     };
     
   } catch (error) {
-    throw new Error(`Phone validation failed: ${error.message}`);
+ throw new Error(`Phone validation failed: ${error.message}`);
   }
 }
 
@@ -1947,22 +1948,10 @@ async function validateClientPhone(clientId, providedPhone) {
  * Helper function to mask phone number (for confirmPayment)
  */
 function maskPhoneNumber(phone) {
-  if (!phone || phone.length < 4) return phone;
-  
-  const cleaned = phone.replace(/[\s\-\(\)]/g, '');
-  const visibleStart = Math.min(3, Math.floor(cleaned.length / 3));
-  const visibleEnd = Math.min(3, Math.floor(cleaned.length / 4));
-  
-  if (cleaned.length <= visibleStart + visibleEnd) {
-    return phone;
-  }
-  
-  const start = cleaned.substring(0, visibleStart);
-  const end = cleaned.substring(cleaned.length - visibleEnd);
-  const middle = '*'.repeat(Math.min(3, cleaned.length - visibleStart - visibleEnd));
-  
-  return start + middle + end;
+  // Use the phone normalizer utility for consistent masking
+  return maskPhone(phone);
 }
+
 
 /**
  * Helper function to send UChat notification when ticket is created

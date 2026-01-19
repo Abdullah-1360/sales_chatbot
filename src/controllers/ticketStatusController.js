@@ -184,7 +184,7 @@ async function processTicketStatusUpdate(webhookData) {
     const ticketStatus = status || 'Updated';
     
     // Build message without the subject line
-    const messageContent = `Ticket #${ticket_id} Status: ${ticketStatus}\n\nYour ticket has been updated. Please check your email for details.`;
+    const messageContent = `Ticket #${ticket_id} Status: ${ticketStatus}\n\nWaiting on You`;
     
     // Send message to subscriber via UChat
     const sendTextUrl = `${process.env.UCHAT_API_URL}/subscriber/send-text`;

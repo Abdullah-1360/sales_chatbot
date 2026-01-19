@@ -5,6 +5,7 @@ const CSFService = require('../services/csfService');
 const ResponseFormatter = require('../utils/responseFormatter');
 const { getServiceForClient } = require('../utils/helpers');
 const { getClientsProducts, getClientsDomains } = require('../services/whmcsService');
+const { normalizePhone, phonesMatch, maskPhone } = require('../utils/phoneNormalizer');
 
 // Import performance monitor (with fallback for compatibility)
 let performanceMonitor;
@@ -1505,19 +1506,10 @@ class OptimizedCphulkController {
         return { valid: true, reason: 'no_phone_on_file' };
       }
       
-      // Normalize phone numbers for comparison
-      const normalizePhone = (phone) => {
-        if (!phone) return '';
-        return phone.replace(/[\s\-\(\)\+]/g, '').replace(/^0+/, '');
-      };
+      // Use the phone normalizer utility for consistent validation
+      const isMatch = phonesMatch(registeredPhone, providedPhone);
       
-      const normalizedProvided = normalizePhone(providedPhone);
-      const normalizedRegistered = normalizePhone(registeredPhone);
-      
-      // Check if phones match
-      const isMatch = normalizedProvided === normalizedRegistered ||
-                     normalizedProvided.endsWith(normalizedRegistered.slice(-10)) ||
-                     normalizedRegistered.endsWith(normalizedProvided.slice(-10));
+      console.log(`→ Phone validation: Registered=${normalizePhone(registeredPhone).substring(0, 3)}***, Provided=${normalizePhone(providedPhone).substring(0, 3)}***, Match=${isMatch}`);
       
       return {
         valid: isMatch,
@@ -1534,21 +1526,8 @@ class OptimizedCphulkController {
    * Helper method to mask phone number
    */
   maskPhoneNumber(phone) {
-    if (!phone || phone.length < 4) return phone;
-    
-    const cleaned = phone.replace(/[\s\-\(\)]/g, '');
-    const visibleStart = Math.min(3, Math.floor(cleaned.length / 3));
-    const visibleEnd = Math.min(3, Math.floor(cleaned.length / 4));
-    
-    if (cleaned.length <= visibleStart + visibleEnd) {
-      return phone;
-    }
-    
-    const start = cleaned.substring(0, visibleStart);
-    const end = cleaned.substring(cleaned.length - visibleEnd);
-    const middle = '*'.repeat(Math.min(3, cleaned.length - visibleStart - visibleEnd));
-    
-    return start + middle + end;
+    // Use the phone normalizer utility for consistent masking
+    return maskPhone(phone);
   }
 
   /**
