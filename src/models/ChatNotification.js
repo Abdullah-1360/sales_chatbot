@@ -42,7 +42,7 @@ const chatNotificationSchema = new mongoose.Schema({
   },
   stopReason: { 
     type: String, 
-    enum: ['viewed', 'dismissed', 'max_reached', 'manual', 'auto_ticket_created', 'reset', 'chat_not_found', 'system_shutdown'],
+    enum: ['viewed', 'dismissed', 'max_reached', 'manual', 'auto_ticket_created', 'reset', 'chat_not_found', 'system_shutdown', 'expired_on_restart'],
     default: null 
   },
   intervalId: { 
@@ -78,8 +78,7 @@ const chatNotificationSchema = new mongoose.Schema({
   collection: 'chat_notifications'
 });
 
-// Create indexes separately to avoid duplicates
-chatNotificationSchema.index({ chatId: 1 });
+// Create indexes separately (chatId already has unique index from schema definition)
 chatNotificationSchema.index({ userNs: 1 });
 chatNotificationSchema.index({ isActive: 1 });
 chatNotificationSchema.index({ lastNotificationAt: 1 });

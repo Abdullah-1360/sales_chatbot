@@ -17,9 +17,218 @@ class ChatNotificationService {
     this.autoTicketTimeouts = new Map(); // chatId -> timeoutId
     this.notificationInterval = 40 * 1000; // 40 seconds
     this.maxNotifications = 5;
-    this.autoTicketDelay = 5 * 60 * 1000; // 5 minutes
+    this.autoTicketDelay = 3 * 60 * 1000; // 3 minutes
     this.uchatApiUrl = 'https://www.uchat.com.au/api/subscriber/send-text';
     this.uchatBearerToken = 'cgkrwrtOHtxZ1AqQju9kYWjbcsVJ3FMWCY6gZoARWQkXNaTSCbaOp7J6Ap1D';
+    this.isInitialized = false;
+  }
+
+  /**
+   * Initialize the service and restore active notifications
+   * This should be called on server startup
+   */
+  async initialize() {
+    if (this.isInitialized) return;
+
+    try {
+      logger.info('🚀 Initializing ChatNotificationService...');
+
+      // Check database connection
+      if (!this.isDatabaseConnected()) {
+        logger.warn('⚠️ Database not connected, skipping notification recovery');
+        return;
+      }
+
+      // Restore active notifications from database
+      await this.restoreActiveNotifications();
+
+      this.isInitialized = true;
+      logger.info('✅ ChatNotificationService initialized successfully');
+
+    } catch (error) {
+      logger.error('❌ Failed to initialize ChatNotificationService', { error: error.message });
+      throw error;
+    }
+  }
+
+  /**
+   * Restore active notifications from database after server restart
+   * This recovers lost intervals and timeouts
+   */
+  async restoreActiveNotifications() {
+    try {
+      logger.info('🔄 Restoring active notifications from database...');
+
+      // First, bulk cleanup expired notifications (older than 2 hours)
+      const maxAge = 2 * 60 * 60 * 1000; // 2 hours
+      const expiredCutoff = new Date(Date.now() - maxAge);
+      
+      const expiredResult = await ChatNotification.updateMany(
+        {
+          startedAt: { $lt: expiredCutoff },
+          $or: [
+            { isActive: true },
+            { 
+              isActive: false, 
+              autoTicketScheduled: true, 
+              autoTicketCreated: false 
+            }
+          ]
+        },
+        {
+          isActive: false,
+          stoppedAt: new Date(),
+          stopReason: 'expired_on_restart',
+          intervalId: null
+        }
+      );
+
+      if (expiredResult.modifiedCount > 0) {
+        logger.info(`🧹 Bulk cleaned up ${expiredResult.modifiedCount} expired notifications`);
+      }
+
+      // Now find notifications that need restoration (not expired)
+      const notificationsToRestore = await ChatNotification.find({
+        startedAt: { $gte: expiredCutoff }, // Only recent notifications
+        $or: [
+          { isActive: true }, // Active notifications
+          { 
+            isActive: false, 
+            autoTicketScheduled: true, 
+            autoTicketCreated: false,
+            stopReason: { $in: ['max_reached'] } // Only restore auto-tickets for max_reached
+          }
+        ]
+      });
+      
+      if (notificationsToRestore.length === 0) {
+        logger.info('ℹ️ No notifications to restore');
+        return { 
+          total: expiredResult.modifiedCount, 
+          restored: 0, 
+          autoTicketOnly: 0, 
+          expired: expiredResult.modifiedCount, 
+          errors: 0 
+        };
+      }
+
+      logger.info(`📋 Found ${notificationsToRestore.length} notifications to restore`);
+
+      let restoredCount = 0;
+      let errorCount = 0;
+      let autoTicketOnlyCount = 0;
+
+      for (const notification of notificationsToRestore) {
+        try {
+          const chatId = notification.chatId.toString();
+
+          // Check if chat still exists
+          const chat = await Chat.findById(chatId);
+          if (!chat) {
+            logger.warn(`🗑️ Chat not found, marking as stopped: ${chatId}`);
+            await ChatNotification.findByIdAndUpdate(notification._id, {
+              isActive: false,
+              stoppedAt: new Date(),
+              stopReason: 'chat_not_found',
+              intervalId: null
+            });
+            errorCount++;
+            continue;
+          }
+
+          // Handle active notifications (restore full functionality)
+          if (notification.isActive) {
+            // Check if max notifications reached
+            if (notification.notificationCount >= notification.maxNotifications) {
+              logger.info(`🔢 Max notifications reached, stopping: ${chatId}`);
+              await ChatNotification.findByIdAndUpdate(notification._id, {
+                isActive: false,
+                stoppedAt: new Date(),
+                stopReason: 'max_reached',
+                intervalId: null
+              });
+              // Still check for auto-ticket restoration below
+            } else {
+              // Restore periodic notifications
+              const intervalId = setInterval(async () => {
+                try {
+                  await this.handlePeriodicNotification(chatId);
+                } catch (error) {
+                  logger.error('Error in restored periodic notification', { 
+                    chatId, 
+                    error: error.message 
+                  });
+                }
+              }, this.notificationInterval);
+
+              this.activeIntervals.set(chatId, intervalId);
+              restoredCount++;
+            }
+          }
+
+          // Handle auto-ticket restoration (for both active and stopped notifications)
+          if (notification.autoTicketScheduled && !notification.autoTicketCreated) {
+            // Calculate remaining time for auto-ticket
+            const elapsedTime = Date.now() - new Date(notification.startedAt).getTime();
+            const remainingTime = Math.max(0, this.autoTicketDelay - elapsedTime);
+
+            if (remainingTime > 0) {
+              // Schedule auto-ticket for remaining time
+              const timeoutId = setTimeout(async () => {
+                try {
+                  await this.createAutoTicket(chat, notification);
+                } catch (error) {
+                  logger.error('Error in restored auto-ticket creation', { 
+                    chatId, 
+                    error: error.message 
+                  });
+                }
+              }, remainingTime);
+
+              this.autoTicketTimeouts.set(chatId, timeoutId);
+              
+              logger.info(`🔄 Restored auto-ticket timeout: ${chatId} (${Math.round(remainingTime / 1000)}s remaining)`, {
+                isActive: notification.isActive,
+                stopReason: notification.stopReason
+              });
+              
+              if (!notification.isActive) {
+                autoTicketOnlyCount++;
+              }
+            } else {
+              // Auto-ticket should have been created already, create it now
+              logger.info(`⚡ Creating overdue auto-ticket: ${chatId}`);
+              await this.createAutoTicket(chat, notification);
+              
+              if (!notification.isActive) {
+                autoTicketOnlyCount++;
+              }
+            }
+          }
+
+        } catch (error) {
+          logger.error(`❌ Failed to restore notification: ${notification.chatId}`, { 
+            error: error.message 
+          });
+          errorCount++;
+        }
+      }
+
+      const result = {
+        total: notificationsToRestore.length + expiredResult.modifiedCount,
+        restored: restoredCount,
+        autoTicketOnly: autoTicketOnlyCount,
+        expired: expiredResult.modifiedCount,
+        errors: errorCount
+      };
+
+      logger.info(`✅ Notification restoration completed`, result);
+      return result;
+
+    } catch (error) {
+      logger.error('❌ Failed to restore active notifications', { error: error.message });
+      throw error;
+    }
   }
 
   /**
@@ -130,6 +339,7 @@ class ChatNotificationService {
 
   /**
    * Reset notifications for an existing chat (when new message arrives)
+   * Preserves the original auto-ticket timeout to include all messages
    * @param {Object} chat - Updated chat object
    * @returns {Promise<Object>} Updated notification record
    */
@@ -137,16 +347,72 @@ class ChatNotificationService {
     try {
       const chatId = chat._id.toString();
       
-      logger.info('Resetting notifications for chat', { 
+      logger.info('Resetting notifications for chat (preserving auto-ticket)', { 
         chatId, 
         userNs: chat.userNs 
       });
 
-      // Stop existing notifications
-      await this.stopNotifications(chatId, 'reset');
+      // Check if there's an existing notification record with auto-ticket scheduled
+      const existingRecord = await ChatNotification.findOne({ chatId });
+      const hasAutoTicketScheduled = existingRecord && existingRecord.autoTicketScheduled && !existingRecord.autoTicketCreated;
 
-      // Start fresh notifications
-      return await this.startNotifications(chat);
+      if (hasAutoTicketScheduled) {
+        logger.info('🎫 Preserving existing auto-ticket timeout (will include new messages)', { 
+          chatId,
+          originalStartTime: existingRecord.startedAt
+        });
+
+        // Only stop the periodic notifications, keep auto-ticket timeout
+        this.cleanupInterval(chatId);
+
+        // Reset notification count and reactivate notifications
+        existingRecord.notificationCount = 0;
+        existingRecord.isActive = true;
+        existingRecord.lastNotificationAt = new Date();
+        existingRecord.stoppedAt = null;
+        existingRecord.stopReason = null;
+        // Keep original startedAt and autoTicketScheduled = true
+        
+        await existingRecord.save();
+
+        // Send immediate notification (first one for the reset)
+        await this.sendNotification(chat, existingRecord, true);
+
+        // Set up new periodic notifications
+        const intervalId = setInterval(async () => {
+          try {
+            await this.handlePeriodicNotification(chatId);
+          } catch (error) {
+            logger.error('Error in periodic notification', { 
+              chatId, 
+              error: error.message 
+            });
+          }
+        }, this.notificationInterval);
+
+        // Store new interval ID
+        this.activeIntervals.set(chatId, intervalId);
+        existingRecord.intervalId = intervalId.toString();
+        await existingRecord.save();
+
+        logger.info('✅ Notifications reset with preserved auto-ticket', { 
+          chatId,
+          newIntervalId: intervalId.toString(),
+          autoTicketStillScheduled: true
+        });
+
+        return existingRecord;
+
+      } else {
+        // No auto-ticket scheduled or already created, use normal reset
+        logger.info('🔄 No auto-ticket to preserve, doing full reset', { chatId });
+        
+        // Stop existing notifications completely
+        await this.stopNotifications(chatId, 'reset_full');
+
+        // Start fresh notifications
+        return await this.startNotifications(chat);
+      }
 
     } catch (error) {
       logger.error('Error resetting notifications', { 
@@ -290,10 +556,17 @@ class ChatNotificationService {
       // Clear interval
       this.cleanupInterval(chatId);
 
-      // Cancel auto-ticket timeout
-      this.cancelAutoTicket(chatId);
+      // Only cancel auto-ticket timeout for specific reasons (when agent views chat or ticket created)
+      // Do NOT cancel for 'max_reached' or 'reset' - auto-ticket should still be created
+      const reasonsThatCancelAutoTicket = ['viewed', 'manual', 'auto_ticket_created', 'system_shutdown', 'reset_full'];
+      if (reasonsThatCancelAutoTicket.includes(reason)) {
+        this.cancelAutoTicket(chatId);
+        logger.info('🚫 Auto-ticket cancelled due to reason', { chatId, reason });
+      } else {
+        logger.info('⏰ Auto-ticket NOT cancelled, will still be created', { chatId, reason });
+      }
 
-      // Update notification record
+      // Update notification record (only if it exists and is active)
       const notificationRecord = await ChatNotification.findOneAndUpdate(
         { chatId, isActive: true },
         {
@@ -312,7 +585,13 @@ class ChatNotificationService {
           totalNotifications: notificationRecord.notificationCount 
         });
       } else {
-        logger.warn('No active notification record found to stop', { chatId });
+        // Don't log as warning for expected cases (expired notifications, etc.)
+        const expectedReasons = ['expired_on_restart', 'chat_not_found', 'system_shutdown'];
+        if (expectedReasons.includes(reason)) {
+          logger.debug('No active notification record found (expected)', { chatId, reason });
+        } else {
+          logger.warn('No active notification record found to stop', { chatId, reason });
+        }
       }
 
       return notificationRecord;
@@ -324,7 +603,7 @@ class ChatNotificationService {
   }
 
   /**
-   * Handle view chat action - stops notifications and sends UChat API call
+   * Handle view chat action - stops notifications, cancels auto-ticket, and sends agent joined message
    * @param {string} chatId - Chat ID
    * @param {string} userNs - User namespace
    * @returns {Promise<Object>} Result of the operation
@@ -381,6 +660,7 @@ class ChatNotificationService {
       const result = {
         success: true,
         notificationsStopped: true,
+        autoTicketCancelled: true,
         apiCallResult: apiResult,
         uchatUrl: `https://www.uchat.com.au/inbox/${userNs}`
       };
@@ -598,12 +878,36 @@ class ChatNotificationService {
         userNs: chat.userNs 
       });
 
-      // Check if agent has viewed the chat
+      // Check if agent has viewed the chat or ticket already created
       const updatedRecord = await ChatNotification.findOne({ chatId });
-      if (!updatedRecord || !updatedRecord.isActive) {
-        logger.info('⏭️ Chat already viewed by agent, skipping auto-ticket', { chatId });
+      if (!updatedRecord) {
+        logger.warn('⚠️ No notification record found, skipping auto-ticket', { chatId });
         return;
       }
+
+      // Only skip auto-ticket for these specific reasons:
+      // 1. Agent has viewed the chat (agent is handling it)
+      // 2. Auto-ticket already created (avoid duplicates)
+      const skipReasons = ['viewed', 'auto_ticket_created'];
+      if (updatedRecord.stopReason && skipReasons.includes(updatedRecord.stopReason)) {
+        logger.info('⏭️ Auto-ticket skipped', { 
+          chatId, 
+          reason: updatedRecord.stopReason,
+          message: updatedRecord.stopReason === 'viewed' 
+            ? 'Agent is handling the chat' 
+            : 'Auto-ticket already exists'
+        });
+        return;
+      }
+
+      // For all other cases, create the auto-ticket
+      // This includes: max_reached, system_shutdown, chat_not_found, etc.
+      logger.info('🎫 Proceeding with auto-ticket creation', { 
+        chatId, 
+        stopReason: updatedRecord.stopReason || 'timeout_expired',
+        isActive: updatedRecord.isActive,
+        reason: 'Customer needs support - no agent intervention detected'
+      });
 
       // Prepare ticket context
       const fullName = `${chat.firstname} ${chat.lastname}`.trim() || 'Unknown User';

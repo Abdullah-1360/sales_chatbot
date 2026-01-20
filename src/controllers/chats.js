@@ -18,6 +18,20 @@ const logger = createLogger('CHATS_CONTROLLER');
  */
 exports.createChat = async (req, res, next) => {
   try {
+    // Check if req.body exists (JSON parsing might have failed)
+    if (!req.body || typeof req.body !== 'object') {
+      logger.error('Invalid or missing request body', { 
+        body: req.body,
+        contentType: req.headers['content-type'],
+        ip: req.ip 
+      });
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid request body. Please ensure you are sending valid JSON.',
+        hint: 'Check for unescaped quotes, trailing commas, or missing values in your JSON'
+      });
+    }
+
     let { username, email, phone, description, comment, User_Ns, domain } = req.body;
     
     // Use comment if description is not provided
@@ -33,12 +47,10 @@ exports.createChat = async (req, res, next) => {
       ip: req.ip 
     });
     
-    // Validate required fields
-    if (!username) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'username is required' 
-      });
+    // Use fallback name if username is empty
+    if (!username || username.trim() === '') {
+      username = 'Customer';
+      logger.info('Using fallback username', { fallbackName: username });
     }
     
     if (!messageText || messageText.trim() === '') {
@@ -181,14 +193,18 @@ exports.createChat = async (req, res, next) => {
         if (isNewChat) {
           // Start notifications for new chat
           logger.info('Starting backend notifications for new chat', { 
-            chatId: savedChat._id.toString() 
+            chatId: savedChat._id.toString(),
+            userNs: savedChat.userNs 
           });
+          
           await chatNotificationService.startNotifications(savedChat);
         } else {
           // Reset notifications for existing chat with new message
           logger.info('Resetting backend notifications for existing chat', { 
-            chatId: savedChat._id.toString() 
+            chatId: savedChat._id.toString(),
+            userNs: savedChat.userNs 
           });
+          
           await chatNotificationService.resetNotifications(savedChat);
         }
       } catch (notificationError) {

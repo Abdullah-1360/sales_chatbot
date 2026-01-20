@@ -102,6 +102,15 @@ async function startServer() {
     // Schedule automatic lead cleanup (delete leads older than 24 hours)
     if (cfg.USE_MONGODB) {
       scheduleLeadCleanup();
+      
+      // Initialize chat notification service to restore active notifications
+      try {
+        const chatNotificationService = require('./src/services/chatNotificationService');
+        await chatNotificationService.initialize();
+        console.log('✅ Chat notification service initialized');
+      } catch (error) {
+        console.warn(`⚠️  Chat notification service initialization failed: ${error.message}`);
+      }
     }
     
     // Set up graceful shutdown for chat notifications

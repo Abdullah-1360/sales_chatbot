@@ -417,10 +417,10 @@ exports.invoiceLookup = async (req, res, next) => {
         }
       } catch (err) {
         console.log('✗ Invoice fetch failed:', err.message);
-        return res.status(404).json({
-          success: false,
-          error: 'Invoice not found. Please check the invoice number.'
-        });
+        
+        // Don't return error immediately - continue to search for unpaid invoices
+        // We'll provide a fallback by showing any unpaid invoice if available
+        console.log('→ Specific invoice not found, will search for unpaid invoices as fallback');
       }
     }
     
@@ -464,28 +464,34 @@ exports.invoiceLookup = async (req, res, next) => {
     }
     
     if (!invoice) {
-      // No invoice found - provide helpful response based on resolution method
-      if (domain) {
-        let message = 'No unpaid invoice found for this service. WHMCS will automatically generate a renewal invoice when the service is due (typically 7-14 days before the due date).';
-        
-        return res.json({ 
-          success: false, 
-          error: 'No unpaid invoice found for this service.',
-          message: message
+      // No invoice found - provide helpful response based on what was requested
+      if (targetInvoiceId) {
+        // Specific invoice ID was provided but not found, and no unpaid invoices available
+        console.log('→ Specific invoice ID not found and no unpaid invoices available:', targetInvoiceId);
+        return res.status(404).json({
+          success: false,
+          error: 'Invoice not found and no unpaid invoices available.',
+          message: `Invoice #${targetInvoiceId} was not found and there are no unpaid invoices for this account. Please verify the invoice number or check if all invoices are paid.`
         });
       } else {
-        // No domain provided - searched for any unpaid invoice
-        let message = 'No unpaid invoices found for this account. All invoices appear to be paid or no invoices exist for this account.';
+        // No specific invoice ID provided, searched for unpaid invoices but none found
+        console.log('→ No unpaid invoices found for client:', resolvedClientId);
         
-        if (targetInvoiceId) {
-          message = `The specified invoice was not found. ` + message;
+        if (domain) {
+          // Domain-based search found no unpaid invoices
+          return res.json({ 
+            success: false, 
+            error: 'No unpaid invoices found.',
+            message: 'There are no unpaid invoices for this service. WHMCS will automatically generate a renewal invoice when the service is due (typically 7-14 days before the due date).'
+          });
+        } else {
+          // General search found no unpaid invoices
+          return res.json({ 
+            success: false, 
+            error: 'No unpaid invoices found.',
+            message: 'There are no unpaid invoices for this account. All invoices appear to be paid or no invoices exist for this account.'
+          });
         }
-        
-        return res.json({ 
-          success: false, 
-          error: targetInvoiceId ? `Invoice not found. No unpaid invoices available.` : 'No unpaid invoices found.',
-          message: message
-        });
       }
     }
     
@@ -527,7 +533,7 @@ exports.invoiceLookup = async (req, res, next) => {
     
     // Add fallback information if original invoice ID was incorrect
     if (targetInvoiceId && String(targetInvoiceId) !== String(invoiceIdOut)) {
-      message += ` Note: The requested invoice was not found, showing your current unpaid invoice instead.`;
+      message += ` Note: Invoice #${targetInvoiceId} was not found, showing your current unpaid invoice instead.`;
     }
     
     const response = { 
