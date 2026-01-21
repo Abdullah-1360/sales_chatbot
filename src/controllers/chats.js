@@ -404,7 +404,7 @@ exports.getChatById = async (req, res, next) => {
 /**
  * Delete chat endpoint
  * DELETE /api/chats/:id
- * Deletes a chat by ID
+ * Deletes a chat by ID and cleans up associated notifications
  */
 exports.deleteChat = async (req, res, next) => {
   try {
@@ -412,35 +412,225 @@ exports.deleteChat = async (req, res, next) => {
     
     logger.info('Deleting chat', { id });
     
-    // Find and delete the chat
-    const deletedChat = await Chat.findByIdAndDelete(id);
+    // Use the chat cleanup service for proper cleanup
+    const chatCleanupService = require('../services/chatCleanup');
+    const result = await chatCleanupService.deleteChat(id);
     
-    if (!deletedChat) {
-      logger.warn('Chat not found', { id });
-      return res.status(404).json({
-        success: false,
-        error: 'Chat not found'
-      });
+    if (!result.success) {
+      if (result.error === 'Chat not found') {
+        logger.warn('Chat not found', { id });
+        return res.status(404).json({
+          success: false,
+          error: 'Chat not found'
+        });
+      } else {
+        logger.error('Failed to delete chat', { id, error: result.error });
+        return res.status(500).json({
+          success: false,
+          error: 'Failed to delete chat'
+        });
+      }
     }
     
     logger.info('Chat deleted successfully', { 
       id,
-      email: deletedChat.email,
-      messageCount: deletedChat.messageCount || 1
+      email: result.deletedChat.email,
+      messageCount: result.deletedChat.messageCount,
+      deletedNotifications: result.deletedNotifications
     });
     
     res.json({
       success: true,
       message: 'Chat deleted successfully',
-      deletedChat: {
-        id: deletedChat._id.toString(),
-        email: deletedChat.email,
-        messageCount: deletedChat.messageCount || 1
-      }
+      deletedChat: result.deletedChat,
+      deletedNotifications: result.deletedNotifications
     });
     
   } catch (error) {
     logger.error('Error in deleteChat controller', {
+      error: error.message,
+      stack: error.stack
+    });
+    next(error);
+  }
+};
+/**
+ * Bulk delete chats endpoint
+ * DELETE /api/chats/bulk
+ * Body: { chatIds: ["id1", "id2", ...] }
+ * Deletes multiple chats by IDs
+ */
+exports.bulkDeleteChats = async (req, res, next) => {
+  try {
+    const { chatIds } = req.body;
+    
+    logger.info('Bulk deleting chats', { count: chatIds?.length });
+    
+    if (!chatIds || !Array.isArray(chatIds) || chatIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'chatIds array is required and must not be empty'
+      });
+    }
+    
+    // Validate chat IDs
+    const validChatIds = chatIds.filter(id => id && typeof id === 'string');
+    if (validChatIds.length !== chatIds.length) {
+      return res.status(400).json({
+        success: false,
+        error: 'All chat IDs must be valid strings'
+      });
+    }
+    
+    // Use the chat cleanup service for proper cleanup
+    const chatCleanupService = require('../services/chatCleanup');
+    const result = await chatCleanupService.deleteMultipleChats(validChatIds);
+    
+    if (!result.success) {
+      logger.error('Failed to bulk delete chats', { chatIds: validChatIds, error: result.error });
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to delete chats'
+      });
+    }
+    
+    logger.info('Bulk chat deletion completed', { 
+      requestedCount: result.requestedCount,
+      deletedChats: result.deletedChats,
+      deletedNotifications: result.deletedNotifications
+    });
+    
+    res.json({
+      success: true,
+      message: 'Chats deleted successfully',
+      requestedCount: result.requestedCount,
+      deletedChats: result.deletedChats,
+      deletedNotifications: result.deletedNotifications,
+      notificationStopResults: result.notificationStopResults
+    });
+    
+  } catch (error) {
+    logger.error('Error in bulkDeleteChats controller', {
+      error: error.message,
+      stack: error.stack
+    });
+    next(error);
+  }
+};
+
+/**
+ * Cleanup old chats endpoint
+ * POST /api/chats/cleanup
+ * Manually trigger cleanup of chats older than 24 hours
+ */
+exports.cleanupOldChats = async (req, res, next) => {
+  try {
+    logger.info('Manual cleanup of old chats triggered');
+    
+    // Use the chat cleanup service
+    const chatCleanupService = require('../services/chatCleanup');
+    const result = await chatCleanupService.cleanupOldChats();
+    
+    if (!result.success) {
+      logger.error('Failed to cleanup old chats', { error: result.error });
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to cleanup old chats'
+      });
+    }
+    
+    logger.info('Old chat cleanup completed', { 
+      deletedChats: result.deletedChats,
+      deletedNotifications: result.deletedNotifications
+    });
+    
+    res.json({
+      success: true,
+      message: 'Old chats cleaned up successfully',
+      deletedChats: result.deletedChats,
+      deletedNotifications: result.deletedNotifications,
+      cutoffTime: result.cutoffTime
+    });
+    
+  } catch (error) {
+    logger.error('Error in cleanupOldChats controller', {
+      error: error.message,
+      stack: error.stack
+    });
+    next(error);
+  }
+};
+
+/**
+ * Get cleanup statistics endpoint
+ * GET /api/chats/cleanup/stats
+ * Returns statistics about chats and cleanup status
+ */
+exports.getCleanupStats = async (req, res, next) => {
+  try {
+    logger.info('Getting cleanup statistics');
+    
+    // Use the chat cleanup service
+    const chatCleanupService = require('../services/chatCleanup');
+    const result = await chatCleanupService.getCleanupStats();
+    
+    if (!result.success) {
+      logger.error('Failed to get cleanup stats', { error: result.error });
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to get cleanup statistics'
+      });
+    }
+    
+    logger.info('Cleanup statistics retrieved', { stats: result.stats });
+    
+    res.json({
+      success: true,
+      stats: result.stats
+    });
+    
+  } catch (error) {
+    logger.error('Error in getCleanupStats controller', {
+      error: error.message,
+      stack: error.stack
+    });
+    next(error);
+  }
+};
+
+/**
+ * Cleanup orphaned notifications endpoint
+ * POST /api/chats/cleanup/orphaned
+ * Manually trigger cleanup of orphaned chat notifications
+ */
+exports.cleanupOrphanedNotifications = async (req, res, next) => {
+  try {
+    logger.info('Manual cleanup of orphaned notifications triggered');
+    
+    // Use the chat cleanup service
+    const chatCleanupService = require('../services/chatCleanup');
+    const result = await chatCleanupService.cleanupOrphanedNotifications();
+    
+    if (!result.success) {
+      logger.error('Failed to cleanup orphaned notifications', { error: result.error });
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to cleanup orphaned notifications'
+      });
+    }
+    
+    logger.info('Orphaned notification cleanup completed', { 
+      deletedCount: result.deletedCount
+    });
+    
+    res.json({
+      success: true,
+      message: 'Orphaned notifications cleaned up successfully',
+      deletedCount: result.deletedCount
+    });
+    
+  } catch (error) {
+    logger.error('Error in cleanupOrphanedNotifications controller', {
       error: error.message,
       stack: error.stack
     });

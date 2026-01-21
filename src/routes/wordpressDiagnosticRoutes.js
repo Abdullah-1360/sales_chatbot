@@ -1,6 +1,38 @@
 const router = require('express').Router();
-const wordpressDiagnosticController = require('../controllers/wordpressDiagnosticController');
+const wordpressComprehensiveDiagnosticController = require('../controllers/wordpressComprehensiveDiagnosticController');
 const wordpressSiteFixesController = require('../controllers/wordpressSiteFixesController');
+const wordpressDiagnosticController = require('../controllers/wordpressDiagnosticController');
+
+/**
+ * WordPress Comprehensive Diagnostic Routes
+ * 
+ * Advanced L1/L2/L3 classification system for WordPress issues
+ */
+
+/**
+ * POST /wordpress/diagnose-comprehensive
+ * 
+ * Comprehensive WordPress diagnostic with L1/L2/L3 classification:
+ * - L1: Primary symptom classification (SITE_DOWN, SERVER_ERROR, etc.)
+ * - L2: Secondary symptom refinement (DNS_FAIL, HTTP_500, etc.)
+ * - L3: Technical evidence layer (PHP_FATAL, DB_ERROR, etc.)
+ * 
+ * Body Parameters:
+ * - domain (required): Domain to diagnose
+ * - phone (optional): Client phone number for identification
+ * - frontend_accessible (optional): Boolean - Is frontend accessible?
+ * - admin_accessible (optional): Boolean - Is wp-admin accessible?
+ * - error_visible (optional): Boolean - Are errors visible to users?
+ * - recent_changes (optional): Boolean - Were recent changes made?
+ * 
+ * Returns comprehensive diagnostic with:
+ * - L1/L2/L3 classification
+ * - Confidence score
+ * - Technical evidence
+ * - Actionable recommendations
+ * - Server-side analysis (if credentials available)
+ */
+router.post('/diagnose-comprehensive', wordpressComprehensiveDiagnosticController.diagnoseWordPressSite);
 
 /**
  * WordPress Database Diagnostic Routes

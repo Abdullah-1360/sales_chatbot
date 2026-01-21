@@ -103,6 +103,10 @@ async function startServer() {
     if (cfg.USE_MONGODB) {
       scheduleLeadCleanup();
       
+      // Schedule automatic chat cleanup (delete chats older than 24 hours)
+      const { scheduleChatCleanup } = require('./src/services/chatCleanup');
+      scheduleChatCleanup();
+      
       // Initialize chat notification service to restore active notifications
       try {
         const chatNotificationService = require('./src/services/chatNotificationService');
@@ -164,6 +168,7 @@ async function startServer() {
       }
       if (cfg.USE_MONGODB) {
         console.log(`🧹 Lead cleanup: enabled (runs every hour, deletes leads > 24h old)`);
+        console.log(`🧹 Chat cleanup: enabled (runs every hour, deletes chats > 24h old)`);
         console.log(`🔔 Chat notifications: enabled (40-second intervals, 5 max per chat)`);
       }
     });

@@ -29,6 +29,18 @@ router.post('/chats', chatsController.createChat);
 // DELETE /api/chats/:id - Delete a chat by ID
 router.delete('/chats/:id', chatsController.deleteChat);
 
+// DELETE /api/chats/bulk - Bulk delete chats by IDs
+router.delete('/chats/bulk', chatsController.bulkDeleteChats);
+
+// POST /api/chats/cleanup - Manually trigger cleanup of old chats
+router.post('/chats/cleanup', chatsController.cleanupOldChats);
+
+// GET /api/chats/cleanup/stats - Get cleanup statistics
+router.get('/chats/cleanup/stats', chatsController.getCleanupStats);
+
+// POST /api/chats/cleanup/orphaned - Cleanup orphaned notifications
+router.post('/chats/cleanup/orphaned', chatsController.cleanupOrphanedNotifications);
+
 // GET /api/leads - Get leads with pagination  
 router.get('/leads', leadsController.getLeads);
 

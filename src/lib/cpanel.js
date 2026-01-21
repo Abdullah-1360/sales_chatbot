@@ -561,6 +561,103 @@ class CpanelClient {
     }
   }
   */
+
+  /**
+   * List files and directories in a given path
+   */
+  async listFiles(dirPath) {
+    try {
+      this.logger.info(`Listing files in: ${dirPath}`);
+      
+      const response = await this.makeApiCall('Fileman', 'list_files', {
+        dir: dirPath,
+        include_mime: 1,
+        include_hash: 0
+      });
+      
+      if (response && response.data) {
+        return response.data;
+      } else {
+        return [];
+      }
+    } catch (error) {
+      this.logger.error(`Failed to list files in ${dirPath}: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Delete a file using cPanel UAPI
+   */
+  async deleteFile(filePath) {
+    try {
+      this.logger.info(`Deleting file: ${filePath}`);
+      
+      const pathParts = filePath.split('/');
+      const fileName = pathParts.pop();
+      const dirPath = pathParts.join('/') || '.';
+      
+      const response = await this.makeApiCall('Fileman', 'delete_files', {
+        dir: dirPath,
+        file: fileName
+      });
+      
+      if (response && response.status === 1) {
+        this.logger.info(`Successfully deleted file: ${filePath}`);
+        return { success: true };
+      } else {
+        throw new Error(response?.errors?.join(', ') || 'Delete operation failed');
+      }
+    } catch (error) {
+      this.logger.error(`Failed to delete file ${filePath}: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Make WP Toolkit API call
+   */
+  async wpToolkitApiCall(method, endpoint, data = null) {
+    try {
+      this.logger.info(`WP Toolkit API call: ${method} ${endpoint}`);
+      
+      const url = `${this.baseUrl}/json-api/wp_toolkit`;
+      
+      const config = {
+        method: method,
+        url: `${url}/${endpoint}`,
+        headers: {
+          'Authorization': `whm root:${this.password}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 15000,
+        httpsAgent: new (require('https').Agent)({
+          rejectUnauthorized: false
+        })
+      };
+
+      if (data && (method === 'POST' || method === 'PUT')) {
+        config.data = data;
+      }
+
+      const response = await axios(config);
+      
+      this.logger.info(`WP Toolkit API response status: ${response.status}`);
+      
+      if (response.status === 200 && response.data) {
+        return response.data;
+      } else {
+        throw new Error(`WP Toolkit API returned status ${response.status}`);
+      }
+    } catch (error) {
+      this.logger.error(`WP Toolkit API call failed: ${error.message}`);
+      if (error.response) {
+        this.logger.error(`WP Toolkit API error response: ${error.response.status} - "${error.response.data}"`);
+        throw new Error(`HTTP ${error.response.status}: ${error.response.statusText}`);
+      }
+      throw error;
+    }
+  }
 }
 
 module.exports = CpanelClient;

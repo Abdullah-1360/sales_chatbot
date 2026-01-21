@@ -1,5 +1,6 @@
 const { getClientsProducts, getClientsDetails } = require('./whmcsService');
 const whmService = require('./whmService');
+const { normalizePhone, phonesMatch, maskPhone } = require('../utils/phoneNormalizer');
 
 // Optimized logger for credential resolver - silent in production
 const logger = (() => {
@@ -218,15 +219,12 @@ class CpanelCredentialResolver {
 
       // If we found a client but phone was provided, verify phone number
       if (foundClient && phone && foundClient.phonenumber) {
-        const providedNormalized = this.normalizePhoneNumber(phone);
-        const registeredNormalized = this.normalizePhoneNumber(foundClient.phonenumber);
-        
-        if (providedNormalized !== registeredNormalized) {
+        if (!phonesMatch(phone, foundClient.phonenumber)) {
           // Phone number doesn't match - return specific error format
           result.error = {
             type: 'phone_verification_failed',
-            message: `Phone number verification failed. Please contact us using the registered number: ${this.maskPhoneNumber(foundClient.phonenumber)}`,
-            registeredPhone: this.maskPhoneNumber(foundClient.phonenumber)
+            message: `Phone number verification failed. Please contact us using the registered number: ${maskPhone(foundClient.phonenumber)}`,
+            registeredPhone: maskPhone(foundClient.phonenumber)
           };
           return result;
         }
@@ -387,7 +385,7 @@ class CpanelCredentialResolver {
   async findClientByPhone(phone) {
     try {
       // Normalize phone number for comparison
-      const normalizedPhone = this.normalizePhoneNumber(phone);
+      const normalizedPhone = normalizePhone(phone);
       
       // WHMCS doesn't have direct phone search, so we need to search by phone number
       // Using GetClientsDetails with phonenumber parameter
@@ -415,7 +413,7 @@ class CpanelCredentialResolver {
    */
   async findClientByPhoneFallback(phone) {
     try {
-      const normalizedPhone = this.normalizePhoneNumber(phone);
+      const normalizedPhone = normalizePhone(phone);
       
       // This is a more expensive operation - search through clients
       // We'll limit this to avoid performance issues
@@ -472,11 +470,14 @@ class CpanelCredentialResolver {
    * Generate phone number variations for search
    */
   generatePhoneVariations(phone) {
-    const normalized = this.normalizePhoneNumber(phone);
+    const normalized = normalizePhone(phone);
     const variations = [
       phone, // Original format
       normalized, // Normalized format
-      `+1${normalized}`, // With +1 prefix
+      `+92${normalized}`, // With +92 prefix for Pakistani numbers
+      `92${normalized}`, // With 92 prefix
+      `0${normalized}`, // With 0 prefix (local Pakistani format)
+      `+1${normalized}`, // With +1 prefix for US numbers
       `1${normalized}`, // With 1 prefix
       `(${normalized.substring(0,3)}) ${normalized.substring(3,6)}-${normalized.substring(6)}`, // (123) 456-7890
       `${normalized.substring(0,3)}-${normalized.substring(3,6)}-${normalized.substring(6)}`, // 123-456-7890

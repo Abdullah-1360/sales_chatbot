@@ -5,7 +5,7 @@ const { searchPlans } = require('../controllers/planSearch');
 const { createLead } = require('../controllers/vtiger');
 const { handleLeads } = require('../controllers/leadsController');
 const { getLeads, deleteLead } = require('../controllers/leads');
-const { createChat, getChats, deleteChat } = require('../controllers/chats');
+const { createChat, getChats, deleteChat, bulkDeleteChats, cleanupOldChats, getCleanupStats, cleanupOrphanedNotifications } = require('../controllers/chats');
 const { getAllGidsWithNames, getGidName, isValidGid } = require('../services/gidHelper');
 const invoiceRoutes = require('./invoiceRoutes');
 const clientRoutes = require('./clientRoutes');
@@ -60,6 +60,10 @@ router.delete('/leads/:id', deleteLead);
 router.post('/chats', createChat);
 router.get('/chats', getChats);
 router.delete('/chats/:id', deleteChat);
+router.delete('/chats/bulk', bulkDeleteChats);
+router.post('/chats/cleanup', cleanupOldChats);
+router.get('/chats/cleanup/stats', getCleanupStats);
+router.post('/chats/cleanup/orphaned', cleanupOrphanedNotifications);
 
 // GID information endpoints
 router.get('/gids', (_req, res) => {
