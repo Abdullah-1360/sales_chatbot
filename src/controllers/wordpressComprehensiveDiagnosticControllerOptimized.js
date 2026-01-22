@@ -39,7 +39,7 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
   }
 
   /**
-   * Main WordPress Comprehensive Diagnostic Endpoint (Optimized)
+   * Main WordPress Comprehensive Diagnostic Endpoint (Immediate Response + Background Processing)
    * POST /wordpress/diagnose-comprehensive
    */
   async diagnoseWordPressSite(req, res) {
@@ -47,7 +47,7 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
     const requestId = `wp_diag_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     
     try {
-      logger.info('Starting optimized WordPress diagnostic', { requestId, domain: req.body.domain });
+      logger.info('Starting WordPress diagnostic with immediate response', { requestId, domain: req.body.domain });
 
       // Validate request body
       const { error, value } = this.diagnosticSchema.validate(req.body);
@@ -76,23 +76,86 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
         }
       }
 
-      // Resolve client credentials with longer timeout
-      let cpanelCredentials = null;
-      let clientInfo = null;
+      // Send immediate response to client
+      const immediateResponse = {
+        success: true,
+        requestId,
+        domain: value.domain,
+        status: "Analysis in progress - you will be notified via support ticket",
+        message: "WordPress diagnostic analysis has been initiated. A comprehensive report will be sent to you via support ticket once the analysis is complete.",
+        estimated_completion: "2-5 minutes",
+        timestamp: new Date().toISOString(),
+        duration: Date.now() - startTime
+      };
+
+      res.status(200).json(immediateResponse);
+      logger.info('Immediate response sent to client', { requestId, duration: Date.now() - startTime });
+
+      // Start comprehensive background analysis (no timeouts, no rush)
+      setImmediate(() => {
+        this.performComprehensiveBackgroundAnalysis({
+          domain: value.domain,
+          userInput: value,
+          normalizedPhone,
+          requestId,
+          startTime
+        }).catch(error => {
+          logger.error('Background analysis failed', { 
+            requestId, 
+            error: error.message,
+            stack: error.stack
+          });
+          
+          // Even if analysis fails, create a ticket with error information
+          this.createErrorTicket({
+            domain: value.domain,
+            requestId,
+            error: error.message,
+            userInput: value
+          }).catch(ticketError => {
+            logger.error('Error ticket creation failed', { 
+              requestId, 
+              error: ticketError.message 
+            });
+          });
+        });
+      });
+
+    } catch (error) {
+      logger.error('WordPress diagnostic initialization error', { 
+        requestId, 
+        error: error.message,
+        duration: Date.now() - startTime
+      });
       
+      return res.status(500).json({
+        success: false,
+        error: 'DIAGNOSTIC_INITIALIZATION_ERROR',
+        message: error.message,
+        timestamp: new Date().toISOString(),
+        duration: Date.now() - startTime
+      });
+    }
+  }
+
+  /**
+   * Perform comprehensive background analysis (no timeouts, complete workflow)
+   */
+  async performComprehensiveBackgroundAnalysis({ domain, userInput, normalizedPhone, requestId, startTime }) {
+    logger.info('Starting comprehensive background analysis', { requestId, domain });
+    
+    let cpanelCredentials = null;
+    let clientInfo = null;
+    let diagnosticResult = null;
+    
+    try {
+      // Step 1: Resolve client credentials (no timeout)
       try {
-        const credentialPromise = this.credentialResolver.resolveCpanelCredentials(
-          value.domain,
+        const credentialResult = await this.credentialResolver.resolveCpanelCredentials(
+          domain,
           null,
           normalizedPhone
         );
-        
-        const credentialResult = await Promise.race([
-          credentialPromise,
-          new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Credential resolution timeout')), 8000) // Increased from 3000 to 8000ms
-          )
-        ]);
 
         if (credentialResult.success) {
           cpanelCredentials = credentialResult.cpanelCredentials;
@@ -101,9 +164,9 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
             server: cpanelCredentials.host,
             username: cpanelCredentials.username
           };
-          logger.info('Client credentials resolved', { requestId, server: cpanelCredentials.host, username: cpanelCredentials.username });
+          logger.info('Background: Client credentials resolved', { requestId, server: cpanelCredentials.host, username: cpanelCredentials.username });
         } else {
-          logger.warn('Credential resolution failed', { requestId, error: credentialResult.error });
+          logger.warn('Background: Credential resolution failed', { requestId, error: credentialResult.error });
           clientInfo = {
             phone: normalizedPhone,
             server: null,
@@ -112,7 +175,7 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
           };
         }
       } catch (credentialError) {
-        logger.warn('Credential resolution failed, continuing with basic diagnostic', { 
+        logger.warn('Background: Credential resolution failed, continuing with basic diagnostic', { 
           requestId, 
           error: credentialError.message 
         });
@@ -124,108 +187,193 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
         };
       }
 
-      // Perform fast diagnostic with timeout constraint
-      const diagnosticPromise = this.performFastDiagnostic({
-        domain: value.domain,
+      // Step 2: Perform complete diagnostic (no timeouts)
+      if (cpanelCredentials) {
+        diagnosticResult = await this.performCompleteDiagnostic({
+          domain,
+          cpanelCredentials,
+          userInput,
+          requestId
+        });
+      } else {
+        // Create basic diagnostic result for domains without credentials
+        diagnosticResult = {
+          phases: {
+            phase1: { wordpress_found: false, installation_health: 'no_credentials' }
+          },
+          primary_suspect: 'Unable to access server - credentials not found',
+          confidence: 95,
+          remediation_needed: false,
+          l1_classification: 'ACCESS_ERROR'
+        };
+      }
+
+      // Step 3: Perform background remediation if needed and collect results
+      let remediationResults = null;
+      if (cpanelCredentials && diagnosticResult.remediation_needed) {
+        logger.info('Background: Starting remediation', { requestId });
+        
+        remediationResults = await this.performBackgroundRemediation({
+          domain,
+          cpanelCredentials,
+          diagnosticResult,
+          clientInfo,
+          requestId
+        });
+        
+        logger.info('Background: Remediation completed', { requestId, results: remediationResults });
+      }
+
+      // Step 4: ALWAYS create comprehensive ticket with complete analysis AFTER all remediation
+      logger.info('Background: Creating comprehensive support ticket with complete remediation results', { requestId });
+      
+      await this.createComprehensiveTicket({
+        domain,
         cpanelCredentials,
-        userInput: value,
-        requestId
+        diagnosticResult,
+        clientInfo,
+        requestId,
+        totalDuration: Date.now() - startTime,
+        remediationResults // Include remediation results in ticket
       });
 
-      const diagnosticResult = await Promise.race([
-        diagnosticPromise,
-        new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('Diagnostic timeout - 15 second limit exceeded')), this.diagnosticTimeout)
-        )
-      ]);
-
-      // Prepare simplified response for client
-      const clientResponse = {
-        success: true,
-        requestId,
-        domain: value.domain,
-        status: this.getClientFriendlyStatus(diagnosticResult),
-        wordpress: {
-          found: diagnosticResult.phases.phase1?.wordpress_found || false,
-          version: this.extractWordPressVersion(diagnosticResult.phases.phase5?.wordpress_version),
-          health: diagnosticResult.phases.phase1?.installation_health || 'unknown'
-        },
-        database: {
-          connected: diagnosticResult.phases.phase3?.database_connection || false,
-          status: this.getClientFriendlyDatabaseStatus(diagnosticResult.phases.phase3?.database_status),
-          repair_scheduled: diagnosticResult.background_remediation_scheduled || false
-        },
-        issues: {
-          primary: diagnosticResult.primary_suspect || 'Unknown',
-          severity: this.getSeverityLevel(diagnosticResult.confidence),
-          repair_in_progress: diagnosticResult.remediation_needed || false
-        },
-        server: {
-          name: clientInfo.server,
-          php_version: diagnosticResult.phases.phase5?.php_version || 'unknown'
-        },
-        timestamp: new Date().toISOString(),
-        duration: Date.now() - startTime
-      };
-
-      // Send simplified response immediately
-      res.status(200).json(clientResponse);
-
-      // Trigger background remediation AFTER response is sent
-      if (cpanelCredentials && diagnosticResult.remediation_needed) {
-        logger.info('Triggering background remediation', { requestId });
-        
-        // Don't await - run in background
-        setImmediate(() => {
-          this.performBackgroundRemediation({
-            domain: value.domain,
-            cpanelCredentials,
-            diagnosticResult,
-            clientInfo,
-            requestId
-          }).catch(error => {
-            logger.error('Background remediation failed', { 
-              requestId, 
-              error: error.message 
-            });
-          });
-        });
-      }
-
-      // Also create support ticket with complete analysis if needed
-      if (diagnosticResult.phases.phase2?.log_analysis?.needs_ticket_creation || 
-          diagnosticResult.confidence >= 80) {
-        
-        setImmediate(() => {
-          this.createComprehensiveTicket({
-            domain: value.domain,
-            cpanelCredentials,
-            diagnosticResult,
-            clientInfo,
-            requestId
-          }).catch(error => {
-            logger.error('Ticket creation failed', { 
-              requestId, 
-              error: error.message 
-            });
-          });
-        });
-      }
+      logger.info('Background analysis completed successfully', { 
+        requestId, 
+        domain,
+        totalDuration: Date.now() - startTime,
+        wordpressFound: diagnosticResult.phases.phase1?.wordpress_found,
+        remediationNeeded: diagnosticResult.remediation_needed
+      });
 
     } catch (error) {
-      logger.error('WordPress diagnostic error', { 
+      logger.error('Background analysis error', { 
         requestId, 
         error: error.message,
-        duration: Date.now() - startTime
+        stack: error.stack,
+        totalDuration: Date.now() - startTime
       });
       
-      return res.status(500).json({
-        success: false,
-        error: 'DIAGNOSTIC_ERROR',
-        message: error.message,
-        timestamp: new Date().toISOString(),
-        duration: Date.now() - startTime
+      // Create error ticket even if analysis fails
+      await this.createErrorTicket({
+        domain,
+        requestId,
+        error: error.message,
+        userInput,
+        clientInfo,
+        totalDuration: Date.now() - startTime
       });
+    }
+  }
+
+  /**
+   * Perform complete diagnostic without timeouts
+   */
+  async performCompleteDiagnostic({ domain, cpanelCredentials, userInput, requestId }) {
+    const phases = {};
+    let sshConnection = null;
+    let remediation_needed = false;
+
+    try {
+      logger.info('Background: Starting complete diagnostic phases', { requestId });
+
+      // Phase 1: WordPress Detection and SSH Connection
+      phases.phase1 = await this.phase1_WordPressDetection(domain, cpanelCredentials, requestId);
+      
+      // Get the established SSH connection from phase 1
+      sshConnection = this.activeConnections.get(requestId);
+      
+      if (!phases.phase1.wordpress_found) {
+        return {
+          phases,
+          primary_suspect: 'WordPress not installed',
+          confidence: 95,
+          remediation_needed: false,
+          l1_classification: 'INSTALLATION_MISSING'
+        };
+      }
+
+      // If we have config errors, prioritize fixing them
+      if (phases.phase1.config_errors && phases.phase1.config_errors.length > 0) {
+        logger.info('Background: Config errors detected, scheduling fix', { requestId });
+        // Start config fix in background
+        this.fixConfigParseError(sshConnection, requestId).catch(error => {
+          logger.warn('Background: Config fix failed', { requestId, error: error.message });
+        });
+      }
+
+      // Phase 2: Error Log Analysis
+      phases.phase2 = await this.phase2_ErrorLogAnalysis(sshConnection, requestId);
+      
+      // Phase 3: Database Connection Test
+      phases.phase3 = await this.phase3_DatabaseConnectionTest(sshConnection, requestId);
+      
+      // Phases 4-6: Run in parallel
+      const parallelPhases = await Promise.allSettled([
+        this.phase4_CoreIntegrityCheck(sshConnection, requestId),
+        this.phase5_VersionCheck(sshConnection, requestId),
+        this.phase6_PluginThemeStatus(sshConnection, requestId)
+      ]);
+      
+      // Extract results from parallel execution
+      phases.phase4 = parallelPhases[0].status === 'fulfilled' ? parallelPhases[0].value : { 
+        integrity_check_completed: false, 
+        checksum_status: 'failed',
+        error: parallelPhases[0].reason?.message || 'Phase 4 failed'
+      };
+      
+      phases.phase5 = parallelPhases[1].status === 'fulfilled' ? parallelPhases[1].value : { 
+        wordpress_version: null, 
+        php_version: null,
+        error: parallelPhases[1].reason?.message || 'Phase 5 failed'
+      };
+      
+      phases.phase6 = parallelPhases[2].status === 'fulfilled' ? parallelPhases[2].value : { 
+        active_plugins: [], 
+        active_theme: null,
+        error: parallelPhases[2].reason?.message || 'Phase 6 failed'
+      };
+      
+      logger.info('Background: Parallel phases completed', { 
+        requestId, 
+        phase4Status: parallelPhases[0].status,
+        phase5Status: parallelPhases[1].status,
+        phase6Status: parallelPhases[2].status
+      });
+      
+      // Phase 7: Resource Limits
+      if (!phases.phase1.config_errors || phases.phase1.config_errors.length === 0) {
+        phases.phase7 = await this.phase7_ResourceLimits(sshConnection, requestId);
+      } else {
+        phases.phase7 = { 
+          memory_limit_set: false, 
+          max_memory_limit_set: false, 
+          limits_applied: false,
+          skipped: 'Config errors present'
+        };
+      }
+      
+      // Phase 8: Classification & Recommendations
+      phases.phase8 = this.phase8_Classification(phases);
+
+      // Determine if remediation is needed
+      remediation_needed = this.needsRemediation(phases);
+
+      return {
+        phases,
+        primary_suspect: phases.phase8.primary_suspect,
+        confidence: phases.phase8.confidence,
+        remediation_needed,
+        l1_classification: phases.phase8.l1_classification,
+        l2_classification: phases.phase8.l2_classification,
+        recommendations: phases.phase8.recommendations
+      };
+
+    } catch (error) {
+      logger.error('Background: Complete diagnostic error', { requestId, error: error.message });
+      throw error;
+    } finally {
+      // Keep SSH connection open for background remediation if needed
+      // Will be closed after background tasks complete
     }
   }
 
@@ -516,18 +664,21 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
       critical_errors: [],
       recent_errors: [],
       error_keywords: {},
-      log_analysis: null
+      log_analysis: null,
+      problematic_plugins: [],
+      problematic_themes: [],
+      auto_remediation_scheduled: false
     };
 
     if (!sshConnection) return phase;
 
     try {
-      // Read last 50 lines of error log using same path pattern as automated_wp_repair.js
+      // Read last 100 lines of error log for comprehensive analysis
       const errorLogResult = await this.executeSSHCommand(
         sshConnection,
-        `tail -50 /home/${sshConnection._cpanelCredentials?.username || '*'}/public_html/error_log 2>/dev/null || echo "No error log found"`,
+        `tail -100 /home/${sshConnection._cpanelCredentials?.username || '*'}/public_html/error_log 2>/dev/null || echo "No error log found"`,
         requestId,
-        2000 // 2 second timeout for error log
+        3000 // 3 second timeout for error log
       );
 
       if (errorLogResult && !errorLogResult.includes('No error log found')) {
@@ -567,13 +718,42 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
                  errorKeywords.config.some(keyword => lowerLine.includes(keyword));
         }).slice(0, 10); // Limit to 10 most recent critical errors
 
-        phase.recent_errors = lines.slice(-10); // Last 10 errors
+        phase.recent_errors = lines.slice(-20); // Last 20 errors
+
+        // ENHANCED: Analyze recent plugin/theme errors (last 20 lines only)
+        const recentLines = lines.slice(-20); // Only check recent errors, not old ones
+        const pluginThemeAnalysis = this.analyzePluginThemeErrors(recentLines, requestId);
+        
+        phase.problematic_plugins = pluginThemeAnalysis.problematic_plugins;
+        phase.problematic_themes = pluginThemeAnalysis.problematic_themes;
+        
+        // Schedule automatic plugin/theme remediation if issues found
+        if (phase.problematic_plugins.length > 0 || phase.problematic_themes.length > 0) {
+          phase.auto_remediation_scheduled = true;
+          
+          // Schedule plugin/theme fixes in background
+          this.schedulePluginThemeRemediation(
+            sshConnection, 
+            phase.problematic_plugins, 
+            phase.problematic_themes, 
+            requestId
+          ).catch(error => {
+            logger.warn('Failed to schedule plugin/theme remediation', { 
+              requestId, 
+              error: error.message 
+            });
+          });
+        }
         
         // Store full log for background analysis and ticket creation
         phase.log_analysis = {
           needs_background_analysis: true,
-          needs_ticket_creation: phase.critical_errors.length > 5 || phase.error_keywords.database > 0,
+          needs_ticket_creation: phase.critical_errors.length > 5 || 
+                                 phase.error_keywords.database > 0 ||
+                                 phase.problematic_plugins.length > 0 ||
+                                 phase.problematic_themes.length > 0,
           error_patterns_detected: phase.critical_errors.length > 0,
+          plugin_theme_issues: phase.problematic_plugins.length > 0 || phase.problematic_themes.length > 0,
           full_log: errorLogResult // Store for ticket creation
         };
       }
@@ -586,7 +766,7 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
   }
 
   /**
-   * Phase 3: Database Connection Test (using MySQL2 API instead of SSH)
+   * Phase 3: Database Connection Test (using MySQL2 API with host management)
    */
   async phase3_DatabaseConnectionTest(sshConnection, requestId) {
     const phase = {
@@ -677,7 +857,7 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
         logger.warn('Failed to resolve server IP, using localhost', { requestId, error: ipError.message });
       }
 
-      // Step 3: Test connection with MySQL2 (allow remote connections)
+      // Step 3: Test connection with MySQL2 API using server IP
       const connectionResult = await mysqlClient.testConnectionPromise(dbConfig, serverIP);
       
       if (connectionResult.success) {
@@ -733,17 +913,13 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
         }
         
         // Schedule background database repair using API instead of SSH
-        // Only schedule if remediation is not already handling it
-        if (!remediation_needed) {
-          this.scheduleBackgroundDatabaseRepair(sshConnection._cpanelCredentials, dbConfig, requestId)
-            .catch(error => {
-              logger.warn('Failed to schedule background database repair', { requestId, error: error.message });
-            });
-          
-          phase.background_repair_scheduled = true;
-        } else {
-          phase.background_repair_scheduled = false; // Will be handled by remediation
-        }
+        this.scheduleBackgroundDatabaseRepair(sshConnection._cpanelCredentials, dbConfig, requestId)
+          .catch(error => {
+            logger.warn('Failed to schedule background database repair', { requestId, error: error.message });
+          });
+        
+        phase.background_repair_scheduled = true;
+        
         logger.info('Database connection failed, background repair scheduled', { 
           requestId,
           error: connectionResult.error,
@@ -775,8 +951,197 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
   }
 
   /**
-   * Parse database configuration from wp-config.php content
+   * Analyze recent plugin/theme errors and identify problematic ones
    */
+  analyzePluginThemeErrors(recentLines, requestId) {
+    const analysis = {
+      problematic_plugins: [],
+      problematic_themes: []
+    };
+
+    logger.info('Analyzing recent plugin/theme errors', { 
+      requestId, 
+      recentLinesCount: recentLines.length 
+    });
+
+    recentLines.forEach(line => {
+      // Check for plugin errors in wp-content/plugins path
+      const pluginMatch = line.match(/wp-content\/plugins\/([^\/]+)/);
+      if (pluginMatch) {
+        const pluginName = pluginMatch[1];
+        
+        // Check if this is a fatal error, parse error, or undefined constant
+        if (line.includes('Fatal error') || 
+            line.includes('Parse error') || 
+            line.includes('Undefined constant') ||
+            line.includes('Call to undefined function')) {
+          
+          if (!analysis.problematic_plugins.includes(pluginName)) {
+            analysis.problematic_plugins.push(pluginName);
+            logger.info('Problematic plugin identified', { 
+              requestId, 
+              plugin: pluginName,
+              error: line.substring(0, 150) + '...'
+            });
+          }
+        }
+      }
+
+      // Check for theme errors in wp-content/themes path
+      const themeMatch = line.match(/wp-content\/themes\/([^\/]+)/);
+      if (themeMatch) {
+        const themeName = themeMatch[1];
+        
+        // Check if this is a fatal error, parse error, or syntax error
+        if (line.includes('Fatal error') || 
+            line.includes('Parse error') || 
+            line.includes('syntax error') ||
+            line.includes('unexpected token')) {
+          
+          if (!analysis.problematic_themes.includes(themeName)) {
+            analysis.problematic_themes.push(themeName);
+            logger.info('Problematic theme identified', { 
+              requestId, 
+              theme: themeName,
+              error: line.substring(0, 150) + '...'
+            });
+          }
+        }
+      }
+    });
+
+    logger.info('Plugin/theme error analysis completed', { 
+      requestId,
+      problematicPlugins: analysis.problematic_plugins,
+      problematicThemes: analysis.problematic_themes
+    });
+
+    return analysis;
+  }
+
+  /**
+   * Schedule plugin/theme remediation in background
+   */
+  async schedulePluginThemeRemediation(sshConnection, problematicPlugins, problematicThemes, requestId) {
+    // Don't await - run in background
+    setTimeout(async () => {
+      try {
+        logger.info('Starting plugin/theme remediation', { 
+          requestId,
+          plugins: problematicPlugins,
+          themes: problematicThemes
+        });
+
+        const remediationResults = {
+          plugins_deactivated: [],
+          themes_switched: [],
+          errors: []
+        };
+
+        // Deactivate problematic plugins
+        for (const pluginName of problematicPlugins) {
+          try {
+            logger.info('Deactivating problematic plugin', { requestId, plugin: pluginName });
+            
+            const deactivateResult = await this.executeSSHCommand(
+              sshConnection,
+              `cd /home/${sshConnection._cpanelCredentials?.username}/public_html && wp plugin deactivate ${pluginName} --skip-plugins --allow-root 2>&1 || echo "DEACTIVATE_FAILED"`,
+              requestId,
+              10000 // 10 second timeout
+            );
+
+            if (!deactivateResult.includes('DEACTIVATE_FAILED') && 
+                (deactivateResult.includes('Success') || deactivateResult.includes('deactivated'))) {
+              remediationResults.plugins_deactivated.push(pluginName);
+              logger.info('Plugin deactivated successfully', { requestId, plugin: pluginName });
+            } else {
+              remediationResults.errors.push(`Failed to deactivate plugin ${pluginName}: ${deactivateResult}`);
+              logger.warn('Plugin deactivation failed', { 
+                requestId, 
+                plugin: pluginName, 
+                result: deactivateResult 
+              });
+            }
+          } catch (pluginError) {
+            remediationResults.errors.push(`Error deactivating plugin ${pluginName}: ${pluginError.message}`);
+            logger.error('Plugin deactivation error', { 
+              requestId, 
+              plugin: pluginName, 
+              error: pluginError.message 
+            });
+          }
+        }
+
+        // Switch away from problematic themes to default themes
+        if (problematicThemes.length > 0) {
+          try {
+            logger.info('Switching away from problematic themes', { 
+              requestId, 
+              themes: problematicThemes 
+            });
+
+            // Try to activate default themes in order of preference
+            const defaultThemes = ['twentytwentyfour', 'twentytwentythree', 'twentytwentytwo', 'twentytwentyone'];
+            let themeActivated = false;
+
+            for (const defaultTheme of defaultThemes) {
+              try {
+                const activateResult = await this.executeSSHCommand(
+                  sshConnection,
+                  `cd /home/${sshConnection._cpanelCredentials?.username}/public_html && wp theme activate ${defaultTheme} --skip-themes --allow-root 2>&1 || echo "ACTIVATE_FAILED"`,
+                  requestId,
+                  8000 // 8 second timeout
+                );
+
+                if (!activateResult.includes('ACTIVATE_FAILED') && 
+                    (activateResult.includes('Success') || activateResult.includes('activated'))) {
+                  remediationResults.themes_switched.push(defaultTheme);
+                  themeActivated = true;
+                  logger.info('Default theme activated successfully', { 
+                    requestId, 
+                    theme: defaultTheme,
+                    replacedThemes: problematicThemes
+                  });
+                  break; // Stop trying other themes
+                }
+              } catch (themeError) {
+                logger.warn('Failed to activate default theme', { 
+                  requestId, 
+                  theme: defaultTheme, 
+                  error: themeError.message 
+                });
+              }
+            }
+
+            if (!themeActivated) {
+              remediationResults.errors.push(`Failed to activate any default theme to replace: ${problematicThemes.join(', ')}`);
+              logger.error('All default theme activation attempts failed', { 
+                requestId, 
+                problematicThemes 
+              });
+            }
+          } catch (themeError) {
+            remediationResults.errors.push(`Error switching themes: ${themeError.message}`);
+            logger.error('Theme switching error', { 
+              requestId, 
+              error: themeError.message 
+            });
+          }
+        }
+
+        logger.info('Plugin/theme remediation completed', { 
+          requestId,
+          results: remediationResults
+        });
+
+      } catch (remediationError) {
+        logger.error('Plugin/theme remediation failed', { 
+          requestId, 
+          error: remediationError.message 
+        });
+      }
+    }, 3000); // Start remediation after 3 second delay
+  }
   parseWpConfigDatabase(wpConfigContent) {
     const config = {
       database: null,
@@ -1365,8 +1730,109 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
   }
 
   /**
-   * Get client-friendly status message
+   * Create error ticket when analysis fails
    */
+  async createErrorTicket({ domain, requestId, error, userInput, clientInfo, totalDuration }) {
+    logger.info('Creating error ticket for failed analysis', { requestId, domain });
+    
+    try {
+      const subject = `WordPress Diagnostic Error - ${domain}`;
+      const message = `WORDPRESS DIAGNOSTIC ERROR REPORT\n` +
+                     `=====================================\n\n` +
+                     `Domain: ${domain}\n` +
+                     `Request ID: ${requestId}\n` +
+                     `Error Time: ${new Date().toISOString()}\n` +
+                     `Total Duration: ${totalDuration || 'Unknown'}ms\n\n` +
+                     `ERROR DETAILS\n` +
+                     `=============\n` +
+                     `Error Message: ${error}\n\n` +
+                     `USER INPUT\n` +
+                     `==========\n` +
+                     `Domain: ${userInput?.domain || 'Unknown'}\n` +
+                     `Phone: ${userInput?.phone || 'Not provided'}\n` +
+                     `Frontend Accessible: ${userInput?.frontend_accessible || 'Unknown'}\n` +
+                     `Admin Accessible: ${userInput?.admin_accessible || 'Unknown'}\n` +
+                     `Error Visible: ${userInput?.error_visible || 'Unknown'}\n` +
+                     `Recent Changes: ${userInput?.recent_changes || 'Unknown'}\n\n` +
+                     `CLIENT INFO\n` +
+                     `===========\n` +
+                     `Server: ${clientInfo?.server || 'Unknown'}\n` +
+                     `Username: ${clientInfo?.username || 'Unknown'}\n` +
+                     `Phone: ${clientInfo?.phone || 'Unknown'}\n\n` +
+                     `This error ticket was automatically generated when the WordPress diagnostic analysis failed.\n` +
+                     `Manual investigation may be required to resolve the underlying issue.\n`;
+
+      // Create ticket via WHMCS API
+      const whmcsUrl = process.env.WHMCS_URL;
+      const whmcsIdentifier = process.env.WHMCS_API_IDENTIFIER;
+      const whmcsSecret = process.env.WHMCS_API_SECRET;
+
+      if (whmcsUrl && whmcsIdentifier && whmcsSecret) {
+        try {
+          const axios = require('axios');
+          
+          const formData = new URLSearchParams();
+          formData.append('action', 'OpenTicket');
+          formData.append('identifier', whmcsIdentifier);
+          formData.append('secret', whmcsSecret);
+          formData.append('deptid', process.env.TECHSUPPORT_DEPTID || '2');
+          formData.append('subject', subject);
+          formData.append('message', message);
+          formData.append('priority', 'High');
+          formData.append('name', 'WordPress Diagnostic System');
+          formData.append('email', 'support@hostbreak.com');
+          formData.append('responsetype', 'json');
+
+          const response = await axios.post(whmcsUrl, formData, {
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            timeout: 10000
+          });
+
+          if (response.data && response.data.result === 'success') {
+            logger.info('Error ticket created successfully', { 
+              requestId, 
+              domain,
+              ticketId: response.data.id,
+              ticketNumber: response.data.tid
+            });
+            
+            return { 
+              success: true, 
+              ticketId: response.data.id,
+              ticketNumber: response.data.tid
+            };
+          } else {
+            logger.error('Failed to create error ticket via WHMCS', { 
+              requestId, 
+              error: response.data?.message || 'Unknown error'
+            });
+          }
+        } catch (apiError) {
+          logger.error('WHMCS API error for error ticket', { 
+            requestId, 
+            error: apiError.message
+          });
+        }
+      }
+
+      // Fallback: Log error ticket data
+      logger.info('Error ticket data (manual processing required)', { 
+        requestId, 
+        domain,
+        subject,
+        error,
+        userInput
+      });
+      
+      return { success: true, method: 'logged_for_manual_processing' };
+
+    } catch (ticketError) {
+      logger.error('Failed to create error ticket', { requestId, error: ticketError.message });
+      return { success: false, error: ticketError.message };
+    }
+  }
   getClientFriendlyStatus(diagnosticResult) {
     if (!diagnosticResult.phases.phase1?.wordpress_found) {
       return 'WordPress not detected';
@@ -1859,18 +2325,30 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
 
   /**
    * Background remediation (runs after response is sent)
+   * Returns remediation results for inclusion in final ticket
    */
   async performBackgroundRemediation({ domain, cpanelCredentials, diagnosticResult, requestId }) {
     logger.info('Starting background remediation', { requestId });
     
     const sshConnection = this.activeConnections.get(requestId);
+    const remediationResults = {
+      core_files_fixed: false,
+      plugin_theme_fixes: [],
+      database_repair: null,
+      errors: [],
+      completed_tasks: 0,
+      total_tasks: 0
+    };
     
     try {
       const remediationTasks = [];
 
       // Task 1: Core file restoration if needed
       if (diagnosticResult.phases.phase4?.checksum_status === 'invalid') {
-        remediationTasks.push(this.fixCoreFiles(sshConnection, requestId));
+        remediationTasks.push({
+          name: 'core_files',
+          task: () => this.fixCoreFiles(sshConnection, requestId)
+        });
       }
 
       // Task 2: Database repair if needed (handled by background repair, not remediation)
@@ -1880,32 +2358,70 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
       //   remediationTasks.push(this.repairDatabase(sshConnection, requestId));
       // }
 
-      // Task 3: Plugin/theme fixes if needed
-      if (diagnosticResult.phases.phase6?.plugin_issues?.length > 0) {
-        remediationTasks.push(this.fixPluginIssues(sshConnection, requestId));
+      // Task 3: Plugin/theme fixes if needed (enhanced with error log analysis)
+      if (diagnosticResult.phases.phase6?.plugin_issues?.length > 0 ||
+          diagnosticResult.phases.phase2?.problematic_plugins?.length > 0 ||
+          diagnosticResult.phases.phase2?.problematic_themes?.length > 0) {
+        remediationTasks.push({
+          name: 'plugin_theme_fixes',
+          task: () => this.fixPluginThemeIssues(sshConnection, diagnosticResult, requestId)
+        });
       }
 
-      // Task 4: Create support ticket if needed
-      if (diagnosticResult.phases.phase2?.log_analysis?.needs_ticket_creation) {
-        remediationTasks.push(this.createSupportTicket(
-          domain, 
-          cpanelCredentials, 
-          diagnosticResult,
-          requestId
-        ));
-      }
+      // NOTE: Ticket creation is handled in performComprehensiveBackgroundAnalysis AFTER all remediation
+      // Do not create tickets here to avoid duplicates
 
-      // Execute all remediation tasks
-      const results = await Promise.allSettled(remediationTasks);
+      remediationResults.total_tasks = remediationTasks.length;
+
+      // Execute all remediation tasks and collect results
+      for (const taskInfo of remediationTasks) {
+        try {
+          logger.info(`Executing remediation task: ${taskInfo.name}`, { requestId });
+          const result = await taskInfo.task();
+          
+          if (result.success) {
+            remediationResults.completed_tasks++;
+            
+            // Store specific results
+            switch (taskInfo.name) {
+              case 'core_files':
+                remediationResults.core_files_fixed = true;
+                break;
+              case 'plugin_theme_fixes':
+                remediationResults.plugin_theme_fixes = result.fixes || [];
+                break;
+            }
+          } else {
+            remediationResults.errors.push(`${taskInfo.name}: ${result.error}`);
+          }
+          
+          logger.info(`Remediation task ${taskInfo.name} completed`, { 
+            requestId, 
+            success: result.success,
+            result: result.success ? 'Success' : result.error
+          });
+        } catch (taskError) {
+          remediationResults.errors.push(`${taskInfo.name}: ${taskError.message}`);
+          logger.error(`Remediation task ${taskInfo.name} failed`, { 
+            requestId, 
+            error: taskError.message 
+          });
+        }
+      }
       
       logger.info('Background remediation completed', { 
         requestId, 
-        tasksCompleted: results.length,
-        successful: results.filter(r => r.status === 'fulfilled').length
+        totalTasks: remediationResults.total_tasks,
+        completedTasks: remediationResults.completed_tasks,
+        errors: remediationResults.errors.length
       });
+
+      return remediationResults;
 
     } catch (error) {
       logger.error('Background remediation error', { requestId, error: error.message });
+      remediationResults.errors.push(`General error: ${error.message}`);
+      return remediationResults;
     } finally {
       // Clean up SSH connection and key
       if (sshConnection) {
@@ -2074,25 +2590,411 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
   }
 
   /**
-   * Fix plugin issues (background task)
+   * Fix plugin and theme issues (enhanced with error log analysis and direct file manipulation)
    */
-  async fixPluginIssues(sshConnection, requestId) {
-    logger.info('Fixing plugin issues', { requestId });
+  async fixPluginThemeIssues(sshConnection, diagnosticResult, requestId) {
+    logger.info('Fixing plugin and theme issues', { requestId });
     
     try {
-      // Update all plugins using same flags as automated_wp_repair.js
-      const result = await this.executeSSHCommand(
-        sshConnection,
-        `cd /home/${sshConnection._cpanelCredentials?.username}/public_html && wp plugin update --all --allow-root`,
-        requestId,
-        30000 // 30 second timeout
-      );
+      const results = {
+        plugins_deactivated: [],
+        themes_switched: [],
+        plugins_updated: [],
+        errors: []
+      };
+
+      // Get problematic plugins/themes from error log analysis
+      const problematicPlugins = diagnosticResult.phases.phase2?.problematic_plugins || [];
+      const problematicThemes = diagnosticResult.phases.phase2?.problematic_themes || [];
+
+      // Check if WordPress is in a broken state (parse errors, critical errors)
+      const hasCriticalErrors = diagnosticResult.phases.phase1?.config_errors?.length > 0 ||
+                               diagnosticResult.phases.phase2?.error_keywords?.config > 0 ||
+                               diagnosticResult.phases.phase2?.critical_errors?.some(error => 
+                                 error.includes('Parse error') || error.includes('syntax error')
+                               ) ||
+                               // Also check if we have problematic themes (often indicates parse errors)
+                               problematicThemes.length > 0 ||
+                               // Check if WordPress installation health indicates issues
+                               diagnosticResult.phases.phase1?.installation_health === 'corrupted' ||
+                               diagnosticResult.phases.phase1?.installation_health === 'detected_but_broken';
+
+      logger.info('WordPress state analysis', { 
+        requestId, 
+        hasCriticalErrors,
+        problematicPlugins,
+        problematicThemes,
+        configErrors: diagnosticResult.phases.phase1?.config_errors?.length || 0,
+        installationHealth: diagnosticResult.phases.phase1?.installation_health,
+        configKeywordErrors: diagnosticResult.phases.phase2?.error_keywords?.config || 0
+      });
+
+      // If WordPress has critical errors, use direct file manipulation instead of WP-CLI
+      if (hasCriticalErrors) {
+        logger.info('WordPress has critical errors, using direct file manipulation', { requestId });
+        
+        // Fix problematic themes first (they often cause the most critical issues)
+        if (problematicThemes.length > 0) {
+          const themeFixResult = await this.fixThemesDirectly(sshConnection, problematicThemes, requestId);
+          results.themes_switched = themeFixResult.themes_switched;
+          results.errors.push(...themeFixResult.errors);
+        }
+
+        // Fix problematic plugins using direct file manipulation
+        if (problematicPlugins.length > 0) {
+          const pluginFixResult = await this.fixPluginsDirectly(sshConnection, problematicPlugins, requestId);
+          results.plugins_deactivated = pluginFixResult.plugins_deactivated;
+          results.errors.push(...pluginFixResult.errors);
+        }
+      } else {
+        // WordPress appears functional, try WP-CLI commands first
+        logger.info('WordPress appears functional, trying WP-CLI commands first', { requestId });
+        
+        let wpCliWorking = true;
+        
+        // Deactivate problematic plugins using WP-CLI
+        for (const pluginName of problematicPlugins) {
+          try {
+            logger.info('Deactivating problematic plugin via WP-CLI', { requestId, plugin: pluginName });
+            
+            const deactivateResult = await this.executeSSHCommand(
+              sshConnection,
+              `cd /home/${sshConnection._cpanelCredentials?.username}/public_html && wp plugin deactivate ${pluginName} --skip-plugins --allow-root`,
+              requestId,
+              10000
+            );
+
+            // Check if WP-CLI failed due to parse errors
+            if (deactivateResult.includes('Parse error') || 
+                deactivateResult.includes('syntax error') ||
+                deactivateResult.includes('critical error') ||
+                deactivateResult.includes('DEACTIVATE_FAILED')) {
+              
+              logger.warn('WP-CLI failed due to parse/syntax errors, switching to direct method', { 
+                requestId, 
+                plugin: pluginName,
+                error: deactivateResult.substring(0, 200) + '...'
+              });
+              
+              wpCliWorking = false;
+              break; // Stop trying WP-CLI and switch to direct method
+            }
+
+            if (deactivateResult.includes('Success') || deactivateResult.includes('deactivated')) {
+              results.plugins_deactivated.push(pluginName);
+              logger.info('Problematic plugin deactivated successfully via WP-CLI', { requestId, plugin: pluginName });
+            } else {
+              results.errors.push(`Failed to deactivate plugin ${pluginName} via WP-CLI`);
+            }
+          } catch (error) {
+            logger.warn('WP-CLI plugin deactivation error, may need direct method', { 
+              requestId, 
+              plugin: pluginName, 
+              error: error.message 
+            });
+            wpCliWorking = false;
+            break;
+          }
+        }
+
+        // Try WP-CLI theme switching if plugins worked
+        if (wpCliWorking && problematicThemes.length > 0) {
+          const themeFixResult = await this.fixThemesViaWPCLI(sshConnection, problematicThemes, requestId);
+          results.themes_switched = themeFixResult.themes_switched;
+          results.errors.push(...themeFixResult.errors);
+          
+          // Check if theme switching failed
+          if (themeFixResult.themes_switched.length === 0 && themeFixResult.errors.length > 0) {
+            wpCliWorking = false;
+          }
+        }
+        
+        // If WP-CLI failed, fall back to direct SSH database method
+        if (!wpCliWorking) {
+          logger.info('WP-CLI failed, falling back to direct SSH database method', { requestId });
+          
+          // Clear previous results since we're switching methods
+          results.plugins_deactivated = [];
+          results.themes_switched = [];
+          results.errors = [];
+          
+          // Fix problematic themes first using direct method
+          if (problematicThemes.length > 0) {
+            const themeFixResult = await this.fixThemesDirectly(sshConnection, problematicThemes, requestId);
+            results.themes_switched = themeFixResult.themes_switched;
+            results.errors.push(...themeFixResult.errors);
+          }
+
+          // Fix problematic plugins using direct method
+          if (problematicPlugins.length > 0) {
+            const pluginFixResult = await this.fixPluginsDirectly(sshConnection, problematicPlugins, requestId);
+            results.plugins_deactivated = pluginFixResult.plugins_deactivated;
+            results.errors.push(...pluginFixResult.errors);
+          }
+        }
+      }
+
+      // Try to update remaining plugins only if WordPress is now functional
+      if (!hasCriticalErrors && results.errors.length === 0) {
+        try {
+          const updateResult = await this.executeSSHCommand(
+            sshConnection,
+            `cd /home/${sshConnection._cpanelCredentials?.username}/public_html && wp plugin update --all --skip-plugins --allow-root`,
+            requestId,
+            30000
+          );
+          
+          if (updateResult.includes('Success') || updateResult.includes('updated')) {
+            results.plugins_updated.push('All non-problematic plugins updated');
+            logger.info('Non-problematic plugins updated', { requestId });
+          }
+        } catch (updateError) {
+          results.errors.push(`Plugin update failed: ${updateError.message}`);
+        }
+      }
       
-      logger.info('Plugins updated', { requestId });
-      return { success: true, result };
+      logger.info('Plugin/theme issues fixed', { requestId, results });
+      return { success: true, fixes: results };
     } catch (error) {
-      logger.error('Plugin fix failed', { requestId, error: error.message });
+      logger.error('Plugin/theme fix failed', { requestId, error: error.message });
       return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Fix themes directly using SSH commands (when WordPress is broken)
+   */
+  async fixThemesDirectly(sshConnection, problematicThemes, requestId) {
+    const result = {
+      themes_switched: [],
+      errors: []
+    };
+
+    try {
+      logger.info('Fixing themes directly via SSH commands', { requestId, themes: problematicThemes });
+
+      // Get database configuration
+      const wpConfigResult = await this.executeSSHCommand(
+        sshConnection,
+        `cd /home/${sshConnection._cpanelCredentials?.username}/public_html && grep -E "define.*DB_(NAME|USER|PASSWORD|HOST)" wp-config.php | head -4`,
+        requestId,
+        5000
+      );
+
+      const dbConfig = this.parseWpConfigDatabase(wpConfigResult);
+      
+      if (!dbConfig.database || !dbConfig.user) {
+        result.errors.push('Could not parse database configuration for theme fix');
+        return result;
+      }
+
+      // Find available default themes
+      const availableThemesResult = await this.executeSSHCommand(
+        sshConnection,
+        `cd /home/${sshConnection._cpanelCredentials?.username}/public_html/wp-content/themes && ls -d twenty* 2>/dev/null | head -5`,
+        requestId,
+        3000
+      );
+
+      const availableThemes = availableThemesResult.split('\n').filter(theme => theme.trim());
+      
+      if (availableThemes.length === 0) {
+        result.errors.push('No default themes found for activation');
+        return result;
+      }
+
+      // Use the first available default theme
+      const newTheme = availableThemes[0].trim();
+      
+      logger.info('Switching to theme via SSH database commands', { 
+        requestId, 
+        newTheme,
+        availableThemes
+      });
+
+      // Update theme in database using SSH mysql command
+      const updateThemeResult = await this.executeSSHCommand(
+        sshConnection,
+        `cd /home/${sshConnection._cpanelCredentials?.username}/public_html && mysql -h"${dbConfig.host}" -u"${dbConfig.user}" -p"${dbConfig.password}" "${dbConfig.database}" -e "UPDATE wp_options SET option_value='${newTheme}' WHERE option_name='template'; UPDATE wp_options SET option_value='${newTheme}' WHERE option_name='stylesheet';" 2>/dev/null && echo "THEME_UPDATE_SUCCESS" || echo "THEME_UPDATE_FAILED"`,
+        requestId,
+        10000
+      );
+
+      if (updateThemeResult.includes('THEME_UPDATE_SUCCESS')) {
+        result.themes_switched.push(newTheme);
+        logger.info('Theme switched successfully via SSH database command', { requestId, newTheme });
+        
+        // Also try to fix the problematic theme's functions.php if possible
+        for (const problematicTheme of problematicThemes) {
+          try {
+            await this.fixThemeFunctionsFile(sshConnection, problematicTheme, requestId);
+          } catch (fixError) {
+            logger.warn('Could not fix problematic theme functions.php', { 
+              requestId, 
+              theme: problematicTheme, 
+              error: fixError.message 
+            });
+          }
+        }
+      } else {
+        result.errors.push(`Failed to update theme in database via SSH: ${updateThemeResult}`);
+      }
+
+    } catch (error) {
+      result.errors.push(`Direct theme fix error: ${error.message}`);
+      logger.error('Direct theme fix failed', { requestId, error: error.message });
+    }
+
+    return result;
+  }
+
+  /**
+   * Fix plugins directly using SSH commands (when WordPress is broken)
+   * Skip querying active plugins - just deactivate all based on error log analysis
+   */
+  async fixPluginsDirectly(sshConnection, problematicPlugins, requestId) {
+    const result = {
+      plugins_deactivated: [],
+      errors: []
+    };
+
+    try {
+      logger.info('Fixing plugins directly via SSH commands based on error log analysis', { requestId, plugins: problematicPlugins });
+
+      // Get database configuration
+      const wpConfigResult = await this.executeSSHCommand(
+        sshConnection,
+        `cd /home/${sshConnection._cpanelCredentials?.username}/public_html && grep -E "define.*DB_(NAME|USER|PASSWORD|HOST)" wp-config.php | head -4`,
+        requestId,
+        5000
+      );
+
+      const dbConfig = this.parseWpConfigDatabase(wpConfigResult);
+      
+      if (!dbConfig.database || !dbConfig.user) {
+        result.errors.push('Could not parse database configuration for plugin fix');
+        return result;
+      }
+
+      // Skip querying active plugins - just deactivate all plugins for safety based on error log analysis
+      logger.info('Deactivating all plugins for safety based on error log analysis via SSH', { requestId });
+
+      // Deactivate all plugins by clearing the active_plugins option using SSH mysql command
+      const deactivateAllResult = await this.executeSSHCommand(
+        sshConnection,
+        `cd /home/${sshConnection._cpanelCredentials?.username}/public_html && mysql -h"${dbConfig.host}" -u"${dbConfig.user}" -p"${dbConfig.password}" "${dbConfig.database}" -e "UPDATE wp_options SET option_value='a:0:{}' WHERE option_name='active_plugins';" 2>/dev/null && echo "PLUGIN_DEACTIVATE_SUCCESS" || echo "PLUGIN_DEACTIVATE_FAILED"`,
+        requestId,
+        8000
+      );
+
+      if (deactivateAllResult.includes('PLUGIN_DEACTIVATE_SUCCESS')) {
+        result.plugins_deactivated = [...problematicPlugins, 'All plugins deactivated for safety based on error log analysis'];
+        logger.info('All plugins deactivated via SSH database command for safety', { requestId });
+      } else {
+        result.errors.push(`Failed to deactivate plugins via SSH database command: ${deactivateAllResult}`);
+      }
+
+    } catch (error) {
+      result.errors.push(`Direct plugin fix error: ${error.message}`);
+      logger.error('Direct plugin fix failed', { requestId, error: error.message });
+    }
+
+    return result;
+  }
+
+  /**
+   * Fix themes using WP-CLI (when WordPress is functional)
+   */
+  async fixThemesViaWPCLI(sshConnection, problematicThemes, requestId) {
+    const result = {
+      themes_switched: [],
+      errors: []
+    };
+
+    try {
+      logger.info('Switching away from problematic themes via WP-CLI', { requestId, themes: problematicThemes });
+
+      const defaultThemes = ['twentytwentyfour', 'twentytwentythree', 'twentytwentytwo', 'twentytwentyone'];
+      let themeActivated = false;
+
+      for (const defaultTheme of defaultThemes) {
+        try {
+          const activateResult = await this.executeSSHCommand(
+            sshConnection,
+            `cd /home/${sshConnection._cpanelCredentials?.username}/public_html && wp theme activate ${defaultTheme} --skip-themes --allow-root`,
+            requestId,
+            8000
+          );
+
+          if (activateResult.includes('Success') || activateResult.includes('activated')) {
+            result.themes_switched.push(defaultTheme);
+            themeActivated = true;
+            logger.info('Default theme activated via WP-CLI', { 
+              requestId, 
+              newTheme: defaultTheme,
+              replacedThemes: problematicThemes
+            });
+            break;
+          }
+        } catch (themeError) {
+          logger.warn('Failed to activate default theme via WP-CLI', { 
+            requestId, 
+            theme: defaultTheme, 
+            error: themeError.message 
+          });
+        }
+      }
+
+      if (!themeActivated) {
+        result.errors.push(`Failed to activate any default theme to replace: ${problematicThemes.join(', ')}`);
+      }
+    } catch (themeError) {
+      result.errors.push(`WP-CLI theme switching error: ${themeError.message}`);
+    }
+
+    return result;
+  }
+
+  /**
+   * Attempt to fix a theme's functions.php file by commenting out problematic lines
+   */
+  async fixThemeFunctionsFile(sshConnection, themeName, requestId) {
+    try {
+      logger.info('Attempting to fix theme functions.php', { requestId, theme: themeName });
+
+      const functionsPath = `/home/${sshConnection._cpanelCredentials?.username}/public_html/wp-content/themes/${themeName}/functions.php`;
+      
+      // Backup the original file first
+      await this.executeSSHCommand(
+        sshConnection,
+        `cp ${functionsPath} ${functionsPath}.backup.$(date +%Y%m%d_%H%M%S)`,
+        requestId,
+        3000
+      );
+
+      // Comment out lines that commonly cause parse errors
+      const fixCommands = [
+        // Comment out lines with common syntax errors
+        `sed -i 's/^\\s*summary\\s*$/\\/\\/ &/' ${functionsPath}`,
+        `sed -i 's/^\\s*unexpected\\s*$/\\/\\/ &/' ${functionsPath}`,
+        // Remove trailing commas that cause parse errors
+        `sed -i 's/,\\s*$//' ${functionsPath}`,
+        // Fix common PHP syntax issues
+        `sed -i 's/<?php\\s*<?php/<?php/' ${functionsPath}`
+      ];
+
+      for (const command of fixCommands) {
+        try {
+          await this.executeSSHCommand(sshConnection, command, requestId, 3000);
+        } catch (cmdError) {
+          logger.warn('Fix command failed', { requestId, command, error: cmdError.message });
+        }
+      }
+
+      logger.info('Theme functions.php fix attempted', { requestId, theme: themeName });
+    } catch (error) {
+      logger.warn('Could not fix theme functions.php', { requestId, theme: themeName, error: error.message });
+      throw error;
     }
   }
 
@@ -2212,11 +3114,11 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
   /**
    * Create comprehensive support ticket with complete analysis
    */
-  async createComprehensiveTicket({ domain, cpanelCredentials, diagnosticResult, clientInfo, requestId }) {
+  async createComprehensiveTicket({ domain, cpanelCredentials, diagnosticResult, clientInfo, requestId, totalDuration, remediationResults }) {
     logger.info('Creating comprehensive support ticket', { requestId, domain });
     
     try {
-      const ticketData = this.generateComprehensiveTicketData(domain, cpanelCredentials, diagnosticResult, clientInfo);
+      const ticketData = this.generateComprehensiveTicketData(domain, cpanelCredentials, diagnosticResult, clientInfo, totalDuration, remediationResults);
       
       const ticketPayload = {
         subject: ticketData.subject,
@@ -2224,13 +3126,14 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
         priority: ticketData.priority,
         department: 'Support',
         domain: domain,
-        server: cpanelCredentials.host,
-        username: cpanelCredentials.username,
+        server: cpanelCredentials?.host || 'Unknown',
+        username: cpanelCredentials?.username || 'Unknown',
         diagnostic_data: {
           request_id: requestId,
           complete_analysis: diagnosticResult,
           client_info: clientInfo,
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
+          total_duration: totalDuration
         }
       };
 
@@ -2321,7 +3224,7 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
   /**
    * Generate comprehensive ticket data with complete analysis
    */
-  generateComprehensiveTicketData(domain, cpanelCredentials, diagnosticResult, clientInfo) {
+  generateComprehensiveTicketData(domain, cpanelCredentials, diagnosticResult, clientInfo, totalDuration, remediationResults) {
     const phases = diagnosticResult.phases;
     let priority = 'Medium';
     let subject = `WordPress Diagnostic Report - ${domain}`;
@@ -2347,7 +3250,7 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
     }
 
     // Generate comprehensive message with complete analysis
-    const message = this.generateComprehensiveTicketMessage(domain, cpanelCredentials, diagnosticResult, clientInfo, issueType);
+    const message = this.generateComprehensiveTicketMessage(domain, cpanelCredentials, diagnosticResult, clientInfo, issueType, totalDuration, remediationResults);
 
     return {
       subject,
@@ -2355,27 +3258,27 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
       priority,
       issueType,
       domain,
-      server: cpanelCredentials.host,
-      username: cpanelCredentials.username
+      server: cpanelCredentials?.host || 'Unknown',
+      username: cpanelCredentials?.username || 'Unknown'
     };
   }
 
   /**
    * Generate comprehensive ticket message with complete diagnostic data
    */
-  generateComprehensiveTicketMessage(domain, cpanelCredentials, diagnosticResult, clientInfo, issueType) {
+  generateComprehensiveTicketMessage(domain, cpanelCredentials, diagnosticResult, clientInfo, issueType, totalDuration, remediationResults) {
     const phases = diagnosticResult.phases;
     
     let message = `COMPREHENSIVE WORDPRESS DIAGNOSTIC REPORT\n`;
     message += `==========================================\n\n`;
     
     message += `Domain: ${domain}\n`;
-    message += `Server: ${cpanelCredentials.host}\n`;
-    message += `Username: ${cpanelCredentials.username}\n`;
+    message += `Server: ${cpanelCredentials?.host || 'Unknown'}\n`;
+    message += `Username: ${cpanelCredentials?.username || 'Unknown'}\n`;
     message += `Issue Type: ${issueType}\n`;
     message += `Diagnostic Time: ${new Date().toISOString()}\n`;
     message += `Request ID: ${diagnosticResult.requestId || 'N/A'}\n`;
-    message += `Duration: ${diagnosticResult.duration || 'N/A'}ms\n\n`;
+    message += `Total Duration: ${totalDuration || 'Unknown'}ms\n\n`;
 
     message += `EXECUTIVE SUMMARY\n`;
     message += `=================\n`;
@@ -2413,6 +3316,13 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
         }
       });
     }
+    if (phases.phase2?.problematic_plugins?.length > 0) {
+      message += `Problematic Plugins Identified: ${phases.phase2.problematic_plugins.join(', ')}\n`;
+    }
+    if (phases.phase2?.problematic_themes?.length > 0) {
+      message += `Problematic Themes Identified: ${phases.phase2.problematic_themes.join(', ')}\n`;
+    }
+    message += `Auto Remediation Scheduled: ${phases.phase2?.auto_remediation_scheduled ? 'Yes' : 'No'}\n`;
     if (phases.phase2?.critical_errors?.length > 0) {
       message += `Recent Critical Errors:\n`;
       phases.phase2.critical_errors.slice(0, 3).forEach((error, index) => {
@@ -2489,6 +3399,36 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
     message += `==================\n`;
     message += `Background Remediation Scheduled: ${diagnosticResult.background_remediation_scheduled ? 'Yes' : 'No'}\n`;
     message += `Remediation Needed: ${diagnosticResult.remediation_needed ? 'Yes' : 'No'}\n`;
+    
+    // Add remediation results if available
+    if (remediationResults) {
+      message += `\nREMEDIATION RESULTS\n`;
+      message += `===================\n`;
+      message += `Total Tasks: ${remediationResults.total_tasks || 0}\n`;
+      message += `Completed Tasks: ${remediationResults.completed_tasks || 0}\n`;
+      message += `Core Files Fixed: ${remediationResults.core_files_fixed ? 'Yes' : 'No'}\n`;
+      
+      if (remediationResults.plugin_theme_fixes && remediationResults.plugin_theme_fixes.length > 0) {
+        message += `\nPlugin/Theme Fixes Applied:\n`;
+        const fixes = remediationResults.plugin_theme_fixes;
+        if (fixes.plugins_deactivated && fixes.plugins_deactivated.length > 0) {
+          message += `- Deactivated Plugins: ${fixes.plugins_deactivated.join(', ')}\n`;
+        }
+        if (fixes.themes_switched && fixes.themes_switched.length > 0) {
+          message += `- Switched to Theme: ${fixes.themes_switched.join(', ')}\n`;
+        }
+        if (fixes.plugins_updated && fixes.plugins_updated.length > 0) {
+          message += `- Updated Plugins: ${fixes.plugins_updated.join(', ')}\n`;
+        }
+      }
+      
+      if (remediationResults.errors && remediationResults.errors.length > 0) {
+        message += `\nRemediation Errors:\n`;
+        remediationResults.errors.forEach((error, index) => {
+          message += `${index + 1}. ${error}\n`;
+        });
+      }
+    }
     message += `\n`;
 
     message += `This comprehensive diagnostic report was automatically generated by the WordPress Diagnostic System.\n`;
