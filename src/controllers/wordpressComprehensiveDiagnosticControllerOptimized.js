@@ -18,7 +18,7 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
   constructor() {
     this.credentialResolver = new CpanelCredentialResolver();
     this.activeConnections = new Map(); // Track SSH connections
-    this.diagnosticTimeout = 20000; // Increased to 20 seconds to accommodate all phases
+    this.diagnosticTimeout = 15000; // Reduced to 15 seconds for faster response
     
     // Bind methods
     this.diagnoseWordPressSite = this.diagnoseWordPressSite.bind(this);
@@ -135,39 +135,79 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
       const diagnosticResult = await Promise.race([
         diagnosticPromise,
         new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('Diagnostic timeout - 20 second limit exceeded')), this.diagnosticTimeout)
+          setTimeout(() => reject(new Error('Diagnostic timeout - 15 second limit exceeded')), this.diagnosticTimeout)
         )
       ]);
 
-      // Prepare response
-      const response = {
+      // Prepare simplified response for client
+      const clientResponse = {
         success: true,
         requestId,
         domain: value.domain,
-        client: clientInfo,
-        diagnostic: diagnosticResult,
+        status: this.getClientFriendlyStatus(diagnosticResult),
+        wordpress: {
+          found: diagnosticResult.phases.phase1?.wordpress_found || false,
+          version: this.extractWordPressVersion(diagnosticResult.phases.phase5?.wordpress_version),
+          health: diagnosticResult.phases.phase1?.installation_health || 'unknown'
+        },
+        database: {
+          connected: diagnosticResult.phases.phase3?.database_connection || false,
+          status: this.getClientFriendlyDatabaseStatus(diagnosticResult.phases.phase3?.database_status),
+          repair_scheduled: diagnosticResult.background_remediation_scheduled || false
+        },
+        issues: {
+          primary: diagnosticResult.primary_suspect || 'Unknown',
+          severity: this.getSeverityLevel(diagnosticResult.confidence),
+          repair_in_progress: diagnosticResult.remediation_needed || false
+        },
+        server: {
+          name: clientInfo.server,
+          php_version: diagnosticResult.phases.phase5?.php_version || 'unknown'
+        },
         timestamp: new Date().toISOString(),
-        duration: Date.now() - startTime,
-        background_remediation_scheduled: !!cpanelCredentials
+        duration: Date.now() - startTime
       };
 
-      // Send response immediately
-      res.status(200).json(response);
+      // Send simplified response immediately
+      res.status(200).json(clientResponse);
 
       // Trigger background remediation AFTER response is sent
       if (cpanelCredentials && diagnosticResult.remediation_needed) {
         logger.info('Triggering background remediation', { requestId });
         
         // Don't await - run in background
-        this.performBackgroundRemediation({
-          domain: value.domain,
-          cpanelCredentials,
-          diagnosticResult,
-          requestId
-        }).catch(error => {
-          logger.error('Background remediation failed', { 
-            requestId, 
-            error: error.message 
+        setImmediate(() => {
+          this.performBackgroundRemediation({
+            domain: value.domain,
+            cpanelCredentials,
+            diagnosticResult,
+            clientInfo,
+            requestId
+          }).catch(error => {
+            logger.error('Background remediation failed', { 
+              requestId, 
+              error: error.message 
+            });
+          });
+        });
+      }
+
+      // Also create support ticket with complete analysis if needed
+      if (diagnosticResult.phases.phase2?.log_analysis?.needs_ticket_creation || 
+          diagnosticResult.confidence >= 80) {
+        
+        setImmediate(() => {
+          this.createComprehensiveTicket({
+            domain: value.domain,
+            cpanelCredentials,
+            diagnosticResult,
+            clientInfo,
+            requestId
+          }).catch(error => {
+            logger.error('Ticket creation failed', { 
+              requestId, 
+              error: error.message 
+            });
           });
         });
       }
@@ -198,8 +238,11 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
     let remediation_needed = false;
 
     try {
-      // Phase 1: Basic WordPress Detection (Fast)
+      // Phase 1: WordPress Detection and SSH Connection (single connection)
       phases.phase1 = await this.phase1_WordPressDetection(domain, cpanelCredentials, requestId);
+      
+      // Get the established SSH connection from phase 1
+      sshConnection = this.activeConnections.get(requestId);
       
       if (!phases.phase1.wordpress_found) {
         return {
@@ -211,40 +254,64 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
         };
       }
 
-      // Establish single persistent SSH connection if credentials available
-      if (cpanelCredentials) {
-        try {
-          sshConnection = await this.establishSSHConnection(cpanelCredentials, requestId);
-          // Store credentials for use in SSH commands
-          sshConnection._cpanelCredentials = cpanelCredentials;
-          this.activeConnections.set(requestId, sshConnection);
-          logger.info('SSH connection established for diagnostic', { requestId });
-        } catch (sshError) {
-          logger.error('SSH connection failed, continuing with limited diagnostic', { 
-            requestId, 
-            error: sshError.message 
-          });
-          // Continue without SSH connection for basic checks
-        }
+      // If we have config errors, prioritize fixing them (but don't wait for completion)
+      if (phases.phase1.config_errors && phases.phase1.config_errors.length > 0) {
+        // Start config fix in background, don't wait for it
+        this.fixConfigParseError(sshConnection, requestId).catch(error => {
+          logger.warn('Config fix failed in background', { requestId, error: error.message });
+        });
       }
 
-      // Phase 2: Error Log Analysis (Fast)
+      // Phase 2: Error Log Analysis (reuse connection, keyword-based analysis)
       phases.phase2 = await this.phase2_ErrorLogAnalysis(sshConnection, requestId);
       
-      // Phase 3: Version Check (Fast)
-      phases.phase3 = await this.phase3_VersionCheck(sshConnection, requestId);
+      // Phase 3: Database Connection Test (MySQL2 API, background remediation)
+      phases.phase3 = await this.phase3_DatabaseConnectionTest(sshConnection, requestId);
       
-      // Phase 4: Core File Integrity (Non-blocking)
-      phases.phase4 = await this.phase4_CoreIntegrityCheck(sshConnection, requestId);
+      // Phases 4-6: Run in parallel for better performance
+      const parallelPhases = await Promise.allSettled([
+        this.phase4_CoreIntegrityCheck(sshConnection, requestId),
+        this.phase5_VersionCheck(sshConnection, requestId),
+        this.phase6_PluginThemeStatus(sshConnection, requestId)
+      ]);
       
-      // Phase 5: Database & Resource Checks (Parallel)
-      phases.phase5 = await this.phase5_ParallelChecks(sshConnection, requestId);
+      // Extract results from parallel execution
+      phases.phase4 = parallelPhases[0].status === 'fulfilled' ? parallelPhases[0].value : { 
+        integrity_check_completed: false, 
+        checksum_status: 'failed',
+        error: parallelPhases[0].reason?.message || 'Phase 4 failed'
+      };
       
-      // Phase 6: Plugin/Theme Status (Fast)
-      phases.phase6 = await this.phase6_PluginThemeStatus(sshConnection, requestId);
+      phases.phase5 = parallelPhases[1].status === 'fulfilled' ? parallelPhases[1].value : { 
+        wordpress_version: null, 
+        php_version: null,
+        error: parallelPhases[1].reason?.message || 'Phase 5 failed'
+      };
       
-      // Phase 7: Resource Limits (Immediate Fix)
-      phases.phase7 = await this.phase7_ResourceLimits(sshConnection, requestId);
+      phases.phase6 = parallelPhases[2].status === 'fulfilled' ? parallelPhases[2].value : { 
+        active_plugins: [], 
+        active_theme: null,
+        error: parallelPhases[2].reason?.message || 'Phase 6 failed'
+      };
+      
+      logger.info('Parallel phases completed', { 
+        requestId, 
+        phase4Status: parallelPhases[0].status,
+        phase5Status: parallelPhases[1].status,
+        phase6Status: parallelPhases[2].status
+      });
+      
+      // Phase 7: Resource Limits (skip if config errors exist to avoid making them worse)
+      if (!phases.phase1.config_errors || phases.phase1.config_errors.length === 0) {
+        phases.phase7 = await this.phase7_ResourceLimits(sshConnection, requestId);
+      } else {
+        phases.phase7 = { 
+          memory_limit_set: false, 
+          max_memory_limit_set: false, 
+          limits_applied: false,
+          skipped: 'Config errors present'
+        };
+      }
       
       // Phase 8: Classification & Recommendations
       phases.phase8 = this.phase8_Classification(phases);
@@ -272,7 +339,7 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
   }
 
   /**
-   * Phase 1: WordPress Detection via SSH or HTTP fallback
+   * Phase 1: WordPress Detection via SSH (single connection approach)
    */
   async phase1_WordPressDetection(domain, cpanelCredentials, requestId) {
     const phase = {
@@ -280,172 +347,175 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
       version: null,
       path: null,
       installation_health: 'unknown',
-      detection_method: 'none'
+      detection_method: 'ssh',
+      config_errors: []
     };
 
-    // Try SSH detection first if credentials available
-    if (cpanelCredentials) {
-      try {
-        const sshConnection = await this.establishSSHConnection(cpanelCredentials, requestId);
-        
-        // Navigate to root and check WordPress installation using same method as automated_wp_repair.js
-        const commands = [
-          `cd /home/${cpanelCredentials.username}/public_html`,
-          'wp core verify-checksums --allow-root'
-        ];
+    // Only try SSH detection - no HTTP fallback
+    if (!cpanelCredentials) {
+      phase.installation_health = 'no_credentials';
+      return phase;
+    }
 
-        const result = await this.executeSSHCommand(sshConnection, commands.join(' && '), requestId);
+    try {
+      const sshConnection = await this.establishSSHConnection(cpanelCredentials, requestId);
+      // Store credentials for reuse
+      sshConnection._cpanelCredentials = cpanelCredentials;
+      this.activeConnections.set(requestId, sshConnection);
+      
+      // First, check error_log to understand the current state
+      const errorLogResult = await this.executeSSHCommand(
+        sshConnection,
+        `tail -50 /home/${cpanelCredentials.username}/public_html/error_log 2>/dev/null || echo "No error log found"`,
+        requestId,
+        3000
+      );
+
+      // Analyze error log for WordPress indicators and issues
+      const hasWordPressErrors = errorLogResult.includes('wp-config.php') || 
+                                errorLogResult.includes('wp-content') ||
+                                errorLogResult.includes('wp-includes');
+      
+      const hasConfigErrors = errorLogResult.includes('wp-config.php') && 
+                             errorLogResult.includes('Parse error');
+
+      if (hasConfigErrors) {
+        // Extract specific config errors
+        const configErrorLines = errorLogResult.split('\n').filter(line => 
+          line.includes('wp-config.php') && line.includes('Parse error')
+        );
+        phase.config_errors = configErrorLines.slice(0, 5); // Keep first 5 errors
+      }
+
+      // Try WordPress detection using same method as automated_wp_repair.js with better error handling
+      const wpCheckResult = await this.executeSSHCommand(
+        sshConnection,
+        `cd /home/${cpanelCredentials.username}/public_html && timeout 8 wp core verify-checksums --allow-root 2>&1 || echo "WP_CHECK_FAILED"`,
+        requestId,
+        10000 // 10 second timeout
+      );
+
+      if (wpCheckResult.includes('Success') && !wpCheckResult.includes('WP_CHECK_FAILED')) {
+        phase.wordpress_found = true;
+        phase.path = `/home/${cpanelCredentials.username}/public_html`;
+        phase.installation_health = hasConfigErrors ? 'config_error' : 'healthy';
         
-        logger.info('WordPress detection SSH result', { 
-          requestId, 
-          command: commands.join(' && '),
-          result: result.substring(0, 500),
-          resultLength: result.length
-        });
+        // Get version with timeout
+        try {
+          const versionResult = await this.executeSSHCommand(
+            sshConnection, 
+            `cd /home/${cpanelCredentials.username}/public_html && timeout 5 wp core version --allow-root 2>&1 || echo "VERSION_FAILED"`, 
+            requestId,
+            7000
+          );
+          if (!versionResult.includes('VERSION_FAILED')) {
+            phase.version = versionResult.trim();
+          }
+        } catch (versionError) {
+          logger.warn('Failed to get WordPress version', { requestId, error: versionError.message });
+        }
+      } else if (hasWordPressErrors) {
+        // WordPress files exist but have issues
+        phase.wordpress_found = true;
+        phase.path = `/home/${cpanelCredentials.username}/public_html`;
+        phase.installation_health = 'corrupted';
+      } else {
+        // Check if WordPress files exist at all
+        const fileCheckResult = await this.executeSSHCommand(
+          sshConnection,
+          `ls -la /home/${cpanelCredentials.username}/public_html/wp-config.php /home/${cpanelCredentials.username}/public_html/wp-load.php 2>/dev/null | wc -l`,
+          requestId,
+          2000
+        );
         
-        if (result.includes('Success') || (!result.includes('Error') && !result.includes('Warning: Could not find'))) {
+        const fileCount = parseInt(fileCheckResult.trim());
+        if (fileCount >= 2) {
           phase.wordpress_found = true;
           phase.path = `/home/${cpanelCredentials.username}/public_html`;
-          phase.detection_method = 'ssh';
-          
-          // Get version using same path and flags as automated_wp_repair.js
-          try {
-            const versionResult = await this.executeSSHCommand(
-              sshConnection, 
-              `cd /home/${cpanelCredentials.username}/public_html && wp core version --allow-root`, 
-              requestId,
-              3000 // 3 second timeout
-            );
-            phase.version = versionResult.trim();
-            phase.installation_health = 'healthy';
-          } catch (versionError) {
-            logger.warn('Failed to get WordPress version via SSH', { requestId, error: versionError.message });
-            phase.installation_health = 'partial';
-          }
+          phase.installation_health = 'detected_but_broken';
         } else {
-          // If verify-checksums fails, try is-installed as fallback
-          try {
-            const fallbackResult = await this.executeSSHCommand(
-              sshConnection, 
-              `cd /home/${cpanelCredentials.username}/public_html && wp core is-installed --allow-root && echo "WordPress Found" || echo "WordPress Not Detected"`, 
-              requestId
-            );
-            
-            if (fallbackResult.includes('WordPress Found')) {
-              phase.wordpress_found = true;
-              phase.path = `/home/${cpanelCredentials.username}/public_html`;
-              phase.detection_method = 'ssh';
-              phase.installation_health = 'detected_fallback';
-            } else {
-              phase.installation_health = 'not_found';
-              phase.detection_method = 'ssh';
-            }
-          } catch (fallbackError) {
-            phase.installation_health = 'error';
-            phase.detection_method = 'ssh';
-          }
-        }
-
-        return phase;
-
-      } catch (sshError) {
-        logger.warn('SSH WordPress detection failed, falling back to HTTP', { 
-          requestId, 
-          error: sshError.message 
-        });
-      }
-    }
-
-    // Fallback to HTTP detection
-    try {
-      logger.info('Attempting HTTP WordPress detection', { requestId, domain });
-      
-      const httpPromises = [
-        // Try HTTPS first
-        axios.get(`https://${domain}`, { 
-          timeout: 5000,
-          validateStatus: () => true,
-          headers: {
-            'User-Agent': 'WordPress-Diagnostic-Bot/1.0'
-          }
-        }).catch(() => null),
-        
-        // Try HTTP as fallback
-        axios.get(`http://${domain}`, { 
-          timeout: 5000,
-          validateStatus: () => true,
-          headers: {
-            'User-Agent': 'WordPress-Diagnostic-Bot/1.0'
-          }
-        }).catch(() => null)
-      ];
-
-      const responses = await Promise.allSettled(httpPromises);
-      
-      for (const result of responses) {
-        if (result.status === 'fulfilled' && result.value) {
-          const response = result.value;
-          const content = response.data || '';
-          
-          // Check for WordPress indicators
-          const wpIndicators = [
-            /wp-content/i,
-            /wp-includes/i,
-            /wordpress/i,
-            /<meta name="generator" content="WordPress/i,
-            /wp-json/i,
-            /wp-admin/i
-          ];
-
-          const foundIndicators = wpIndicators.filter(pattern => pattern.test(content));
-          
-          if (foundIndicators.length >= 2) {
-            phase.wordpress_found = true;
-            phase.detection_method = 'http';
-            phase.installation_health = 'detected';
-            
-            // Try to extract version from generator meta tag
-            const versionMatch = content.match(/<meta name="generator" content="WordPress ([^"]+)"/i);
-            if (versionMatch) {
-              phase.version = versionMatch[1];
-            }
-            
-            logger.info('WordPress detected via HTTP', { 
-              requestId, 
-              domain,
-              indicators: foundIndicators.length,
-              version: phase.version
-            });
-            
-            break;
-          }
+          phase.installation_health = 'not_found';
         }
       }
 
-      if (!phase.wordpress_found) {
-        phase.installation_health = 'not_detected';
-        phase.detection_method = 'http';
-        logger.info('WordPress not detected via HTTP', { requestId, domain });
-      }
+      return phase;
 
-    } catch (httpError) {
-      logger.error('HTTP WordPress detection failed', { requestId, error: httpError.message });
-      phase.installation_health = 'error';
-      phase.detection_method = 'failed';
+    } catch (sshError) {
+      logger.error('SSH WordPress detection failed', { requestId, error: sshError.message });
+      phase.installation_health = 'ssh_error';
+      return phase;
     }
-
-    return phase;
   }
 
   /**
-   * Phase 2: Error Log Analysis
+   * Fix wp-config.php parse error (immediate fix)
    */
+  async fixConfigParseError(sshConnection, requestId) {
+    if (!sshConnection) return { success: false, reason: 'No SSH connection' };
+
+    try {
+      logger.info('Fixing wp-config.php parse error', { requestId });
+      
+      // The error is: unexpected identifier "M", expecting ")" on line 94
+      // This is likely from the WP_MEMORY_LIMIT setting we added
+      // Let's check and fix the wp-config.php file
+      
+      const fixCommands = [
+        `cd /home/${sshConnection._cpanelCredentials?.username}/public_html`,
+        // First, backup the current wp-config.php
+        'cp wp-config.php wp-config.php.backup.$(date +%Y%m%d_%H%M%S)',
+        // Fix the parse error by properly setting memory limits - handle multiple variations
+        `sed -i "s/define('WP_MEMORY_LIMIT', 512M);/define('WP_MEMORY_LIMIT', '512M');/g" wp-config.php`,
+        `sed -i "s/define('WP_MAX_MEMORY_LIMIT', 512M);/define('WP_MAX_MEMORY_LIMIT', '512M');/g" wp-config.php`,
+        `sed -i "s/define(\"WP_MEMORY_LIMIT\", 512M);/define('WP_MEMORY_LIMIT', '512M');/g" wp-config.php`,
+        `sed -i "s/define(\"WP_MAX_MEMORY_LIMIT\", 512M);/define('WP_MAX_MEMORY_LIMIT', '512M');/g" wp-config.php`,
+        // Also fix any other similar issues with unquoted values
+        `sed -i "s/, 512M);/, '512M');/g" wp-config.php`,
+        `sed -i "s/(512M)/(\'512M\')/g" wp-config.php`,
+        // Remove any duplicate or malformed memory limit lines
+        `grep -v "WP_MEMORY_LIMIT.*512M[^']" wp-config.php > wp-config.php.tmp && mv wp-config.php.tmp wp-config.php || true`
+      ];
+
+      const result = await this.executeSSHCommand(
+        sshConnection,
+        fixCommands.join(' && '),
+        requestId,
+        15000 // 15 second timeout
+      );
+
+      // Test the fix by checking PHP syntax
+      try {
+        const syntaxCheck = await this.executeSSHCommand(
+          sshConnection,
+          `cd /home/${sshConnection._cpanelCredentials?.username}/public_html && php -l wp-config.php`,
+          requestId,
+          5000
+        );
+
+        if (syntaxCheck.includes('No syntax errors detected')) {
+          logger.info('wp-config.php parse error fixed successfully', { requestId });
+          return { success: true, result: syntaxCheck };
+        } else {
+          logger.warn('wp-config.php syntax check failed after fix', { requestId, result: syntaxCheck });
+          return { success: false, result: syntaxCheck };
+        }
+      } catch (syntaxError) {
+        logger.warn('Could not verify wp-config.php syntax after fix', { requestId, error: syntaxError.message });
+        return { success: true, result, note: 'Fix applied but syntax verification failed' };
+      }
+
+    } catch (error) {
+      logger.error('Failed to fix wp-config.php parse error', { requestId, error: error.message });
+      return { success: false, error: error.message };
+    }
+  }
   async phase2_ErrorLogAnalysis(sshConnection, requestId) {
     const phase = {
       errors_found: false,
       error_count: 0,
       critical_errors: [],
       recent_errors: [],
+      error_keywords: {},
       log_analysis: null
     };
 
@@ -457,7 +527,7 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
         sshConnection,
         `tail -50 /home/${sshConnection._cpanelCredentials?.username || '*'}/public_html/error_log 2>/dev/null || echo "No error log found"`,
         requestId,
-        3000 // 3 second timeout for error log
+        2000 // 2 second timeout for error log
       );
 
       if (errorLogResult && !errorLogResult.includes('No error log found')) {
@@ -465,26 +535,46 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
         phase.error_count = lines.length;
         phase.errors_found = lines.length > 0;
         
-        // Analyze errors for patterns
-        const criticalPatterns = [
-          /fatal error/i,
-          /database connection/i,
-          /memory exhausted/i,
-          /maximum execution time/i,
-          /plugin.*error/i,
-          /theme.*error/i
-        ];
+        // Keyword-based error analysis
+        const errorKeywords = {
+          database: ['database', 'mysql', 'connection', 'access denied', 'unknown database', 'table', 'sql'],
+          memory: ['memory exhausted', 'fatal error', 'allowed memory size', 'memory limit'],
+          plugin: ['plugin', 'wp-content/plugins', 'call to undefined function'],
+          theme: ['theme', 'wp-content/themes', 'template'],
+          config: ['wp-config.php', 'parse error', 'syntax error', 'unexpected'],
+          permissions: ['permission denied', 'failed to open', 'no such file'],
+          php: ['php fatal error', 'php parse error', 'php warning', 'deprecated']
+        };
 
-        phase.critical_errors = lines.filter(line => 
-          criticalPatterns.some(pattern => pattern.test(line))
-        ).slice(0, 10); // Limit to 10 most recent critical errors
+        // Count keyword occurrences
+        phase.error_keywords = {};
+        Object.keys(errorKeywords).forEach(category => {
+          phase.error_keywords[category] = 0;
+          errorKeywords[category].forEach(keyword => {
+            const regex = new RegExp(keyword, 'gi');
+            const matches = errorLogResult.match(regex);
+            if (matches) {
+              phase.error_keywords[category] += matches.length;
+            }
+          });
+        });
+
+        // Identify critical errors based on keywords
+        phase.critical_errors = lines.filter(line => {
+          const lowerLine = line.toLowerCase();
+          return errorKeywords.database.some(keyword => lowerLine.includes(keyword)) ||
+                 errorKeywords.memory.some(keyword => lowerLine.includes(keyword)) ||
+                 errorKeywords.config.some(keyword => lowerLine.includes(keyword));
+        }).slice(0, 10); // Limit to 10 most recent critical errors
 
         phase.recent_errors = lines.slice(-10); // Last 10 errors
         
-        // Store full log for background analysis
+        // Store full log for background analysis and ticket creation
         phase.log_analysis = {
           needs_background_analysis: true,
-          error_patterns_detected: phase.critical_errors.length > 0
+          needs_ticket_creation: phase.critical_errors.length > 5 || phase.error_keywords.database > 0,
+          error_patterns_detected: phase.critical_errors.length > 0,
+          full_log: errorLogResult // Store for ticket creation
         };
       }
 
@@ -496,9 +586,384 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
   }
 
   /**
-   * Phase 3: Version Check
+   * Phase 3: Database Connection Test (using MySQL2 API instead of SSH)
    */
-  async phase3_VersionCheck(sshConnection, requestId) {
+  async phase3_DatabaseConnectionTest(sshConnection, requestId) {
+    const phase = {
+      database_connection: false,
+      database_status: 'unknown',
+      connection_details: null,
+      remediation_applied: false,
+      connection_method: 'mysql2_api',
+      background_repair_scheduled: false
+    };
+
+    if (!sshConnection || !sshConnection._cpanelCredentials) {
+      phase.database_status = 'no_credentials';
+      return phase;
+    }
+
+    try {
+      // Get wp-config.php database credentials first
+      const wpConfigResult = await this.executeSSHCommand(
+        sshConnection,
+        `cd /home/${sshConnection._cpanelCredentials.username}/public_html && grep -E "define.*DB_(NAME|USER|PASSWORD|HOST)" wp-config.php | head -4`,
+        requestId,
+        3000
+      );
+
+      if (!wpConfigResult || wpConfigResult.includes('No such file')) {
+        phase.database_status = 'wp_config_not_found';
+        return phase;
+      }
+
+      // Parse database credentials from wp-config.php
+      const dbConfig = this.parseWpConfigDatabase(wpConfigResult);
+      
+      if (!dbConfig.database || !dbConfig.user) {
+        phase.database_status = 'invalid_db_config';
+        return phase;
+      }
+
+      // Use MySQL2 API for database connection testing with proper host management
+      const MySQLClient = require('../lib/mysql');
+      const mysqlClient = new MySQLClient();
+
+      // Set up MySQL host management for remote connections
+      const MySQLHostManagementStep = require('../steps/mysqlHostManagement');
+      const mysqlHostManagement = new MySQLHostManagementStep();
+      
+      // Create cPanel client for host management
+      const CpanelClient = require('../lib/cpanel');
+      
+      // Get the correct WHM API key for this server
+      const serverName = sshConnection._cpanelCredentials.host.split('.')[0].toUpperCase(); // pcp3.mywebsitebox.com -> PCP3
+      const whmTokenKey = `WHM_API_KEY_${serverName}`; // WHM_API_KEY_PCP3
+      const whmToken = process.env[whmTokenKey] || process.env.WHM_TOKEN;
+      
+      if (!whmToken) {
+        logger.warn('No WHM API key found for server', { requestId, serverName, tokenKey: whmTokenKey });
+        phase.database_status = 'no_whm_token';
+        return phase;
+      }
+      
+      const cpanelClient = new CpanelClient(
+        sshConnection._cpanelCredentials.host, 
+        sshConnection._cpanelCredentials.username, 
+        whmToken // Use WHM API key as password
+      );
+      
+      // Step 1: Add local machine IP to MySQL hosts for remote connection
+      const hostManagementResult = await mysqlHostManagement.addLocalMachineIPToMySQLHosts(cpanelClient);
+      
+      if (!hostManagementResult.success) {
+        logger.warn('Failed to add local IP to MySQL hosts', { 
+          requestId, 
+          error: hostManagementResult.error 
+        });
+      } else {
+        logger.info('Local IP added to MySQL hosts', { 
+          requestId, 
+          localIP: hostManagementResult.ip 
+        });
+      }
+      
+      // Step 2: Get server IP for direct MySQL connection
+      let serverIP = null;
+      try {
+        serverIP = await mysqlHostManagement.getServerIP(sshConnection._cpanelCredentials.host);
+        logger.info('Resolved server IP for database connection', { requestId, serverIP });
+      } catch (ipError) {
+        logger.warn('Failed to resolve server IP, using localhost', { requestId, error: ipError.message });
+      }
+
+      // Step 3: Test connection with MySQL2 (allow remote connections)
+      const connectionResult = await mysqlClient.testConnectionPromise(dbConfig, serverIP);
+      
+      if (connectionResult.success) {
+        phase.database_connection = true;
+        phase.database_status = 'healthy';
+        phase.connection_details = {
+          host: connectionResult.connectionDetails.host,
+          database: dbConfig.database,
+          user: dbConfig.user,
+          connection_method: 'mysql2_direct',
+          mysql_host_added: hostManagementResult.success
+        };
+        
+        logger.info('Database connection test successful via MySQL2', { requestId });
+        
+        // Schedule cleanup of MySQL host after diagnostic completes
+        if (hostManagementResult.success) {
+          setTimeout(async () => {
+            try {
+              await mysqlHostManagement.removeLocalMachineIPFromMySQLHosts(cpanelClient);
+              logger.info('MySQL host cleanup completed', { requestId });
+            } catch (cleanupError) {
+              logger.warn('MySQL host cleanup failed', { requestId, error: cleanupError.message });
+            }
+          }, 300000); // 5 minutes cleanup delay
+        }
+      } else {
+        phase.database_connection = false;
+        phase.database_status = 'connection_failed';
+        phase.connection_details = {
+          error: connectionResult.error,
+          errorCode: connectionResult.errorCode,
+          mappedError: connectionResult.mappedError,
+          mysql_host_added: hostManagementResult.success,
+          local_ip: hostManagementResult.ip,
+          parsed_config: {
+            database: dbConfig.database,
+            user: dbConfig.user,
+            host: dbConfig.host,
+            hasPassword: !!dbConfig.password
+          }
+        };
+        
+        // Check if this is an "Access denied" error which usually means user doesn't exist or wrong password
+        if (connectionResult.errorCode === 'ER_ACCESS_DENIED_ERROR') {
+          logger.info('Access denied error detected - likely user does not exist or wrong password', {
+            requestId,
+            user: dbConfig.user,
+            database: dbConfig.database,
+            error: connectionResult.error
+          });
+          phase.database_status = 'user_access_denied';
+        }
+        
+        // Schedule background database repair using API instead of SSH
+        // Only schedule if remediation is not already handling it
+        if (!remediation_needed) {
+          this.scheduleBackgroundDatabaseRepair(sshConnection._cpanelCredentials, dbConfig, requestId)
+            .catch(error => {
+              logger.warn('Failed to schedule background database repair', { requestId, error: error.message });
+            });
+          
+          phase.background_repair_scheduled = true;
+        } else {
+          phase.background_repair_scheduled = false; // Will be handled by remediation
+        }
+        logger.info('Database connection failed, background repair scheduled', { 
+          requestId,
+          error: connectionResult.error,
+          errorCode: connectionResult.errorCode,
+          user: dbConfig.user,
+          database: dbConfig.database
+        });
+        
+        // Still schedule cleanup even if connection failed
+        if (hostManagementResult.success) {
+          setTimeout(async () => {
+            try {
+              await mysqlHostManagement.removeLocalMachineIPFromMySQLHosts(cpanelClient);
+              logger.info('MySQL host cleanup completed after failed connection', { requestId });
+            } catch (cleanupError) {
+              logger.warn('MySQL host cleanup failed', { requestId, error: cleanupError.message });
+            }
+          }, 300000); // 5 minutes cleanup delay
+        }
+      }
+
+    } catch (error) {
+      logger.error('Phase 3 database connection test failed', { requestId, error: error.message });
+      phase.database_status = 'test_failed';
+      phase.connection_details = { error: error.message };
+    }
+
+    return phase;
+  }
+
+  /**
+   * Parse database configuration from wp-config.php content
+   */
+  parseWpConfigDatabase(wpConfigContent) {
+    const config = {
+      database: null,
+      user: null,
+      password: null,
+      host: 'localhost'
+    };
+
+    try {
+      // Extract DB_NAME
+      const dbNameMatch = wpConfigContent.match(/define\s*\(\s*['"]DB_NAME['"]\s*,\s*['"]([^'"]*)['"]/);
+      if (dbNameMatch) config.database = dbNameMatch[1];
+
+      // Extract DB_USER
+      const dbUserMatch = wpConfigContent.match(/define\s*\(\s*['"]DB_USER['"]\s*,\s*['"]([^'"]*)['"]/);
+      if (dbUserMatch) config.user = dbUserMatch[1];
+
+      // Extract DB_PASSWORD
+      const dbPasswordMatch = wpConfigContent.match(/define\s*\(\s*['"]DB_PASSWORD['"]\s*,\s*['"]([^'"]*)['"]/);
+      if (dbPasswordMatch) config.password = dbPasswordMatch[1];
+
+      // Extract DB_HOST
+      const dbHostMatch = wpConfigContent.match(/define\s*\(\s*['"]DB_HOST['"]\s*,\s*['"]([^'"]*)['"]/);
+      if (dbHostMatch) config.host = dbHostMatch[1];
+
+      // Log parsed config for debugging (without password)
+      logger.info('Parsed database configuration', {
+        database: config.database,
+        user: config.user,
+        host: config.host,
+        hasPassword: !!config.password
+      });
+
+    } catch (parseError) {
+      logger.warn('Failed to parse wp-config.php database configuration', { error: parseError.message });
+    }
+
+    return config;
+  }
+
+  /**
+   * Schedule background database repair using API instead of SSH
+   */
+  async scheduleBackgroundDatabaseRepair(cpanelCredentials, dbConfig, requestId) {
+    // Don't await - run in background
+    setTimeout(async () => {
+      try {
+        logger.info('Starting background database repair via API', { 
+          requestId, 
+          database: dbConfig.database,
+          user: dbConfig.user 
+        });
+        
+        // Use database user management API for repair
+        const DatabaseUserManagementStep = require('../steps/databaseUserManagement');
+        const dbUserManagement = new DatabaseUserManagementStep();
+        
+        // Create cPanel client for API operations
+        const CpanelClient = require('../lib/cpanel');
+        
+        // Get the correct WHM API key for this server
+        const serverName = cpanelCredentials.host.split('.')[0].toUpperCase(); // pcp3.mywebsitebox.com -> PCP3
+        const whmTokenKey = `WHM_API_KEY_${serverName}`; // WHM_API_KEY_PCP3
+        const whmToken = process.env[whmTokenKey] || process.env.WHM_TOKEN;
+        
+        if (!whmToken) {
+          logger.error('No WHM API key found for background database repair', { 
+            requestId, 
+            serverName, 
+            tokenKey: whmTokenKey 
+          });
+          return;
+        }
+        
+        const cpanelClient = new CpanelClient(
+          cpanelCredentials.host, 
+          cpanelCredentials.username, 
+          whmToken // Use WHM API key as password
+        );
+        
+        // Check database and user status first
+        const checkResult = await dbUserManagement.checkDatabaseAndUser(cpanelClient, dbConfig);
+        
+        logger.info('Database check result', { 
+          requestId, 
+          databaseExists: checkResult.databaseExists,
+          userExists: checkResult.userExists,
+          userInDatabase: checkResult.userInDatabase,
+          issue: checkResult.issue
+        });
+        
+        if (checkResult.issue === 'USER_NOT_IN_DATABASE' || 
+            checkResult.issue === 'DATABASE_NOT_FOUND' ||
+            checkResult.issue === 'CHECK_FAILED') {
+          
+          logger.info('Database user issue detected, creating new user and updating wp-config.php', { 
+            requestId,
+            issue: checkResult.issue,
+            currentUser: dbConfig.user,
+            database: dbConfig.database
+          });
+          
+          // Get current wp-config.php content for updating
+          let wpConfigContent = null;
+          try {
+            wpConfigContent = await cpanelClient.readFile('public_html/wp-config.php');
+            logger.info('Successfully read wp-config.php for user creation', { requestId });
+          } catch (readError) {
+            logger.warn('Could not read wp-config.php, will proceed without content', { 
+              requestId, 
+              error: readError.message 
+            });
+          }
+          
+          // Try to fix database user issues by creating new user
+          const repairResult = await dbUserManagement.manageDatabaseUser(
+            cpanelClient, 
+            dbConfig, 
+            'public_html/wp-config.php',
+            wpConfigContent, // Pass wp-config content for updating
+            true  // Force create new user
+          );
+          
+          if (repairResult.success) {
+            logger.info('Background database repair completed successfully', { 
+              requestId, 
+              oldUser: dbConfig.user,
+              newUser: repairResult.finalCredentials.username,
+              database: repairResult.finalCredentials.database,
+              actions: repairResult.actions,
+              wpConfigUpdated: repairResult.wpConfigUpdated
+            });
+            
+            // Test the new connection to verify it works
+            try {
+              const MySQLClient = require('../lib/mysql');
+              const mysqlClient = new MySQLClient();
+              
+              const testResult = await mysqlClient.testConnectionPromise(repairResult.finalCredentials);
+              
+              if (testResult.success) {
+                logger.info('New database user connection test successful', { 
+                  requestId,
+                  newUser: repairResult.finalCredentials.username
+                });
+              } else {
+                logger.warn('New database user connection test failed', { 
+                  requestId,
+                  newUser: repairResult.finalCredentials.username,
+                  error: testResult.error
+                });
+              }
+            } catch (testError) {
+              logger.warn('Could not test new database connection', { 
+                requestId, 
+                error: testError.message 
+              });
+            }
+            
+          } else {
+            logger.warn('Background database repair failed', { 
+              requestId, 
+              error: repairResult.message,
+              actions: repairResult.actions
+            });
+          }
+        } else {
+          logger.info('Database and user configuration appears valid, no repair needed', { 
+            requestId,
+            message: checkResult.message
+          });
+        }
+        
+      } catch (repairError) {
+        logger.error('Background database repair error', { 
+          requestId, 
+          error: repairError.message,
+          stack: repairError.stack
+        });
+      }
+    }, 2000); // Start repair after 2 second delay to allow response to be sent
+  }
+
+  /**
+   * Phase 5: Version Check (optimized)
+   */
+  async phase5_VersionCheck(sshConnection, requestId) {
     const phase = {
       wordpress_version: null,
       php_version: null,
@@ -510,36 +975,64 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
     if (!sshConnection) return phase;
 
     try {
-      // Get WordPress version (already done in phase 1, but get more details) using same flags as automated_wp_repair.js
-      const wpVersionResult = await this.executeSSHCommand(
-        sshConnection,
-        `cd /home/${sshConnection._cpanelCredentials?.username || '*'}/public_html && wp core version --extra --allow-root`,
-        requestId,
-        3000 // 3 second timeout
-      );
-      
-      // Get PHP version
-      const phpVersionResult = await this.executeSSHCommand(
-        sshConnection,
-        'php -v | head -1',
-        requestId,
-        2000 // 2 second timeout
-      );
-      
-      // Get MySQL version  
-      const mysqlVersionResult = await this.executeSSHCommand(
-        sshConnection,
-        'mysql --version',
-        requestId,
-        2000 // 2 second timeout
-      );
+      // Run version checks in parallel for better performance
+      const versionTasks = [
+        // WordPress version (already done in phase 1, but get more details)
+        this.executeSSHCommand(
+          sshConnection,
+          `cd /home/${sshConnection._cpanelCredentials?.username}/public_html && timeout 3 wp core version --extra --allow-root 2>&1 || echo "WP_VERSION_FAILED"`,
+          requestId,
+          4000
+        ).then(result => ({ type: 'wp', result })).catch(error => ({ type: 'wp', error: error.message })),
+        
+        // PHP version
+        this.executeSSHCommand(
+          sshConnection,
+          'timeout 2 php -v | head -1 2>&1 || echo "PHP_VERSION_FAILED"',
+          requestId,
+          3000
+        ).then(result => ({ type: 'php', result })).catch(error => ({ type: 'php', error: error.message })),
+        
+        // MySQL version  
+        this.executeSSHCommand(
+          sshConnection,
+          'timeout 2 mysql --version 2>&1 || echo "MYSQL_VERSION_FAILED"',
+          requestId,
+          3000
+        ).then(result => ({ type: 'mysql', result })).catch(error => ({ type: 'mysql', error: error.message }))
+      ];
 
-      phase.wordpress_version = wpVersionResult.trim();
-      phase.php_version = phpVersionResult.match(/PHP (\d+\.\d+\.\d+)/)?.[1] || 'unknown';
-      phase.mysql_version = mysqlVersionResult.match(/(\d+\.\d+\.\d+)/)?.[1] || 'unknown';
+      const results = await Promise.allSettled(versionTasks);
+      
+      // Process results
+      results.forEach(result => {
+        if (result.status === 'fulfilled' && result.value.result) {
+          const { type, result: data } = result.value;
+          
+          switch (type) {
+            case 'wp':
+              if (!data.includes('WP_VERSION_FAILED')) {
+                phase.wordpress_version = data.trim();
+              }
+              break;
+            case 'php':
+              if (!data.includes('PHP_VERSION_FAILED')) {
+                const phpMatch = data.match(/PHP (\d+\.\d+\.\d+)/);
+                phase.php_version = phpMatch ? phpMatch[1] : data.split(' ')[1] || 'unknown';
+              }
+              break;
+            case 'mysql':
+              if (!data.includes('MYSQL_VERSION_FAILED')) {
+                const mysqlMatch = data.match(/(\d+\.\d+\.\d+)/);
+                phase.mysql_version = mysqlMatch ? mysqlMatch[1] : 'unknown';
+              }
+              break;
+          }
+        }
+      });
 
     } catch (error) {
-      logger.error('Phase 3 version check failed', { requestId, error: error.message });
+      logger.error('Phase 5 version check failed', { requestId, error: error.message });
     }
 
     return phase;
@@ -673,7 +1166,7 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
   }
 
   /**
-   * Phase 6: Plugin/Theme Status
+   * Phase 6: Plugin/Theme Status (optimized with better error handling)
    */
   async phase6_PluginThemeStatus(sshConnection, requestId) {
     const phase = {
@@ -687,32 +1180,57 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
     if (!sshConnection) return phase;
 
     try {
-      // Get plugin list using same flags as automated_wp_repair.js
-      const pluginResult = await this.executeSSHCommand(
-        sshConnection,
-        `cd /home/${sshConnection._cpanelCredentials?.username || '*'}/public_html && wp plugin list --format=json --allow-root`,
-        requestId,
-        3000
-      );
+      // Run plugin and theme checks in parallel
+      const statusTasks = [
+        // Get plugin list
+        this.executeSSHCommand(
+          sshConnection,
+          `cd /home/${sshConnection._cpanelCredentials?.username}/public_html && timeout 5 wp plugin list --format=json --allow-root 2>&1 || echo "PLUGIN_LIST_FAILED"`,
+          requestId,
+          6000
+        ).then(result => ({ type: 'plugins', result })).catch(error => ({ type: 'plugins', error: error.message })),
 
-      if (pluginResult && pluginResult.startsWith('[')) {
-        const plugins = JSON.parse(pluginResult);
-        phase.active_plugins = plugins.filter(p => p.status === 'active').map(p => p.name);
-        phase.inactive_plugins = plugins.filter(p => p.status === 'inactive').map(p => p.name);
-      }
+        // Get active theme
+        this.executeSSHCommand(
+          sshConnection,
+          `cd /home/${sshConnection._cpanelCredentials?.username}/public_html && timeout 3 wp theme list --status=active --format=json --allow-root 2>&1 || echo "THEME_LIST_FAILED"`,
+          requestId,
+          4000
+        ).then(result => ({ type: 'themes', result })).catch(error => ({ type: 'themes', error: error.message }))
+      ];
 
-      // Get active theme using same flags as automated_wp_repair.js
-      const themeResult = await this.executeSSHCommand(
-        sshConnection,
-        `cd /home/${sshConnection._cpanelCredentials?.username || '*'}/public_html && wp theme list --status=active --format=json --allow-root`,
-        requestId,
-        2000
-      );
-
-      if (themeResult && themeResult.startsWith('[')) {
-        const themes = JSON.parse(themeResult);
-        phase.active_theme = themes[0]?.name || null;
-      }
+      const results = await Promise.allSettled(statusTasks);
+      
+      // Process results
+      results.forEach(result => {
+        if (result.status === 'fulfilled' && result.value.result) {
+          const { type, result: data } = result.value;
+          
+          switch (type) {
+            case 'plugins':
+              if (!data.includes('PLUGIN_LIST_FAILED') && data.startsWith('[')) {
+                try {
+                  const plugins = JSON.parse(data);
+                  phase.active_plugins = plugins.filter(p => p.status === 'active').map(p => p.name);
+                  phase.inactive_plugins = plugins.filter(p => p.status === 'inactive').map(p => p.name);
+                } catch (parseError) {
+                  logger.warn('Failed to parse plugin list JSON', { requestId, error: parseError.message });
+                }
+              }
+              break;
+            case 'themes':
+              if (!data.includes('THEME_LIST_FAILED') && data.startsWith('[')) {
+                try {
+                  const themes = JSON.parse(data);
+                  phase.active_theme = themes[0]?.name || null;
+                } catch (parseError) {
+                  logger.warn('Failed to parse theme list JSON', { requestId, error: parseError.message });
+                }
+              }
+              break;
+          }
+        }
+      });
 
     } catch (error) {
       logger.warn('Phase 6 plugin/theme status check failed', { requestId, error: error.message });
@@ -735,17 +1253,18 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
 
     try {
       // Force set memory limits immediately using same flags as automated_wp_repair.js
+      // Use proper quoting to avoid parse errors
       const memoryCommands = [
         `cd /home/${sshConnection._cpanelCredentials?.username || '*'}/public_html`,
-        'wp config set WP_MEMORY_LIMIT 512M --raw --allow-root',
-        'wp config set WP_MAX_MEMORY_LIMIT 512M --raw --allow-root'
+        `wp config set WP_MEMORY_LIMIT "'512M'" --raw --allow-root`,
+        `wp config set WP_MAX_MEMORY_LIMIT "'512M'" --raw --allow-root`
       ];
 
       const result = await this.executeSSHCommand(
         sshConnection,
         memoryCommands.join(' && '),
         requestId,
-        3000
+        8000 // 8 second timeout
       );
 
       phase.memory_limit_set = !result.includes('Error');
@@ -782,6 +1301,37 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
       return phase;
     }
 
+    // Check for config errors first (highest priority)
+    if (phases.phase1?.config_errors?.length > 0) {
+      phase.primary_suspect = 'WordPress configuration errors';
+      phase.confidence = 90;
+      phase.l1_classification = 'CONFIG_ERROR';
+      phase.l2_classification = 'PARSE_ERROR';
+      phase.recommendations.push('Fix wp-config.php syntax errors');
+      phase.recommendations.push('Backup and restore wp-config.php');
+      return phase;
+    }
+
+    // Check installation health
+    if (phases.phase1?.installation_health === 'corrupted') {
+      phase.primary_suspect = 'WordPress core file corruption';
+      phase.confidence = 85;
+      phase.l1_classification = 'CORE_CORRUPTION';
+      phase.recommendations.push('Restore WordPress core files');
+      return phase;
+    }
+
+    // Check for database issues
+    if (!phases.phase3?.database_connection || phases.phase2?.error_keywords?.database > 0) {
+      phase.primary_suspect = 'Database connection issues';
+      phase.confidence = 85;
+      phase.l1_classification = 'DATABASE_ERROR';
+      phase.l2_classification = phases.phase3?.remediation_applied ? 'REPAIRED' : 'CONNECTION_FAILED';
+      phase.recommendations.push('Check database credentials');
+      phase.recommendations.push('Verify database server status');
+      return phase;
+    }
+
     if (phases.phase2?.critical_errors?.length > 0) {
       const errorTypes = phases.phase2.critical_errors.join(' ').toLowerCase();
       
@@ -803,40 +1353,82 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
       }
     }
 
-    if (phases.phase4?.checksum_status === 'invalid') {
-      phase.primary_suspect = 'Core file corruption';
-      phase.confidence = 70;
-      phase.l1_classification = 'CORE_CORRUPTION';
-      phase.recommendations.push('Restore core files');
-    }
-
-    if (!phases.phase5?.database_connection) {
-      phase.primary_suspect = 'Database connectivity';
-      phase.confidence = 85;
-      phase.l1_classification = 'DATABASE_ERROR';
-      phase.recommendations.push('Fix database connection');
-    }
-
-    // Default if no specific issue found
+    // Default if no specific issue found but WordPress is healthy
     if (phase.confidence === 0) {
-      phase.primary_suspect = 'General health check';
-      phase.confidence = 50;
-      phase.l1_classification = 'GENERAL_HEALTH';
-      phase.recommendations.push('Monitor site performance');
+      phase.primary_suspect = 'WordPress is healthy';
+      phase.confidence = 80;
+      phase.l1_classification = 'HEALTHY';
+      phase.recommendations.push('Regular maintenance recommended');
     }
 
     return phase;
   }
 
   /**
-   * Determine if remediation is needed
+   * Get client-friendly status message
    */
+  getClientFriendlyStatus(diagnosticResult) {
+    if (!diagnosticResult.phases.phase1?.wordpress_found) {
+      return 'WordPress not detected';
+    }
+    
+    if (diagnosticResult.phases.phase3?.database_connection) {
+      return 'WordPress is healthy';
+    }
+    
+    if (diagnosticResult.remediation_needed) {
+      return 'Issues detected - repair in progress';
+    }
+    
+    return 'WordPress detected with minor issues';
+  }
+
+  /**
+   * Get client-friendly database status
+   */
+  getClientFriendlyDatabaseStatus(dbStatus) {
+    const statusMap = {
+      'healthy': 'Connected',
+      'connection_failed': 'Connection failed',
+      'user_access_denied': 'User access denied',
+      'no_credentials': 'No credentials found',
+      'invalid_db_config': 'Invalid configuration',
+      'test_failed': 'Test failed',
+      'unknown': 'Unknown'
+    };
+    
+    return statusMap[dbStatus] || 'Unknown';
+  }
+
+  /**
+   * Extract clean WordPress version
+   */
+  extractWordPressVersion(versionString) {
+    if (!versionString) return 'unknown';
+    
+    const match = versionString.match(/WordPress version:\s*(\d+\.\d+(?:\.\d+)?)/);
+    return match ? match[1] : 'unknown';
+  }
+
+  /**
+   * Get severity level based on confidence
+   */
+  getSeverityLevel(confidence) {
+    if (confidence >= 90) return 'Critical';
+    if (confidence >= 70) return 'High';
+    if (confidence >= 50) return 'Medium';
+    return 'Low';
+  }
   needsRemediation(phases) {
     return (
       !phases.phase1?.wordpress_found ||
+      (phases.phase1?.config_errors?.length > 0) ||
+      phases.phase1?.installation_health === 'corrupted' ||
       phases.phase2?.critical_errors?.length > 0 ||
-      phases.phase4?.checksum_status === 'invalid' ||
-      !phases.phase5?.database_connection
+      !phases.phase3?.database_connection ||
+      phases.phase3?.database_status === 'connection_failed' ||
+      phases.phase2?.error_keywords?.database > 0 ||
+      phases.phase4?.checksum_status === 'invalid'
     );
   }
 
@@ -1221,12 +1813,12 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
   }
 
   /**
-   * Execute SSH command with timeout
+   * Execute SSH command with timeout and better error handling
    */
-  async executeSSHCommand(connection, command, requestId, timeout = 5000) {
+  async executeSSHCommand(connection, command, requestId, timeout = 8000) {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        reject(new Error('Command timeout'));
+        reject(new Error(`Command timeout after ${timeout}ms: ${command.substring(0, 100)}...`));
       }, timeout);
 
       connection.exec(command, (err, stream) => {
@@ -1240,10 +1832,12 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
 
         stream.on('close', (code) => {
           clearTimeout(timer);
-          if (code === 0) {
-            resolve(output);
+          // Don't reject on non-zero exit codes, let the caller handle it
+          // This prevents wp-cli commands from causing failures when they return useful error info
+          if (code === 0 || output.trim() || errorOutput.trim()) {
+            resolve(output + errorOutput); // Combine both outputs
           } else {
-            reject(new Error(`Command failed with code ${code}: ${errorOutput}`));
+            reject(new Error(`Command failed with code ${code} and no output: ${command.substring(0, 100)}...`));
           }
         });
 
@@ -1253,6 +1847,11 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
 
         stream.stderr.on('data', (data) => {
           errorOutput += data.toString();
+        });
+
+        stream.on('error', (streamError) => {
+          clearTimeout(timer);
+          reject(streamError);
         });
       });
     });
@@ -1274,22 +1873,24 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
         remediationTasks.push(this.fixCoreFiles(sshConnection, requestId));
       }
 
-      // Task 2: Database repair if needed
-      if (!diagnosticResult.phases.phase5?.database_connection) {
-        remediationTasks.push(this.repairDatabase(sshConnection, requestId));
-      }
+      // Task 2: Database repair if needed (handled by background repair, not remediation)
+      // Skip database repair in remediation to avoid duplication
+      // if (!diagnosticResult.phases.phase3?.database_connection || 
+      //     diagnosticResult.phases.phase3?.database_status === 'connection_failed') {
+      //   remediationTasks.push(this.repairDatabase(sshConnection, requestId));
+      // }
 
       // Task 3: Plugin/theme fixes if needed
       if (diagnosticResult.phases.phase6?.plugin_issues?.length > 0) {
         remediationTasks.push(this.fixPluginIssues(sshConnection, requestId));
       }
 
-      // Task 4: Generate support ticket from error log analysis
-      if (diagnosticResult.phases.phase2?.log_analysis?.needs_background_analysis) {
-        remediationTasks.push(this.analyzeErrorLogAndCreateTicket(
-          sshConnection, 
+      // Task 4: Create support ticket if needed
+      if (diagnosticResult.phases.phase2?.log_analysis?.needs_ticket_creation) {
+        remediationTasks.push(this.createSupportTicket(
           domain, 
           cpanelCredentials, 
+          diagnosticResult,
           requestId
         ));
       }
@@ -1342,24 +1943,133 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
   }
 
   /**
-   * Repair database (background task)
+   * Repair database (background task using API instead of SSH)
    */
   async repairDatabase(sshConnection, requestId) {
-    logger.info('Repairing database', { requestId });
+    logger.info('Repairing database via API', { requestId });
     
     try {
-      const result = await this.executeSSHCommand(
+      // Use API-based database repair instead of SSH
+      const cpanelCredentials = sshConnection._cpanelCredentials;
+      
+      // Get wp-config.php database credentials
+      const wpConfigResult = await this.executeSSHCommand(
         sshConnection,
-        `cd /home/${sshConnection._cpanelCredentials?.username}/public_html && wp db repair --allow-root`,
+        `cd /home/${cpanelCredentials.username}/public_html && grep -E "define.*DB_(NAME|USER|PASSWORD|HOST)" wp-config.php | head -4`,
         requestId,
-        20000 // 20 second timeout
+        5000
+      );
+
+      if (!wpConfigResult || wpConfigResult.includes('No such file')) {
+        return { success: false, error: 'wp-config.php not found' };
+      }
+
+      const dbConfig = this.parseWpConfigDatabase(wpConfigResult);
+      
+      if (!dbConfig.database || !dbConfig.user) {
+        return { success: false, error: 'Invalid database configuration' };
+      }
+
+      // Use database user management API for repair
+      const DatabaseUserManagementStep = require('../steps/databaseUserManagement');
+      const dbUserManagement = new DatabaseUserManagementStep();
+      
+      // Create cPanel client for API operations
+      const CpanelClient = require('../lib/cpanel');
+      
+      // Get the correct WHM API key for this server
+      const serverName = cpanelCredentials.host.split('.')[0].toUpperCase(); // pcp3.mywebsitebox.com -> PCP3
+      const whmTokenKey = `WHM_API_KEY_${serverName}`; // WHM_API_KEY_PCP3
+      const whmToken = process.env[whmTokenKey] || process.env.WHM_TOKEN;
+      
+      if (!whmToken) {
+        return { success: false, error: `No WHM API key found for server ${serverName}` };
+      }
+      
+      const cpanelClient = new CpanelClient(
+        cpanelCredentials.host, 
+        cpanelCredentials.username, 
+        whmToken // Use WHM API key as password
       );
       
-      logger.info('Database repaired', { requestId });
-      return { success: true, result };
+      // Check database and user status
+      const checkResult = await dbUserManagement.checkDatabaseAndUser(cpanelClient, dbConfig);
+      
+      if (checkResult.issue) {
+        logger.info('Database issue detected, creating new user and updating wp-config.php', {
+          issue: checkResult.issue,
+          currentUser: dbConfig.user,
+          database: dbConfig.database
+        });
+        
+        // Get current wp-config.php content for updating
+        let wpConfigContent = null;
+        try {
+          wpConfigContent = await cpanelClient.readFile('public_html/wp-config.php');
+          logger.info('Successfully read wp-config.php for user creation');
+        } catch (readError) {
+          logger.warn('Could not read wp-config.php, will proceed without content', { 
+            error: readError.message 
+          });
+        }
+        
+        // Try to fix database user issues by creating new user
+        const repairResult = await dbUserManagement.manageDatabaseUser(
+          cpanelClient, 
+          dbConfig, 
+          'public_html/wp-config.php',
+          wpConfigContent, // Pass wp-config content for updating
+          true  // Force create new user
+        );
+        
+        if (repairResult.success) {
+          logger.info('Database repaired via API - new user created', { 
+            oldUser: dbConfig.user,
+            newUser: repairResult.finalCredentials.username,
+            wpConfigUpdated: repairResult.wpConfigUpdated
+          });
+          return { 
+            success: true, 
+            result: `Database user created and wp-config.php updated: ${repairResult.finalCredentials.username}`,
+            method: 'api_user_creation',
+            oldUser: dbConfig.user,
+            newUser: repairResult.finalCredentials.username,
+            actions: repairResult.actions
+          };
+        } else {
+          return { 
+            success: false, 
+            error: repairResult.message,
+            method: 'api_user_creation',
+            actions: repairResult.actions
+          };
+        }
+      } else {
+        // Database and user are fine, try MySQL repair commands via API
+        const MySQLClient = require('../lib/mysql');
+        const mysqlClient = new MySQLClient();
+        
+        // Test connection first
+        const connectionResult = await mysqlClient.testConnectionPromise(dbConfig);
+        
+        if (connectionResult.success) {
+          return { 
+            success: true, 
+            result: 'Database connection is healthy',
+            method: 'mysql2_connection_test'
+          };
+        } else {
+          return { 
+            success: false, 
+            error: connectionResult.error,
+            method: 'mysql2_connection_test'
+          };
+        }
+      }
+      
     } catch (error) {
-      logger.error('Database repair failed', { requestId, error: error.message });
-      return { success: false, error: error.message };
+      logger.error('Database repair via API failed', { requestId, error: error.message });
+      return { success: false, error: error.message, method: 'api_repair' };
     }
   }
 
@@ -1498,6 +2208,497 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
     }
 
     return actions;
+  }
+  /**
+   * Create comprehensive support ticket with complete analysis
+   */
+  async createComprehensiveTicket({ domain, cpanelCredentials, diagnosticResult, clientInfo, requestId }) {
+    logger.info('Creating comprehensive support ticket', { requestId, domain });
+    
+    try {
+      const ticketData = this.generateComprehensiveTicketData(domain, cpanelCredentials, diagnosticResult, clientInfo);
+      
+      const ticketPayload = {
+        subject: ticketData.subject,
+        message: ticketData.message,
+        priority: ticketData.priority,
+        department: 'Support',
+        domain: domain,
+        server: cpanelCredentials.host,
+        username: cpanelCredentials.username,
+        diagnostic_data: {
+          request_id: requestId,
+          complete_analysis: diagnosticResult,
+          client_info: clientInfo,
+          timestamp: new Date().toISOString()
+        }
+      };
+
+      // Create ticket via WHMCS API
+      const whmcsUrl = process.env.WHMCS_URL;
+      const whmcsIdentifier = process.env.WHMCS_API_IDENTIFIER;
+      const whmcsSecret = process.env.WHMCS_API_SECRET;
+
+      if (whmcsUrl && whmcsIdentifier && whmcsSecret) {
+        try {
+          const axios = require('axios');
+          
+          const formData = new URLSearchParams();
+          formData.append('action', 'OpenTicket');
+          formData.append('identifier', whmcsIdentifier);
+          formData.append('secret', whmcsSecret);
+          formData.append('deptid', process.env.TECHSUPPORT_DEPTID || '2');
+          formData.append('subject', ticketPayload.subject);
+          formData.append('message', ticketPayload.message);
+          formData.append('priority', ticketPayload.priority);
+          formData.append('name', 'WordPress Diagnostic System');
+          formData.append('email', 'support@hostbreak.com');
+          formData.append('responsetype', 'json');
+
+          const response = await axios.post(whmcsUrl, formData, {
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            timeout: 10000
+          });
+
+          if (response.data && response.data.result === 'success') {
+            logger.info('Comprehensive support ticket created successfully', { 
+              requestId, 
+              domain,
+              ticketId: response.data.id,
+              ticketNumber: response.data.tid
+            });
+            
+            return { 
+              success: true, 
+              ticketId: response.data.id,
+              ticketNumber: response.data.tid,
+              subject: ticketPayload.subject
+            };
+          } else {
+            logger.error('Failed to create comprehensive support ticket via WHMCS', { 
+              requestId, 
+              error: response.data?.message || 'Unknown error',
+              responseData: response.data
+            });
+          }
+        } catch (apiError) {
+          logger.error('WHMCS API error for comprehensive ticket', { 
+            requestId, 
+            error: apiError.message,
+            status: apiError.response?.status,
+            statusText: apiError.response?.statusText
+          });
+        }
+      }
+
+      // Fallback: Log comprehensive ticket data for manual processing
+      logger.info('Comprehensive support ticket data (manual processing required)', { 
+        requestId, 
+        domain,
+        ticketData: {
+          subject: ticketPayload.subject,
+          priority: ticketPayload.priority,
+          server: ticketPayload.server,
+          username: ticketPayload.username,
+          complete_diagnostic: diagnosticResult
+        }
+      });
+      
+      return { 
+        success: true, 
+        method: 'logged_for_manual_processing',
+        ticketData: ticketPayload
+      };
+
+    } catch (error) {
+      logger.error('Failed to create comprehensive support ticket', { requestId, error: error.message });
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Generate comprehensive ticket data with complete analysis
+   */
+  generateComprehensiveTicketData(domain, cpanelCredentials, diagnosticResult, clientInfo) {
+    const phases = diagnosticResult.phases;
+    let priority = 'Medium';
+    let subject = `WordPress Diagnostic Report - ${domain}`;
+    let issueType = 'General Analysis';
+
+    // Determine priority and issue type based on diagnostic results
+    if (!phases.phase1?.wordpress_found) {
+      priority = 'High';
+      issueType = 'WordPress Not Found';
+      subject = `WordPress Installation Missing - ${domain}`;
+    } else if (phases.phase1?.config_errors?.length > 0) {
+      priority = 'High';
+      issueType = 'Configuration Error';
+      subject = `WordPress Configuration Error - ${domain}`;
+    } else if (!phases.phase3?.database_connection) {
+      priority = 'High';
+      issueType = 'Database Connection';
+      subject = `WordPress Database Connection Issue - ${domain}`;
+    } else if (phases.phase2?.error_keywords?.memory > 5) {
+      priority = 'Medium';
+      issueType = 'Memory Issues';
+      subject = `WordPress Memory Issues - ${domain}`;
+    }
+
+    // Generate comprehensive message with complete analysis
+    const message = this.generateComprehensiveTicketMessage(domain, cpanelCredentials, diagnosticResult, clientInfo, issueType);
+
+    return {
+      subject,
+      message,
+      priority,
+      issueType,
+      domain,
+      server: cpanelCredentials.host,
+      username: cpanelCredentials.username
+    };
+  }
+
+  /**
+   * Generate comprehensive ticket message with complete diagnostic data
+   */
+  generateComprehensiveTicketMessage(domain, cpanelCredentials, diagnosticResult, clientInfo, issueType) {
+    const phases = diagnosticResult.phases;
+    
+    let message = `COMPREHENSIVE WORDPRESS DIAGNOSTIC REPORT\n`;
+    message += `==========================================\n\n`;
+    
+    message += `Domain: ${domain}\n`;
+    message += `Server: ${cpanelCredentials.host}\n`;
+    message += `Username: ${cpanelCredentials.username}\n`;
+    message += `Issue Type: ${issueType}\n`;
+    message += `Diagnostic Time: ${new Date().toISOString()}\n`;
+    message += `Request ID: ${diagnosticResult.requestId || 'N/A'}\n`;
+    message += `Duration: ${diagnosticResult.duration || 'N/A'}ms\n\n`;
+
+    message += `EXECUTIVE SUMMARY\n`;
+    message += `=================\n`;
+    message += `Primary Issue: ${diagnosticResult.primary_suspect || 'Unknown'}\n`;
+    message += `Confidence Level: ${diagnosticResult.confidence || 0}%\n`;
+    message += `Classification: ${diagnosticResult.l1_classification || 'Unknown'}\n`;
+    message += `Sub-classification: ${diagnosticResult.l2_classification || 'N/A'}\n`;
+    message += `Remediation Needed: ${diagnosticResult.remediation_needed ? 'Yes' : 'No'}\n\n`;
+
+    message += `PHASE 1: WORDPRESS DETECTION\n`;
+    message += `=============================\n`;
+    message += `WordPress Found: ${phases.phase1?.wordpress_found ? 'Yes' : 'No'}\n`;
+    message += `Version: ${phases.phase1?.version || 'Unknown'}\n`;
+    message += `Installation Path: ${phases.phase1?.path || 'N/A'}\n`;
+    message += `Installation Health: ${phases.phase1?.installation_health || 'Unknown'}\n`;
+    message += `Detection Method: ${phases.phase1?.detection_method || 'Unknown'}\n`;
+    if (phases.phase1?.config_errors?.length > 0) {
+      message += `Configuration Errors: ${phases.phase1.config_errors.length}\n`;
+      phases.phase1.config_errors.slice(0, 3).forEach((error, index) => {
+        message += `  ${index + 1}. ${error.substring(0, 100)}...\n`;
+      });
+    }
+    message += `\n`;
+
+    message += `PHASE 2: ERROR LOG ANALYSIS\n`;
+    message += `============================\n`;
+    message += `Errors Found: ${phases.phase2?.errors_found ? 'Yes' : 'No'}\n`;
+    message += `Total Error Count: ${phases.phase2?.error_count || 0}\n`;
+    message += `Critical Errors: ${phases.phase2?.critical_errors?.length || 0}\n`;
+    if (phases.phase2?.error_keywords) {
+      message += `Error Categories:\n`;
+      Object.entries(phases.phase2.error_keywords).forEach(([category, count]) => {
+        if (count > 0) {
+          message += `  - ${category.toUpperCase()}: ${count} occurrences\n`;
+        }
+      });
+    }
+    if (phases.phase2?.critical_errors?.length > 0) {
+      message += `Recent Critical Errors:\n`;
+      phases.phase2.critical_errors.slice(0, 3).forEach((error, index) => {
+        message += `  ${index + 1}. ${error.substring(0, 150)}...\n`;
+      });
+    }
+    message += `\n`;
+
+    message += `PHASE 3: DATABASE CONNECTION\n`;
+    message += `=============================\n`;
+    message += `Database Connected: ${phases.phase3?.database_connection ? 'Yes' : 'No'}\n`;
+    message += `Database Status: ${phases.phase3?.database_status || 'Unknown'}\n`;
+    message += `Connection Method: ${phases.phase3?.connection_method || 'Unknown'}\n`;
+    message += `Background Repair Scheduled: ${phases.phase3?.background_repair_scheduled ? 'Yes' : 'No'}\n`;
+    if (phases.phase3?.connection_details) {
+      const details = phases.phase3.connection_details;
+      if (details.error) {
+        message += `Connection Error: ${details.error}\n`;
+        message += `Error Code: ${details.errorCode || 'Unknown'}\n`;
+      }
+      if (details.parsed_config) {
+        message += `Database Name: ${details.parsed_config.database || 'Unknown'}\n`;
+        message += `Database User: ${details.parsed_config.user || 'Unknown'}\n`;
+        message += `Database Host: ${details.parsed_config.host || 'Unknown'}\n`;
+      }
+    }
+    message += `\n`;
+
+    message += `PHASE 4: CORE FILE INTEGRITY\n`;
+    message += `=============================\n`;
+    message += `Integrity Check Completed: ${phases.phase4?.integrity_check_completed ? 'Yes' : 'No'}\n`;
+    message += `Checksum Status: ${phases.phase4?.checksum_status || 'Unknown'}\n`;
+    message += `Corrupted Files: ${phases.phase4?.corrupted_files?.length || 0}\n`;
+    message += `Missing Files: ${phases.phase4?.missing_files?.length || 0}\n`;
+    message += `\n`;
+
+    message += `PHASE 5: VERSION INFORMATION\n`;
+    message += `=============================\n`;
+    message += `WordPress Version: ${this.extractWordPressVersion(phases.phase5?.wordpress_version) || 'Unknown'}\n`;
+    message += `PHP Version: ${phases.phase5?.php_version || 'Unknown'}\n`;
+    message += `MySQL Version: ${phases.phase5?.mysql_version || 'Unknown'}\n`;
+    message += `Versions Compatible: ${phases.phase5?.versions_compatible ? 'Yes' : 'No'}\n`;
+    message += `\n`;
+
+    message += `PHASE 6: PLUGINS & THEMES\n`;
+    message += `==========================\n`;
+    message += `Active Plugins: ${phases.phase6?.active_plugins?.length || 0}\n`;
+    message += `Inactive Plugins: ${phases.phase6?.inactive_plugins?.length || 0}\n`;
+    message += `Active Theme: ${phases.phase6?.active_theme || 'Unknown'}\n`;
+    if (phases.phase6?.active_plugins?.length > 0) {
+      message += `Plugin List: ${phases.phase6.active_plugins.slice(0, 5).join(', ')}\n`;
+    }
+    message += `\n`;
+
+    message += `PHASE 7: RESOURCE LIMITS\n`;
+    message += `=========================\n`;
+    message += `Memory Limit Set: ${phases.phase7?.memory_limit_set ? 'Yes' : 'No'}\n`;
+    message += `Max Memory Limit Set: ${phases.phase7?.max_memory_limit_set ? 'Yes' : 'No'}\n`;
+    message += `Limits Applied: ${phases.phase7?.limits_applied ? 'Yes' : 'No'}\n`;
+    message += `\n`;
+
+    message += `RECOMMENDATIONS\n`;
+    message += `===============\n`;
+    if (diagnosticResult.recommendations) {
+      diagnosticResult.recommendations.forEach((rec, index) => {
+        message += `${index + 1}. ${rec}\n`;
+      });
+    } else {
+      message += `No specific recommendations available.\n`;
+    }
+    message += `\n`;
+
+    message += `REMEDIATION STATUS\n`;
+    message += `==================\n`;
+    message += `Background Remediation Scheduled: ${diagnosticResult.background_remediation_scheduled ? 'Yes' : 'No'}\n`;
+    message += `Remediation Needed: ${diagnosticResult.remediation_needed ? 'Yes' : 'No'}\n`;
+    message += `\n`;
+
+    message += `This comprehensive diagnostic report was automatically generated by the WordPress Diagnostic System.\n`;
+    message += `All technical details and raw diagnostic data are included for thorough analysis.\n`;
+
+    return message;
+  }
+  async createSupportTicket(domain, cpanelCredentials, diagnosticResult, requestId) {
+    logger.info('Creating support ticket for WordPress issues', { requestId, domain });
+    
+    try {
+      const ticketData = this.generateTicketData(domain, cpanelCredentials, diagnosticResult);
+      
+      const ticketPayload = {
+        subject: ticketData.subject,
+        message: ticketData.message,
+        priority: ticketData.priority,
+        department: 'Support', // Technical support department
+        domain: domain,
+        server: cpanelCredentials.host,
+        username: cpanelCredentials.username,
+        diagnostic_data: {
+          request_id: requestId,
+          wordpress_found: diagnosticResult.phases.phase1?.wordpress_found,
+          config_errors: diagnosticResult.phases.phase1?.config_errors?.length || 0,
+          database_status: diagnosticResult.phases.phase3?.database_status,
+          error_keywords: diagnosticResult.phases.phase2?.error_keywords,
+          critical_errors_count: diagnosticResult.phases.phase2?.critical_errors?.length || 0
+        }
+      };
+
+      // Create ticket via WHMCS API
+      const whmcsUrl = process.env.WHMCS_URL;
+      const whmcsIdentifier = process.env.WHMCS_API_IDENTIFIER;
+      const whmcsSecret = process.env.WHMCS_API_SECRET;
+
+      if (whmcsUrl && whmcsIdentifier && whmcsSecret) {
+        try {
+          const axios = require('axios');
+          
+          // Use form data for WHMCS API
+          const formData = new URLSearchParams();
+          formData.append('action', 'OpenTicket');
+          formData.append('identifier', whmcsIdentifier);
+          formData.append('secret', whmcsSecret);
+          formData.append('deptid', process.env.TECHSUPPORT_DEPTID || '2');
+          formData.append('subject', ticketPayload.subject);
+          formData.append('message', ticketPayload.message);
+          formData.append('priority', ticketPayload.priority);
+          formData.append('name', 'WordPress Diagnostic System');
+          formData.append('email', 'support@hostbreak.com');
+          formData.append('responsetype', 'json');
+
+          const response = await axios.post(whmcsUrl, formData, {
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            timeout: 10000
+          });
+
+          if (response.data && response.data.result === 'success') {
+            logger.info('Support ticket created successfully', { 
+              requestId, 
+              domain,
+              ticketId: response.data.id,
+              ticketNumber: response.data.tid
+            });
+            
+            return { 
+              success: true, 
+              ticketId: response.data.id,
+              ticketNumber: response.data.tid,
+              subject: ticketPayload.subject
+            };
+          } else {
+            logger.error('Failed to create support ticket via WHMCS', { 
+              requestId, 
+              error: response.data?.message || 'Unknown error',
+              responseData: response.data
+            });
+          }
+        } catch (apiError) {
+          logger.error('WHMCS API error', { 
+            requestId, 
+            error: apiError.message,
+            status: apiError.response?.status,
+            statusText: apiError.response?.statusText
+          });
+        }
+      }
+
+      // Fallback: Log ticket data for manual processing
+      logger.info('Support ticket data (manual processing required)', { 
+        requestId, 
+        domain,
+        ticketData: {
+          subject: ticketPayload.subject,
+          priority: ticketPayload.priority,
+          server: ticketPayload.server,
+          username: ticketPayload.username,
+          errorSummary: ticketPayload.diagnostic_data
+        }
+      });
+      
+      return { 
+        success: true, 
+        method: 'logged_for_manual_processing',
+        ticketData: ticketPayload
+      };
+
+    } catch (error) {
+      logger.error('Failed to create support ticket', { requestId, error: error.message });
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Generate ticket data from diagnostic results
+   */
+  generateTicketData(domain, cpanelCredentials, diagnosticResult) {
+    const phases = diagnosticResult.phases;
+    let priority = 'Medium';
+    let subject = `WordPress Issue - ${domain}`;
+    let issueType = 'General';
+
+    // Determine priority and issue type based on diagnostic results
+    if (phases.phase1?.config_errors?.length > 0) {
+      priority = 'High';
+      issueType = 'Configuration Error';
+      subject = `WordPress Configuration Error - ${domain}`;
+    } else if (!phases.phase3?.database_connection) {
+      priority = 'High';
+      issueType = 'Database Connection';
+      subject = `WordPress Database Connection Issue - ${domain}`;
+    } else if (phases.phase2?.error_keywords?.memory > 5) {
+      priority = 'Medium';
+      issueType = 'Memory Issues';
+      subject = `WordPress Memory Issues - ${domain}`;
+    }
+
+    // Generate detailed message
+    const message = this.generateTicketMessage(domain, cpanelCredentials, diagnosticResult, issueType);
+
+    return {
+      subject,
+      message,
+      priority,
+      issueType,
+      domain,
+      server: cpanelCredentials.host,
+      username: cpanelCredentials.username
+    };
+  }
+
+  /**
+   * Generate detailed ticket message
+   */
+  generateTicketMessage(domain, cpanelCredentials, diagnosticResult, issueType) {
+    const phases = diagnosticResult.phases;
+    
+    let message = `WordPress Diagnostic Report for ${domain}\n\n`;
+    message += `Server: ${cpanelCredentials.host}\n`;
+    message += `Username: ${cpanelCredentials.username}\n`;
+    message += `Issue Type: ${issueType}\n`;
+    message += `Diagnostic Time: ${new Date().toISOString()}\n\n`;
+
+    message += `=== DIAGNOSTIC SUMMARY ===\n`;
+    message += `WordPress Found: ${phases.phase1?.wordpress_found ? 'Yes' : 'No'}\n`;
+    message += `WordPress Version: ${phases.phase1?.version || 'Unknown'}\n`;
+    message += `Installation Health: ${phases.phase1?.installation_health}\n`;
+    message += `Database Connection: ${phases.phase3?.database_connection ? 'Working' : 'Failed'}\n`;
+    message += `Database Status: ${phases.phase3?.database_status}\n\n`;
+
+    if (phases.phase1?.config_errors?.length > 0) {
+      message += `=== CONFIGURATION ERRORS ===\n`;
+      phases.phase1.config_errors.slice(0, 5).forEach((error, index) => {
+        message += `${index + 1}. ${error}\n`;
+      });
+      message += `\n`;
+    }
+
+    if (phases.phase2?.error_keywords) {
+      message += `=== ERROR ANALYSIS ===\n`;
+      Object.entries(phases.phase2.error_keywords).forEach(([category, count]) => {
+        if (count > 0) {
+          message += `${category.toUpperCase()}: ${count} occurrences\n`;
+        }
+      });
+      message += `\n`;
+    }
+
+    if (phases.phase2?.critical_errors?.length > 0) {
+      message += `=== RECENT CRITICAL ERRORS ===\n`;
+      phases.phase2.critical_errors.slice(0, 5).forEach((error, index) => {
+        message += `${index + 1}. ${error}\n`;
+      });
+      message += `\n`;
+    }
+
+    message += `=== RECOMMENDED ACTIONS ===\n`;
+    if (diagnosticResult.recommendations) {
+      diagnosticResult.recommendations.forEach((rec, index) => {
+        message += `${index + 1}. ${rec}\n`;
+      });
+    }
+
+    message += `\nThis ticket was automatically generated by the WordPress Diagnostic System.\n`;
+    message += `Request ID: ${diagnosticResult.requestId || 'N/A'}\n`;
+
+    return message;
   }
 }
 
