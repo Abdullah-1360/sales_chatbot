@@ -657,8 +657,11 @@ class MySQLClient {
         // Use server IP from config if available
         connectionHost = config.serverIP;
       } else if (config.host === 'localhost' || config.host === '127.0.0.1') {
-        // For localhost, try to use server IP if available
-        // Keep original host if no server IP available
+        // For localhost, we MUST use the resolved IP if available
+        // If no resolved IP, this will fail as expected since we can't connect to remote localhost
+        if (!resolvedIp) {
+          console.log('WARNING: Localhost host detected but no resolved IP provided - connection will likely fail');
+        }
       }
       
       // Use resolved IP if available, otherwise use the connection host
@@ -677,8 +680,14 @@ class MySQLClient {
         connectionConfig.port = Number(config.port);
       }
       
-      // Log connection config for debugging (disabled for performance)
-      // console.log('Connection Config (Promise):', JSON.stringify(connectionConfig, null, 2));
+      // Debug logging to see what host is actually being used
+      console.log(`MySQL connection attempt: ${JSON.stringify({
+        originalHost: config.host,
+        resolvedIp: resolvedIp,
+        connectionHost: connectionHost,
+        finalHost: finalHost,
+        actualConnectionHost: connectionConfig.host
+      })}`);
       
       let connection;
       try {

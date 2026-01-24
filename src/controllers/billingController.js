@@ -633,15 +633,19 @@ exports.confirmPayment = async (req, res, next) => {
     
     // Validate invoiceId format if provided
     let targetInvoiceId = invoiceId;
-    if (targetInvoiceId !== undefined && targetInvoiceId !== null && targetInvoiceId !== '' && targetInvoiceId !== 0) {
-      if (!String(targetInvoiceId).match(/^\d+$/)) {
+    if (targetInvoiceId !== undefined && targetInvoiceId !== null && targetInvoiceId !== '' && targetInvoiceId !== 0 && targetInvoiceId !== '0') {
+      const numericId = String(targetInvoiceId);
+      if (!numericId.match(/^\d+$/) || parseInt(numericId) <= 0) {
         return res.status(400).json({ 
           success: false, 
-          error: 'Invalid invoice ID format. Invoice ID must be numeric.' 
+          error: 'Invalid invoice ID format. Invoice ID must be a positive number.' 
         });
       }
     } else {
-      // Empty, null, undefined, or 0 invoice ID - treat as no invoice provided
+      // Empty, null, undefined, 0, or '0' invoice ID - treat as no invoice provided
+      if (targetInvoiceId === 0 || targetInvoiceId === '0') {
+        console.log('→ Invoice ID 0 provided - treating as null (no specific invoice requested)');
+      }
       targetInvoiceId = null;
     }
     
@@ -867,7 +871,6 @@ exports.confirmPayment = async (req, res, next) => {
     }
     
     let matchedInvoice = null;
-    let fallbackUsed = false;
     
     // Try to find specific invoice if ID provided
     if (targetInvoiceId) {
@@ -887,17 +890,67 @@ exports.confirmPayment = async (req, res, next) => {
         }
       } catch (error) {
         console.log('✗ Invoice fetch failed:', error.message);
-        return res.status(404).json({
-          success: false,
-          error: 'Invoice not found. Please check the invoice number.'
+        // Don't return error immediately - continue to search through all invoices
+        console.log('→ Specific invoice not found, will search through all invoices as fallback');
+      }
+    }
+    
+    // If no invoice found and specific ID was provided, search through all invoices
+    if (!matchedInvoice && targetInvoiceId) {
+      console.log('→ Searching through all invoices for client:', resolvedClientId, 'to match invoice ID:', targetInvoiceId);
+      
+      try {
+        const { getInvoices, getInvoice } = require('../services/whmcsService');
+        
+        // Search through all invoices for this client (not just unpaid)
+        // This handles cases where invoice might be paid but user still wants to confirm payment
+        const allInvoices = await getInvoices({ 
+          userid: resolvedClientId, 
+          limitnum: 999 // Get a large number to search through all invoices
         });
+        
+        const invoiceArray = allInvoices.invoices?.invoice || allInvoices.invoices?.invoices || [];
+        const invoices = Array.isArray(invoiceArray) ? invoiceArray : (invoiceArray ? [invoiceArray] : []);
+        
+        console.log(`→ Searching through ${invoices.length} invoices for match with ID: ${targetInvoiceId}`);
+        
+        // Search for invoice by both invoiceid and invoicenum fields
+        // Some WHMCS setups use different field names for invoice identification
+        const matchingInvoice = invoices.find(inv => {
+          const invId = String(inv.id || inv.invoiceid || '');
+          const invNum = String(inv.invoicenum || inv.invoice_num || '');
+          const targetId = String(targetInvoiceId);
+          
+          // Skip if target is 0 or empty (shouldn't happen due to validation above, but safety check)
+          if (!targetId || targetId === '0') {
+            return false;
+          }
+          
+          const idMatch = invId === targetId;
+          const numMatch = invNum === targetId;
+          
+          if (idMatch || numMatch) {
+            console.log(`→ Found matching invoice: ID=${invId}, NUM=${invNum}, Target=${targetId}, IDMatch=${idMatch}, NUMMatch=${numMatch}`);
+            return true;
+          }
+          return false;
+        });
+        
+        if (matchingInvoice) {
+          const invoiceId = matchingInvoice.id || matchingInvoice.invoiceid;
+          matchedInvoice = await getInvoice(invoiceId);
+          console.log('→ Found matching invoice for client:', matchedInvoice.invoiceid || matchedInvoice.id, 'Status:', matchedInvoice.status);
+        } else {
+          console.log('→ No matching invoice found in all invoices for this client');
+        }
+      } catch (err) {
+        console.log('✗ Error searching through all invoices:', err.message);
       }
     }
     
     // If no specific invoice found or no invoice ID provided, search for unpaid invoice
-    if (!matchedInvoice) {
-      console.log('→ Searching for unpaid invoice for client:', resolvedClientId);
-      fallbackUsed = !!targetInvoiceId; // Mark as fallback if specific ID was requested
+    if (!matchedInvoice && !targetInvoiceId) {
+      console.log('→ No specific invoice ID provided, searching for unpaid invoice for client:', resolvedClientId);
       
       try {
         // Always search for any unpaid invoice for this client first
@@ -936,16 +989,23 @@ exports.confirmPayment = async (req, res, next) => {
     }
     
     if (!matchedInvoice) {
-      let message = 'No unpaid invoices found for this account.';
       if (targetInvoiceId) {
-        message = `The specified invoice was not found and no unpaid invoices are available.`;
+        // Specific invoice ID was provided but not found after searching all invoices
+        console.log('→ Specific invoice ID not found in all invoices for this client:', targetInvoiceId);
+        return res.status(404).json({
+          success: false,
+          error: 'Invoice not found.',
+          message: `Invoice #${targetInvoiceId} was not found for this account. Please verify the invoice number or check if it belongs to a different account.`
+        });
+      } else {
+        // No specific invoice ID provided, searched for unpaid invoices but none found
+        console.log('→ No unpaid invoices found for client:', resolvedClientId);
+        return res.status(404).json({ 
+          success: false, 
+          error: 'No invoice found.',
+          message: 'No unpaid invoices found for this account.'
+        });
       }
-      
-      return res.status(404).json({ 
-        success: false, 
-        error: 'No invoice found.',
-        message: message
-      });
     }
     
     const finalInvoiceId = matchedInvoice.invoiceid || matchedInvoice.id;
@@ -956,17 +1016,13 @@ exports.confirmPayment = async (req, res, next) => {
       console.log('→ Invoice already paid:', finalInvoiceId);
       
       let message = `Invoice #${finalInvoiceId} is already paid. Thank you!`;
-      if (fallbackUsed) {
-        message += ` Note: The requested invoice was not found, but this invoice was already paid.`;
-      }
       
       return res.json({ 
         success: true, 
         paid: true, 
         invoiceId: finalInvoiceId, 
         paidDate, 
-        message: message,
-        requestedInvoiceId: fallbackUsed ? targetInvoiceId : undefined
+        message: message
       });
     }
     
@@ -988,13 +1044,6 @@ exports.confirmPayment = async (req, res, next) => {
     
     if (domain) {
       ticketMessage += `Domain: ${domain}\n`;
-    }
-    
-    if (fallbackUsed) {
-      ticketMessage += `\n=== INVOICE RESOLUTION ===\n`;
-      ticketMessage += `Requested Invoice ID: ${targetInvoiceId}\n`;
-      ticketMessage += `Actual Invoice Used: ${finalInvoiceId}\n`;
-      ticketMessage += `Reason: Requested invoice not found, using current unpaid invoice\n`;
     }
     
     // Add payment URL to ticket message if provided
@@ -1034,10 +1083,6 @@ exports.confirmPayment = async (req, res, next) => {
     // Build clean response with the new format
     let message = `I've sent your payment proof for invoice ${finalInvoiceId} to our billing team under ticket ${ticketId}.\nOnce they verify it, they'll update the invoice and restore service${domain ? ` for ${domain}` : ''}.\nPlease wait for the billing team's confirmation on this ticket`;
     
-    if (fallbackUsed) {
-      message += `\n\nNote: The requested invoice was not found, so we're processing your current unpaid invoice instead.`;
-    }
-    
     const response = { 
       success: true, 
       paid: false, 
@@ -1045,10 +1090,6 @@ exports.confirmPayment = async (req, res, next) => {
       invoiceId: finalInvoiceId,
       message: message
     };
-    
-    if (fallbackUsed) {
-      response.requestedInvoiceId = targetInvoiceId;
-    }
     
     res.json(response);
   } catch (err) {

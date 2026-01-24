@@ -177,12 +177,16 @@ exports.invoiceLookup = async (req, res, next) => {
     
     // Validate invoiceId format if provided
     let targetInvoiceId = invoiceId;
-    if (targetInvoiceId !== undefined && targetInvoiceId !== null && targetInvoiceId !== '' && targetInvoiceId !== 0) {
-      if (!String(targetInvoiceId).match(/^\d+$/)) {
-        return res.status(400).json({ success: false, error: 'Invalid invoiceId format. Invoice ID must be numeric.' });
+    if (targetInvoiceId !== undefined && targetInvoiceId !== null && targetInvoiceId !== '' && targetInvoiceId !== 0 && targetInvoiceId !== '0') {
+      const numericId = String(targetInvoiceId);
+      if (!numericId.match(/^\d+$/) || parseInt(numericId) <= 0) {
+        return res.status(400).json({ success: false, error: 'Invalid invoiceId format. Invoice ID must be a positive number.' });
       }
     } else {
-      // Empty, null, undefined, or 0 invoice ID - treat as no invoice provided
+      // Empty, null, undefined, 0, or '0' invoice ID - treat as no invoice provided
+      if (targetInvoiceId === 0 || targetInvoiceId === '0') {
+        console.log('→ Invoice ID 0 provided - treating as null (no specific invoice requested)');
+      }
       targetInvoiceId = null;
     }
     
@@ -424,11 +428,63 @@ exports.invoiceLookup = async (req, res, next) => {
       }
     }
     
-    // If no invoice found (either no ID provided, invalid ID, or ownership mismatch), search for unpaid invoices
-    if (!invoice) {
-      console.log('→ Searching for unpaid invoices for client:', resolvedClientId);
+    // If no invoice found (either no ID provided, invalid ID, or ownership mismatch), search through all invoices
+    if (!invoice && targetInvoiceId) {
+      console.log('→ Searching through all invoices for client:', resolvedClientId, 'to match invoice ID:', targetInvoiceId);
       
-      // Always search for any unpaid invoice for this client first
+      try {
+        const { getInvoices } = require('../services/whmcsService');
+        
+        // Search through all invoices for this client (not just unpaid)
+        // This handles cases where invoice might be paid but user still wants to check it
+        const allInvoices = await getInvoices({ 
+          userid: resolvedClientId, 
+          limitnum: 999 // Get a large number to search through all invoices
+        });
+        
+        const invoiceArray = allInvoices.invoices?.invoice || allInvoices.invoices?.invoices || [];
+        const invoices = Array.isArray(invoiceArray) ? invoiceArray : (invoiceArray ? [invoiceArray] : []);
+        
+        console.log(`→ Searching through ${invoices.length} invoices for match with ID: ${targetInvoiceId}`);
+        
+        // Search for invoice by both invoiceid and invoicenum fields
+        // Some WHMCS setups use different field names for invoice identification
+        const matchingInvoice = invoices.find(inv => {
+          const invId = String(inv.id || inv.invoiceid || '');
+          const invNum = String(inv.invoicenum || inv.invoice_num || '');
+          const targetId = String(targetInvoiceId);
+          
+          // Skip if target is 0 or empty (shouldn't happen due to validation above, but safety check)
+          if (!targetId || targetId === '0') {
+            return false;
+          }
+          
+          const idMatch = invId === targetId;
+          const numMatch = invNum === targetId;
+          
+          if (idMatch || numMatch) {
+            console.log(`→ Found matching invoice: ID=${invId}, NUM=${invNum}, Target=${targetId}, IDMatch=${idMatch}, NUMMatch=${numMatch}`);
+            return true;
+          }
+          return false;
+        });
+        
+        if (matchingInvoice) {
+          const invoiceId = matchingInvoice.id || matchingInvoice.invoiceid;
+          invoice = await getInvoice(invoiceId);
+          console.log('→ Found matching invoice for client:', invoice.invoiceid || invoice.id, 'Status:', invoice.status);
+        } else {
+          console.log('→ No matching invoice found in all invoices for this client');
+        }
+      } catch (err) {
+        console.log('✗ Error searching through all invoices:', err.message);
+      }
+    }
+    
+    // If still no invoice found and no specific ID was provided, search for unpaid invoices as fallback
+    if (!invoice && !targetInvoiceId) {
+      console.log('→ No specific invoice ID provided, searching for unpaid invoices for client:', resolvedClientId);
+      
       try {
         const { getInvoices } = require('../services/whmcsService');
         const unpaidInvoices = await getInvoices({ 
@@ -466,12 +522,12 @@ exports.invoiceLookup = async (req, res, next) => {
     if (!invoice) {
       // No invoice found - provide helpful response based on what was requested
       if (targetInvoiceId) {
-        // Specific invoice ID was provided but not found, and no unpaid invoices available
-        console.log('→ Specific invoice ID not found and no unpaid invoices available:', targetInvoiceId);
+        // Specific invoice ID was provided but not found after searching all invoices
+        console.log('→ Specific invoice ID not found in all invoices for this client:', targetInvoiceId);
         return res.status(404).json({
           success: false,
-          error: 'Invoice not found and no unpaid invoices available.',
-          message: `Invoice #${targetInvoiceId} was not found and there are no unpaid invoices for this account. Please verify the invoice number or check if all invoices are paid.`
+          error: 'Invoice not found.',
+          message: `Invoice #${targetInvoiceId} was not found for this account. Please verify the invoice number or check if it belongs to a different account.`
         });
       } else {
         // No specific invoice ID provided, searched for unpaid invoices but none found
@@ -531,9 +587,9 @@ exports.invoiceLookup = async (req, res, next) => {
       message = `Invoice #${invoiceIdOut} is ${status}, with a balance of ${amount} due${dueDate ? ' by ' + dueDate : ''}.`;
     }
     
-    // Add fallback information if original invoice ID was incorrect
+    // Add information if original invoice ID was found via comprehensive search
     if (targetInvoiceId && String(targetInvoiceId) !== String(invoiceIdOut)) {
-      message += ` Note: Invoice #${targetInvoiceId} was not found, showing your current unpaid invoice instead.`;
+      message += ` Note: Found invoice #${invoiceIdOut} matching your request for #${targetInvoiceId}.`;
     }
     
     const response = { 

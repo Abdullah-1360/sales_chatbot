@@ -31,6 +31,7 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
     return Joi.object({
       domain: Joi.string().domain().required(),
       phone: Joi.string().optional(),
+      user_ns: Joi.string().optional(),
       frontend_accessible: Joi.boolean().allow(null).optional(),
       admin_accessible: Joi.boolean().allow(null).optional(),
       error_visible: Joi.boolean().allow(null).optional(),
@@ -97,6 +98,7 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
           domain: value.domain,
           userInput: value,
           normalizedPhone,
+          userNs: value.user_ns,
           requestId,
           startTime
         }).catch(error => {
@@ -111,7 +113,8 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
             domain: value.domain,
             requestId,
             error: error.message,
-            userInput: value
+            userInput: value,
+            userNs: value.user_ns
           }).catch(ticketError => {
             logger.error('Error ticket creation failed', { 
               requestId, 
@@ -141,7 +144,7 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
   /**
    * Perform comprehensive background analysis (no timeouts, complete workflow)
    */
-  async performComprehensiveBackgroundAnalysis({ domain, userInput, normalizedPhone, requestId, startTime }) {
+  async performComprehensiveBackgroundAnalysis({ domain, userInput, normalizedPhone, userNs, requestId, startTime }) {
     logger.info('Starting comprehensive background analysis', { requestId, domain });
     
     let cpanelCredentials = null;
@@ -234,7 +237,8 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
         clientInfo,
         requestId,
         totalDuration: Date.now() - startTime,
-        remediationResults // Include remediation results in ticket
+        remediationResults, // Include remediation results in ticket
+        userNs // Pass user_ns for UChat notification
       });
 
       logger.info('Background analysis completed successfully', { 
@@ -260,7 +264,8 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
         error: error.message,
         userInput,
         clientInfo,
-        totalDuration: Date.now() - startTime
+        totalDuration: Date.now() - startTime,
+        userNs // Pass user_ns for UChat notification
       });
     }
   }
@@ -731,18 +736,9 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
         if (phase.problematic_plugins.length > 0 || phase.problematic_themes.length > 0) {
           phase.auto_remediation_scheduled = true;
           
-          // Schedule plugin/theme fixes in background
-          this.schedulePluginThemeRemediation(
-            sshConnection, 
-            phase.problematic_plugins, 
-            phase.problematic_themes, 
-            requestId
-          ).catch(error => {
-            logger.warn('Failed to schedule plugin/theme remediation', { 
-              requestId, 
-              error: error.message 
-            });
-          });
+          // Note: Plugin/theme fixes are now handled by the main remediation flow
+          // No need to schedule background fixes here as they will be handled properly
+          // by the enhanced critical error detection and direct SSH method
         }
         
         // Store full log for background analysis and ticket creation
@@ -852,12 +848,21 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
       let serverIP = null;
       try {
         serverIP = await mysqlHostManagement.getServerIP(sshConnection._cpanelCredentials.host);
-        logger.info('Resolved server IP for database connection', { requestId, serverIP });
+        logger.info('Resolved server IP for database connection test', { requestId, serverIP });
       } catch (ipError) {
         logger.warn('Failed to resolve server IP, using localhost', { requestId, error: ipError.message });
       }
 
       // Step 3: Test connection with MySQL2 API using server IP
+      logger.info('Testing database connection', { 
+        requestId, 
+        database: dbConfig.database,
+        user: dbConfig.user,
+        originalHost: dbConfig.host,
+        serverIP: serverIP,
+        willUseServerIP: !!serverIP
+      });
+      
       const connectionResult = await mysqlClient.testConnectionPromise(dbConfig, serverIP);
       
       if (connectionResult.success) {
@@ -1732,7 +1737,7 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
   /**
    * Create error ticket when analysis fails
    */
-  async createErrorTicket({ domain, requestId, error, userInput, clientInfo, totalDuration }) {
+  async createErrorTicket({ domain, requestId, error, userInput, clientInfo, totalDuration, userNs }) {
     logger.info('Creating error ticket for failed analysis', { requestId, domain });
     
     try {
@@ -1797,6 +1802,11 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
               ticketId: response.data.id,
               ticketNumber: response.data.tid
             });
+            
+            // Send UChat notification if user_ns is provided
+            if (userNs) {
+              await this.sendUChatNotification(userNs, `WordPress diagnostic failed for ${domain}. Support ticket #${response.data.tid} created. Our team will investigate the issue.`);
+            }
             
             return { 
               success: true, 
@@ -2617,7 +2627,11 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
                                problematicThemes.length > 0 ||
                                // Check if WordPress installation health indicates issues
                                diagnosticResult.phases.phase1?.installation_health === 'corrupted' ||
-                               diagnosticResult.phases.phase1?.installation_health === 'detected_but_broken';
+                               diagnosticResult.phases.phase1?.installation_health === 'detected_but_broken' ||
+                               // Check recent error log for parse errors
+                               diagnosticResult.phases.phase2?.recent_errors?.some(error => 
+                                 error.includes('Parse error') || error.includes('syntax error') || error.includes('critical error')
+                               );
 
       logger.info('WordPress state analysis', { 
         requestId, 
@@ -2626,15 +2640,20 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
         problematicThemes,
         configErrors: diagnosticResult.phases.phase1?.config_errors?.length || 0,
         installationHealth: diagnosticResult.phases.phase1?.installation_health,
-        configKeywordErrors: diagnosticResult.phases.phase2?.error_keywords?.config || 0
+        configKeywordErrors: diagnosticResult.phases.phase2?.error_keywords?.config || 0,
+        recentParseErrors: diagnosticResult.phases.phase2?.recent_errors?.filter(error => 
+          error.includes('Parse error') || error.includes('syntax error')
+        ).length || 0
       });
 
-      // If WordPress has critical errors, use direct file manipulation instead of WP-CLI
+      // CRITICAL: If WordPress has parse errors, ALWAYS use direct file manipulation
+      // WP-CLI commands will fail when WordPress can't load due to parse errors
       if (hasCriticalErrors) {
-        logger.info('WordPress has critical errors, using direct file manipulation', { requestId });
+        logger.info('WordPress has critical/parse errors - using DIRECT file manipulation (no WP-CLI)', { requestId });
         
         // Fix problematic themes first (they often cause the most critical issues)
         if (problematicThemes.length > 0) {
+          logger.info('Starting plugin/theme remediation', { requestId, plugins: problematicPlugins, themes: problematicThemes });
           const themeFixResult = await this.fixThemesDirectly(sshConnection, problematicThemes, requestId);
           results.themes_switched = themeFixResult.themes_switched;
           results.errors.push(...themeFixResult.errors);
@@ -2646,6 +2665,8 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
           results.plugins_deactivated = pluginFixResult.plugins_deactivated;
           results.errors.push(...pluginFixResult.errors);
         }
+        
+        logger.info('Plugin/theme remediation completed', { requestId, results });
       } else {
         // WordPress appears functional, try WP-CLI commands first
         logger.info('WordPress appears functional, trying WP-CLI commands first', { requestId });
@@ -2763,6 +2784,7 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
 
   /**
    * Fix themes directly using SSH commands (when WordPress is broken)
+   * Remove corrupted directories completely and install fresh themes
    */
   async fixThemesDirectly(sshConnection, problematicThemes, requestId) {
     const result = {
@@ -2771,86 +2793,115 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
     };
 
     try {
-      logger.info('Fixing themes directly via SSH commands', { requestId, themes: problematicThemes });
+      logger.info('Fixing themes by completely removing corrupted directories and installing fresh', { requestId, themes: problematicThemes });
 
-      // Get database configuration
-      const wpConfigResult = await this.executeSSHCommand(
-        sshConnection,
-        `cd /home/${sshConnection._cpanelCredentials?.username}/public_html && grep -E "define.*DB_(NAME|USER|PASSWORD|HOST)" wp-config.php | head -4`,
-        requestId,
-        5000
-      );
+      // Remove corrupted theme directories completely
+      for (const problematicTheme of problematicThemes) {
+        try {
+          logger.info('Completely removing corrupted theme directory', { requestId, theme: problematicTheme });
+          
+          // Step 1: Remove the corrupted theme directory completely
+          const removeResult = await this.executeSSHCommand(
+            sshConnection,
+            `cd /home/${sshConnection._cpanelCredentials?.username}/public_html/wp-content/themes && rm -rf ${problematicTheme} && echo "THEME_REMOVED_SUCCESS"`,
+            requestId,
+            10000
+          );
 
-      const dbConfig = this.parseWpConfigDatabase(wpConfigResult);
-      
-      if (!dbConfig.database || !dbConfig.user) {
-        result.errors.push('Could not parse database configuration for theme fix');
-        return result;
-      }
-
-      // Find available default themes
-      const availableThemesResult = await this.executeSSHCommand(
-        sshConnection,
-        `cd /home/${sshConnection._cpanelCredentials?.username}/public_html/wp-content/themes && ls -d twenty* 2>/dev/null | head -5`,
-        requestId,
-        3000
-      );
-
-      const availableThemes = availableThemesResult.split('\n').filter(theme => theme.trim());
-      
-      if (availableThemes.length === 0) {
-        result.errors.push('No default themes found for activation');
-        return result;
-      }
-
-      // Use the first available default theme
-      const newTheme = availableThemes[0].trim();
-      
-      logger.info('Switching to theme via SSH database commands', { 
-        requestId, 
-        newTheme,
-        availableThemes
-      });
-
-      // Update theme in database using SSH mysql command
-      const updateThemeResult = await this.executeSSHCommand(
-        sshConnection,
-        `cd /home/${sshConnection._cpanelCredentials?.username}/public_html && mysql -h"${dbConfig.host}" -u"${dbConfig.user}" -p"${dbConfig.password}" "${dbConfig.database}" -e "UPDATE wp_options SET option_value='${newTheme}' WHERE option_name='template'; UPDATE wp_options SET option_value='${newTheme}' WHERE option_name='stylesheet';" 2>/dev/null && echo "THEME_UPDATE_SUCCESS" || echo "THEME_UPDATE_FAILED"`,
-        requestId,
-        10000
-      );
-
-      if (updateThemeResult.includes('THEME_UPDATE_SUCCESS')) {
-        result.themes_switched.push(newTheme);
-        logger.info('Theme switched successfully via SSH database command', { requestId, newTheme });
-        
-        // Also try to fix the problematic theme's functions.php if possible
-        for (const problematicTheme of problematicThemes) {
-          try {
-            await this.fixThemeFunctionsFile(sshConnection, problematicTheme, requestId);
-          } catch (fixError) {
-            logger.warn('Could not fix problematic theme functions.php', { 
-              requestId, 
-              theme: problematicTheme, 
-              error: fixError.message 
-            });
+          if (removeResult.includes('THEME_REMOVED_SUCCESS')) {
+            logger.info('Corrupted theme directory removed successfully', { requestId, theme: problematicTheme });
+            result.themes_switched.push(`${problematicTheme} (corrupted files removed)`);
+          } else {
+            result.errors.push(`Failed to remove corrupted theme directory: ${problematicTheme}`);
+            continue;
           }
+
+          // Step 2: Try to download and install fresh theme using wget/curl (no WP-CLI)
+          logger.info('Downloading fresh theme from WordPress.org', { requestId, theme: problematicTheme });
+          
+          const downloadResult = await this.executeSSHCommand(
+            sshConnection,
+            `cd /home/${sshConnection._cpanelCredentials?.username}/public_html/wp-content/themes && wget -q https://downloads.wordpress.org/theme/${problematicTheme}.zip -O ${problematicTheme}.zip && unzip -q ${problematicTheme}.zip && rm ${problematicTheme}.zip && echo "THEME_DOWNLOAD_SUCCESS" || echo "THEME_DOWNLOAD_FAILED"`,
+            requestId,
+            30000
+          );
+
+          if (downloadResult.includes('THEME_DOWNLOAD_SUCCESS')) {
+            logger.info('Fresh theme downloaded and extracted successfully', { requestId, theme: problematicTheme });
+            result.themes_switched.push(`${problematicTheme} (fresh installation)`);
+          } else {
+            logger.warn('Theme download failed, trying alternative method', { requestId, theme: problematicTheme });
+            
+            // Alternative: Try to copy from a backup or use a default theme
+            const fallbackResult = await this.installFallbackTheme(sshConnection, requestId);
+            if (fallbackResult.success) {
+              result.themes_switched.push(fallbackResult.theme);
+            } else {
+              result.errors.push(`Failed to download fresh theme ${problematicTheme} and no fallback available`);
+            }
+          }
+        } catch (themeError) {
+          result.errors.push(`Error fixing theme ${problematicTheme}: ${themeError.message}`);
+          logger.error('Theme fix error', { 
+            requestId, 
+            theme: problematicTheme, 
+            error: themeError.message 
+          });
         }
-      } else {
-        result.errors.push(`Failed to update theme in database via SSH: ${updateThemeResult}`);
+      }
+
+      // If no themes were successfully fixed, ensure we have a working default theme
+      if (result.themes_switched.length === 0 && problematicThemes.length > 0) {
+        logger.info('Theme fixes failed, installing a fresh default theme', { requestId });
+        
+        const fallbackResult = await this.installFallbackTheme(sshConnection, requestId);
+        if (fallbackResult.success) {
+          result.themes_switched.push(fallbackResult.theme);
+        } else {
+          result.errors.push('Failed to install any working theme');
+        }
       }
 
     } catch (error) {
-      result.errors.push(`Direct theme fix error: ${error.message}`);
-      logger.error('Direct theme fix failed', { requestId, error: error.message });
+      result.errors.push(`Theme fix error: ${error.message}`);
+      logger.error('Theme fix failed', { requestId, error: error.message });
     }
 
     return result;
   }
 
   /**
+   * Install a fallback theme using direct download (no WP-CLI)
+   */
+  async installFallbackTheme(sshConnection, requestId) {
+    const defaultThemes = ['twentytwentythree', 'twentytwentytwo', 'twentytwentyone'];
+    
+    for (const themeName of defaultThemes) {
+      try {
+        logger.info('Installing fallback theme via direct download', { requestId, theme: themeName });
+        
+        const installResult = await this.executeSSHCommand(
+          sshConnection,
+          `cd /home/${sshConnection._cpanelCredentials?.username}/public_html/wp-content/themes && wget -q https://downloads.wordpress.org/theme/${themeName}.zip -O ${themeName}.zip && unzip -q ${themeName}.zip && rm ${themeName}.zip && echo "FALLBACK_THEME_SUCCESS" || echo "FALLBACK_THEME_FAILED"`,
+          requestId,
+          30000
+        );
+
+        if (installResult.includes('FALLBACK_THEME_SUCCESS')) {
+          logger.info('Fallback theme installed successfully', { requestId, theme: themeName });
+          return { success: true, theme: `${themeName} (fallback installation)` };
+        }
+      } catch (error) {
+        logger.warn('Fallback theme installation failed', { requestId, theme: themeName, error: error.message });
+      }
+    }
+    
+    return { success: false };
+  }
+
+  /**
    * Fix plugins directly using SSH commands (when WordPress is broken)
-   * Skip querying active plugins - just deactivate all based on error log analysis
+   * Remove corrupted directories completely and install fresh plugins
    */
   async fixPluginsDirectly(sshConnection, problematicPlugins, requestId) {
     const result = {
@@ -2859,44 +2910,60 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
     };
 
     try {
-      logger.info('Fixing plugins directly via SSH commands based on error log analysis', { requestId, plugins: problematicPlugins });
+      logger.info('Fixing plugins by completely removing corrupted directories and installing fresh', { requestId, plugins: problematicPlugins });
 
-      // Get database configuration
-      const wpConfigResult = await this.executeSSHCommand(
-        sshConnection,
-        `cd /home/${sshConnection._cpanelCredentials?.username}/public_html && grep -E "define.*DB_(NAME|USER|PASSWORD|HOST)" wp-config.php | head -4`,
-        requestId,
-        5000
-      );
+      // Remove corrupted plugin directories completely
+      for (const problematicPlugin of problematicPlugins) {
+        try {
+          logger.info('Completely removing corrupted plugin directory', { requestId, plugin: problematicPlugin });
+          
+          // Step 1: Remove the corrupted plugin directory completely
+          const removeResult = await this.executeSSHCommand(
+            sshConnection,
+            `cd /home/${sshConnection._cpanelCredentials?.username}/public_html/wp-content/plugins && rm -rf ${problematicPlugin} && echo "PLUGIN_REMOVED_SUCCESS"`,
+            requestId,
+            10000
+          );
 
-      const dbConfig = this.parseWpConfigDatabase(wpConfigResult);
-      
-      if (!dbConfig.database || !dbConfig.user) {
-        result.errors.push('Could not parse database configuration for plugin fix');
-        return result;
-      }
+          if (removeResult.includes('PLUGIN_REMOVED_SUCCESS')) {
+            logger.info('Corrupted plugin directory removed successfully', { requestId, plugin: problematicPlugin });
+            result.plugins_deactivated.push(`${problematicPlugin} (corrupted files removed)`);
+          } else {
+            result.errors.push(`Failed to remove corrupted plugin directory: ${problematicPlugin}`);
+            continue;
+          }
 
-      // Skip querying active plugins - just deactivate all plugins for safety based on error log analysis
-      logger.info('Deactivating all plugins for safety based on error log analysis via SSH', { requestId });
+          // Step 2: Try to download and install fresh plugin using wget/curl (no WP-CLI)
+          logger.info('Downloading fresh plugin from WordPress.org', { requestId, plugin: problematicPlugin });
+          
+          const downloadResult = await this.executeSSHCommand(
+            sshConnection,
+            `cd /home/${sshConnection._cpanelCredentials?.username}/public_html/wp-content/plugins && wget -q https://downloads.wordpress.org/plugin/${problematicPlugin}.zip -O ${problematicPlugin}.zip && unzip -q ${problematicPlugin}.zip && rm ${problematicPlugin}.zip && echo "PLUGIN_DOWNLOAD_SUCCESS" || echo "PLUGIN_DOWNLOAD_FAILED"`,
+            requestId,
+            30000
+          );
 
-      // Deactivate all plugins by clearing the active_plugins option using SSH mysql command
-      const deactivateAllResult = await this.executeSSHCommand(
-        sshConnection,
-        `cd /home/${sshConnection._cpanelCredentials?.username}/public_html && mysql -h"${dbConfig.host}" -u"${dbConfig.user}" -p"${dbConfig.password}" "${dbConfig.database}" -e "UPDATE wp_options SET option_value='a:0:{}' WHERE option_name='active_plugins';" 2>/dev/null && echo "PLUGIN_DEACTIVATE_SUCCESS" || echo "PLUGIN_DEACTIVATE_FAILED"`,
-        requestId,
-        8000
-      );
-
-      if (deactivateAllResult.includes('PLUGIN_DEACTIVATE_SUCCESS')) {
-        result.plugins_deactivated = [...problematicPlugins, 'All plugins deactivated for safety based on error log analysis'];
-        logger.info('All plugins deactivated via SSH database command for safety', { requestId });
-      } else {
-        result.errors.push(`Failed to deactivate plugins via SSH database command: ${deactivateAllResult}`);
+          if (downloadResult.includes('PLUGIN_DOWNLOAD_SUCCESS')) {
+            logger.info('Fresh plugin downloaded and extracted successfully', { requestId, plugin: problematicPlugin });
+            result.plugins_deactivated.push(`${problematicPlugin} (fresh installation - deactivated)`);
+          } else {
+            logger.warn('Plugin download failed, keeping it removed', { requestId, plugin: problematicPlugin });
+            // Plugin is already removed, which is better than having a corrupted one
+            result.plugins_deactivated.push(`${problematicPlugin} (removed - download failed)`);
+          }
+        } catch (pluginError) {
+          result.errors.push(`Error fixing plugin ${problematicPlugin}: ${pluginError.message}`);
+          logger.error('Plugin fix error', { 
+            requestId, 
+            plugin: problematicPlugin, 
+            error: pluginError.message 
+          });
+        }
       }
 
     } catch (error) {
-      result.errors.push(`Direct plugin fix error: ${error.message}`);
-      logger.error('Direct plugin fix failed', { requestId, error: error.message });
+      result.errors.push(`Plugin fix error: ${error.message}`);
+      logger.error('Plugin fix failed', { requestId, error: error.message });
     }
 
     return result;
@@ -3114,7 +3181,7 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
   /**
    * Create comprehensive support ticket with complete analysis
    */
-  async createComprehensiveTicket({ domain, cpanelCredentials, diagnosticResult, clientInfo, requestId, totalDuration, remediationResults }) {
+  async createComprehensiveTicket({ domain, cpanelCredentials, diagnosticResult, clientInfo, requestId, totalDuration, remediationResults, userNs }) {
     logger.info('Creating comprehensive support ticket', { requestId, domain });
     
     try {
@@ -3172,6 +3239,23 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
               ticketId: response.data.id,
               ticketNumber: response.data.tid
             });
+            
+            // Send UChat notification if user_ns is provided
+            if (userNs) {
+              const status = this.getClientFriendlyStatus(diagnosticResult);
+              const fixesApplied = remediationResults && (
+                remediationResults.core_files_fixed || 
+                (remediationResults.plugin_theme_fixes && remediationResults.plugin_theme_fixes.length > 0)
+              );
+              
+              let notificationMessage = `WordPress diagnostic completed for ${domain}. `;
+              if (fixesApplied) {
+                notificationMessage += `Issues were automatically fixed. `;
+              }
+              notificationMessage += `Full report in ticket #${response.data.tid}.`;
+              
+              await this.sendUChatNotification(userNs, notificationMessage);
+            }
             
             return { 
               success: true, 
@@ -3639,6 +3723,50 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
     message += `Request ID: ${diagnosticResult.requestId || 'N/A'}\n`;
 
     return message;
+  }
+
+  /**
+   * Send notification to UChat
+   */
+  async sendUChatNotification(userNs, content) {
+    try {
+      const axios = require('axios');
+      
+      // Use the same UChat configuration as chatNotificationService
+      const uchatUrl = process.env.UCHAT_SEND_TEXT_URL || 'https://www.uchat.com.au/api/subscriber/send-text';
+      const uchatToken = process.env.UCHAT_BEARER_TOKEN || 'cgkrwrtOHtxZ1AqQju9kYWjbcsVJ3FMWCY6gZoARWQkXNaTSCbaOp7J6Ap1D';
+      
+      if (!uchatUrl || !uchatToken) {
+        logger.warn('UChat configuration missing', { userNs });
+        return { success: false, error: 'UChat not configured' };
+      }
+      
+      const payload = {
+        user_ns: userNs,
+        content: content
+      };
+      
+      logger.info('Sending UChat notification', { userNs, content: content.substring(0, 100) + '...' });
+      
+      const response = await axios.post(uchatUrl, payload, {
+        headers: {
+          'Authorization': `Bearer ${uchatToken}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 5000
+      });
+      
+      if (response.status === 200) {
+        logger.info('UChat notification sent successfully', { userNs });
+        return { success: true };
+      } else {
+        logger.warn('UChat notification failed', { userNs, status: response.status });
+        return { success: false, error: `HTTP ${response.status}` };
+      }
+    } catch (error) {
+      logger.error('UChat notification error', { userNs, error: error.message });
+      return { success: false, error: error.message };
+    }
   }
 }
 

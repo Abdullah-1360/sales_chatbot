@@ -267,8 +267,13 @@ async function sendTicketNotification(ticket_id, ticketNumber, userNs, status) {
     // Prepare ticket status message
     const ticketStatus = status || 'Updated';
     
-    // Build message without the subject line
-    const messageContent = `Ticket #${ticketNumber} Status: ${ticketStatus}\n\nWaiting on You`;
+    // Build message based on status
+    let messageContent;
+    if (status === 'In Progress') {
+      messageContent = `Ticket #${ticketNumber} Status: ${ticketStatus}\n\nOur team is working Please be patient`;
+    } else {
+      messageContent = `Ticket #${ticketNumber} Status: ${ticketStatus}\n\nWaiting on You`;
+    }
     
     logger.info('📤 Sending notification to UChat', { 
       ticket_id, 
