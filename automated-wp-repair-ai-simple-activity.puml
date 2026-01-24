@@ -1,0 +1,125 @@
+@startuml Automated WordPress Repair with AI - Simple Activity Diagram
+
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam activity {
+  BackgroundColor #E1F5FE
+  BorderColor #0277BD
+  FontSize 11
+}
+skinparam activityDiamond {
+  BackgroundColor #FFF3E0
+  BorderColor #F57C00
+}
+skinparam partition {
+  BackgroundColor #F1F8E9
+  BorderColor #388E3C
+}
+
+title **Automated WordPress Repair with AI**\n**Main Activity Flow**
+
+start
+
+:🚀 **Initialize System**
+Domain: portal.global-tech.com.pk;
+
+partition "**Setup & Security**" {
+  :🔍 **Detect Domain Type**
+  Query cPanel UAPI;
+  
+  :📁 **Resolve Document Path**
+  /home/user/public_html/portal.global-tech.com.pk;
+  
+  :🔓 **Enable Shell Access**
+  Temporary security access;
+  
+  :🔑 **Setup SSH Connection**
+  Generate & authorize SSH key;
+}
+
+partition "**AI Error Analysis**" {
+  :📋 **Read Error Log**
+  Filter last 24 hours only;
+  
+  if (Recent errors found?) then (yes)
+    :🤖 **OpenAI Analysis**
+    Analyze errors with GPT-4o-mini;
+    
+    :📊 **Get AI Recommendations**
+    • Critical issues
+    • Repair commands
+    • Priority order;
+  else (no)
+    :ℹ️ **No Recent Issues**;
+  endif
+}
+
+partition "**Iterative AI Repair**" {
+  if (Repair needed?) then (yes)
+    repeat
+      :🤖 **AI: Generate Command**
+      Based on current context;
+      
+      :⚡ **Execute Command**
+      Run via SSH;
+      
+      :📤 **Get Results**
+      Capture output & errors;
+      
+      :🤖 **AI: Analyze Results**
+      Determine next action;
+      
+    repeat while (More repairs needed?\nand < 10 iterations?) is (yes)
+  else (no)
+    :✅ **System Healthy**;
+  endif
+}
+
+partition "**WordPress Core Check**" {
+  :🔍 **Verify Core Files**
+  wp core verify-checksums;
+  
+  if (Core files OK?) then (yes)
+    :✅ **Core Intact**;
+  else (no)
+    :🔄 **Restore Core Files**
+    wp core download --force;
+  endif
+}
+
+partition "**Cleanup & Security**" {
+  :🧹 **Delete SSH Key**
+  Remove temporary access;
+  
+  :🔒 **Disable Shell Access**
+  Restore security settings;
+  
+  :✅ **Cleanup Complete**;
+}
+
+:📊 **Generate Report**
+Success/failure status;
+
+if (Repair successful?) then (yes)
+  :🎉 **WordPress Repaired**;
+else (no)
+  :❌ **Manual Review Needed**;
+endif
+
+stop
+
+note right
+  **Key AI Features:**
+  • 24-hour error filtering
+  • Iterative repair process
+  • Real-time adaptation
+  • Safety validation
+  
+  **Security Features:**
+  • Temporary shell access
+  • Automatic cleanup
+  • Domain-aware paths
+  • Fail-safe mechanisms
+end note
+
+@enduml

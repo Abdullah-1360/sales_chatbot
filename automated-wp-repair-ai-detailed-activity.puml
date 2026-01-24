@@ -1,0 +1,333 @@
+@startuml Automated WordPress Repair with AI - Detailed Activity Diagram
+
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam activity {
+  BackgroundColor #E8F5E8
+  BorderColor #2E7D32
+  FontSize 9
+}
+skinparam activityDiamond {
+  BackgroundColor #FFF8E1
+  BorderColor #F57F17
+}
+skinparam partition {
+  BackgroundColor #F3E5F5
+  BorderColor #7B1FA2
+}
+skinparam note {
+  BackgroundColor #E3F2FD
+  BorderColor #1976D2
+}
+
+title **Automated WordPress Repair with AI System**\n**Detailed Activity Flow with AI Decision Making**
+
+start
+
+partition "**Initialization & Domain Detection**" {
+  :🚀 **Start Process**
+  Input: Domain name, cPanel user;
+  
+  :🔍 **Domain Detection Process**;
+  
+  :📡 **Query cPanel UAPI**
+  GET /json-api/uapi_cpanel
+  Module: DomainInfo
+  Function: list_domains;
+  
+  :📋 **Parse Domain Response**
+  • Main domain
+  • Sub domains  
+  • Addon domains
+  • Parked domains;
+  
+  :🎯 **Fuzzy Matching Algorithm**;
+  
+  repeat
+    :🔍 **Calculate Match Confidence**
+    • Exact match: 100%
+    • Clean match (no www): 95%
+    • Substring match: 85%
+    • String similarity: 0-100%;
+    
+  repeat while (More domains to check?) is (yes)
+  
+  if (Best match ≥ 70% confidence?) then (yes)
+    :📡 **Get Domain Details**
+    GET /json-api/uapi_cpanel
+    Function: single_domain_data;
+    
+    :📁 **Resolve Document Root**
+    Extract path from API response;
+    
+  else (no)
+    :⚠️ **Fallback Detection**
+    Structure-based guessing;
+  endif
+  
+  :✅ **Domain Path Resolved**
+  Store in config.domain.path;
+}
+
+partition "**Security & Access Management**" {
+  :🔓 **Enable Shell Access**
+  GET /json-api/modifyacct
+  shell=/bin/bash;
+  
+  if (Shell access enabled?) then (✅ yes)
+    note right: Enhanced security
+  else (⚠️ no)
+    :⚠️ **Continue with Warning**
+    SSH may fail without shell;
+  endif
+  
+  :🔑 **SSH Key Management**;
+  
+  :📡 **Generate SSH Key**
+  POST /json-api/cpanel_api2
+  Module: SSH, Function: genkey;
+  
+  :🔐 **Authorize SSH Key**
+  POST /json-api/cpanel_api2  
+  Module: SSH, Function: authkey;
+  
+  :📥 **Fetch Private Key**
+  GET /json-api/cpanel_api2
+  Module: SSH, Function: fetchkey;
+  
+  :🔌 **Establish SSH Connection**
+  Host: {whm_host}:22022
+  Auth: Private key + passphrase;
+}
+
+partition "**Error Log Analysis & AI Processing**" {
+  :📋 **Read Error Log**
+  SSH: cd {resolved_path} && tail -100 error_log;
+  
+  :🕐 **24-Hour Filtering Process**;
+  
+  repeat
+    :📅 **Parse Timestamp**
+    Format: [23-Jan-2026 08:47:42 UTC];
+    
+    :⏰ **Check Time Range**
+    Current time - 24 hours;
+    
+    if (Error within 24h?) then (yes)
+      :✅ **Include Error**;
+    else (no)
+      :❌ **Skip Old Error**;
+    endif
+    
+  repeat while (More log lines?) is (yes)
+  
+  :🔍 **Deduplicate Errors**
+  Remove timestamps & paths for matching;
+  
+  if (Recent errors found?) then (yes)
+    :🤖 **OpenAI Analysis Request**;
+    
+    :📝 **Prepare AI Prompt**
+    System: WordPress expert
+    Context: Last 24 hours only
+    Errors: {unique_errors};
+    
+    :📡 **Call OpenAI API**
+    POST https://api.openai.com/v1/chat/completions
+    Model: gpt-4o-mini
+    max_completion_tokens: 2000;
+    
+    :📊 **Parse AI Response**
+    • Critical issues summary
+    • Error categories  
+    • Root cause analysis
+    • Repair recommendations
+    • Priority matrix;
+    
+  else (no)
+    :ℹ️ **No Recent Errors**
+    Skip AI analysis;
+  endif
+}
+
+partition "**Iterative AI-Guided Repair Process**" {
+  if (Errors need repair?) then (yes)
+    :🔄 **Initialize Iteration Context**
+    • Original errors
+    • Command history: []
+    • Current issue focus
+    • Max iterations: 10;
+    
+    repeat
+      :🤖 **AI: Generate Next Command**;
+      
+      :📝 **Prepare Command Request**
+      System: WordPress admin expert
+      Context: {command_history}
+      Focus: {current_issue};
+      
+      :📡 **OpenAI Command Generation**
+      POST /v1/chat/completions
+      Response: Single command JSON;
+      
+      :🔍 **Parse AI Command**
+      • Command string
+      • Description  
+      • Safety level
+      • Reasoning;
+      
+      if (AI says complete?) then (🏁 yes)
+        :✅ **Repair Complete**
+        AI determined all issues fixed;
+        break
+      else (🔧 continue)
+        :🛡️ **Safety Validation**
+        Check for dangerous patterns;
+        
+        if (Command safe?) then (✅ yes)
+          :⚡ **Execute SSH Command**
+          cd {resolved_path} && {command};
+          
+          :📤 **Capture Results**
+          • Exit code
+          • stdout output
+          • stderr output  
+          • Duration;
+          
+          :📝 **Update Command History**
+          Add execution results;
+          
+          :🤖 **AI: Analyze Result**;
+          
+          :📝 **Prepare Analysis Request**
+          Command: {executed_command}
+          Result: {execution_output}
+          Success: {exit_code == 0};
+          
+          :📡 **OpenAI Result Analysis**
+          Determine next focus area;
+          
+          :🎯 **Update Current Issue**
+          AI sets next repair focus;
+          
+        else (⚠️ dangerous)
+          :❌ **Skip Dangerous Command**
+          Log security warning;
+        endif
+      endif
+      
+      :➕ **Increment Iteration**
+      iteration++;
+      
+    repeat while (Continue repair?\nand iteration < 10?) is (yes)
+    
+    :📊 **Iterative Process Complete**
+    • Total iterations
+    • Commands executed
+    • Success rate;
+    
+  else (no)
+    :ℹ️ **No Repair Needed**;
+  endif
+}
+
+partition "**WordPress Core Verification**" {
+  :🔍 **Core Integrity Check**
+  SSH: wp core verify-checksums --allow-root;
+  
+  if (Checksums valid?) then (✅ yes)
+    :✅ **Core Files Intact**;
+  else (❌ corrupted)
+    :🔄 **Core File Restoration**;
+    
+    :⬇️ **Download WordPress Core**
+    SSH: wp core download --force --allow-root;
+    
+    if (Download successful?) then (✅ yes)
+      :🔍 **Final Verification**
+      SSH: wp core verify-checksums --allow-root;
+      
+      if (Final check passed?) then (✅ yes)
+        :✅ **Core Restored Successfully**;
+      else (❌ failed)
+        :⚠️ **Core Restoration Failed**;
+      endif
+    else (❌ failed)
+      :❌ **Download Failed**;
+    endif
+  endif
+}
+
+:🔌 **Close SSH Connection**;
+
+partition "**Cleanup & Security**" {
+  :🧹 **Cleanup Operations**
+  Promise.allSettled for reliability;
+  
+  fork
+    :🗑️ **Delete SSH Key**
+    POST /json-api/cpanel_api2
+    Module: SSH, Function: delkey;
+    
+    if (Key deleted?) then (✅ yes)
+      :✅ **SSH Key Cleaned**;
+    else (⚠️ failed)
+      :⚠️ **Log Cleanup Warning**;
+    endif
+    
+  fork again
+    :🔒 **Disable Shell Access**
+    GET /json-api/modifyacct
+    shell=/bin/noshell;
+    
+    if (Shell disabled?) then (✅ yes)
+      :✅ **Shell Access Secured**;
+    else (⚠️ failed)
+      :⚠️ **Log Security Warning**;
+    endif
+    
+  end fork
+  
+  :✅ **All Cleanup Complete**;
+}
+
+:📊 **Generate Final Report**
+• Process duration
+• Domain resolved
+• Errors analyzed
+• AI iterations
+• Commands executed
+• Success status;
+
+if (Overall success?) then (🎉 yes)
+  :🎉 **Success: WordPress Repaired**
+  • Core files verified
+  • Errors resolved
+  • System secured;
+else (❌ failed)
+  :❌ **Failure: Issues Remain**
+  • Log error details
+  • Manual intervention needed;
+endif
+
+stop
+
+note bottom
+  **AI Decision Points:**
+  🤖 **Error Analysis**: Categorizes and prioritizes issues
+  🤖 **Command Generation**: Creates targeted repair commands
+  🤖 **Result Analysis**: Adapts strategy based on outcomes
+  🤖 **Completion Detection**: Determines when repair is done
+  
+  **Security Features:**
+  🔒 **Temporary Shell Access**: Enabled only during operations
+  🛡️ **Command Validation**: Prevents dangerous operations
+  🧹 **Automatic Cleanup**: Ensures no security exposure
+  
+  **Domain Intelligence:**
+  🎯 **Fuzzy Matching**: 70% confidence threshold
+  📁 **Path Resolution**: Works with all domain types
+  🔍 **API Integration**: Uses official cPanel UAPI
+end note
+
+@enduml

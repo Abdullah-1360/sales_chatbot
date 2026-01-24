@@ -1,0 +1,233 @@
+@startuml Automated WordPress Repair with AI - Activity Diagram
+
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam activity {
+  BackgroundColor #E1F5FE
+  BorderColor #0277BD
+  FontSize 10
+}
+skinparam activityDiamond {
+  BackgroundColor #FFF3E0
+  BorderColor #F57C00
+}
+skinparam note {
+  BackgroundColor #F3E5F5
+  BorderColor #7B1FA2
+}
+
+title **Automated WordPress Repair with AI System**\n**Complete Activity Flow**
+
+start
+
+:🚀 **Initialize Repair Process**
+Domain: portal.global-tech.com.pk
+User: globaltechcom;
+
+note right
+  **System Features:**
+  • Domain-aware path detection
+  • AI-powered error analysis
+  • Iterative repair commands
+  • Shell access management
+  • 24-hour error filtering
+end note
+
+:📍 **Step 0: Domain Detection**
+Query cPanel UAPI for domain info;
+
+:🔍 **Get All Domains from Account**
+API: list_domains;
+
+:🎯 **Fuzzy Match Target Domain**
+Calculate confidence scores;
+
+if (Domain match found\nwith >70% confidence?) then (yes)
+  :✅ **Get Single Domain Data**
+  API: single_domain_data;
+  
+  :📁 **Resolve Document Root Path**
+  • Main: /home/user/public_html
+  • Sub: /home/user/public_html/sub.domain.com
+  • Addon: /home/user/public_html/addon.com;
+  
+else (no)
+  :⚠️ **Fallback Detection**
+  Structure-based path guessing;
+endif
+
+:🔓 **Step 1: Enable Shell Access**
+API: modifyacct shell=/bin/bash;
+
+if (Shell access enabled?) then (yes)
+  note right: Security enhancement
+else (no)
+  :⚠️ **Log Warning**
+  Continue with limited access;
+endif
+
+:🔑 **Step 2: Generate SSH Key**
+API: SSH genkey;
+
+if (SSH key generated?) then (yes)
+else (no)
+  :❌ **Error: SSH Key Generation Failed**;
+  stop
+endif
+
+:🔐 **Step 3: Authorize SSH Key**
+API: SSH authkey;
+
+if (SSH key authorized?) then (yes)
+else (no)
+  :❌ **Error: SSH Key Authorization Failed**;
+  stop
+endif
+
+:📥 **Step 4: Fetch Private Key**
+API: SSH fetchkey;
+
+if (Private key fetched?) then (yes)
+else (no)
+  :❌ **Error: Private Key Fetch Failed**;
+  stop
+endif
+
+:🔌 **Step 5: Establish SSH Connection**
+Connect using private key + passphrase;
+
+if (SSH connection successful?) then (yes)
+else (no)
+  :❌ **Error: SSH Connection Failed**;
+  stop
+endif
+
+partition "**Error Log Analysis & AI Processing**" {
+  :📋 **Read WordPress Error Log**
+  Path: {resolved_path}/error_log;
+  
+  :🕐 **Filter Last 24 Hours**
+  Parse timestamps and filter recent errors;
+  
+  :🔍 **Process & Deduplicate Errors**
+  Extract core error messages;
+  
+  if (Unique errors found?) then (yes)
+    :🤖 **Analyze with OpenAI**
+    Model: gpt-4o-mini
+    Context: Last 24 hours only;
+    
+    :📊 **AI Analysis Results**
+    • Critical issues summary
+    • Root cause analysis  
+    • Repair recommendations
+    • Priority matrix;
+    
+  else (no)
+    :ℹ️ **No Recent Errors Found**;
+  endif
+}
+
+partition "**Iterative AI-Guided Repair**" {
+  if (Errors need fixing?) then (yes)
+    :🔄 **Start Iterative Process**
+    Max 10 iterations;
+    
+    repeat
+      :🤖 **AI: Generate Next Command**
+      Based on current context + history;
+      
+      if (AI says complete?) then (yes)
+        :✅ **Repair Complete**;
+        break
+      else (no)
+        :🔍 **Execute SSH Command**
+        cd {resolved_path} && {command};
+        
+        :📤 **Capture Command Output**
+        Exit code, stdout, stderr;
+        
+        :🤖 **AI: Analyze Result**
+        Determine next action;
+        
+        :📝 **Update Context**
+        Add to command history;
+      endif
+      
+    repeat while (Continue repair?\nand < 10 iterations?) is (yes)
+    
+  else (no)
+    :ℹ️ **No Repair Needed**;
+  endif
+}
+
+partition "**WordPress Core Verification**" {
+  :🔍 **Core Checksum Verification**
+  wp core verify-checksums --allow-root;
+  
+  if (Checksums valid?) then (yes)
+    :✅ **Core Files Intact**;
+  else (no)
+    :🔄 **Download WordPress Core**
+    wp core download --force --allow-root;
+    
+    :🔍 **Final Verification**
+    wp core verify-checksums --allow-root;
+    
+    if (Final verification passed?) then (yes)
+      :✅ **Core Files Restored**;
+    else (no)
+      :⚠️ **Core Restoration Failed**;
+    endif
+  endif
+}
+
+:🔌 **Close SSH Connection**;
+
+partition "**Cleanup Operations**" {
+  fork
+    :🧹 **Delete SSH Key**
+    API: SSH delkey;
+  fork again
+    :🔒 **Disable Shell Access**
+    API: modifyacct shell=/bin/noshell;
+  end fork
+  
+  note right
+    **Fail-Safe Cleanup:**
+    • Runs even if operations fail
+    • Promise.allSettled for reliability
+    • Security-first approach
+  end note
+}
+
+:📊 **Generate Results Summary**
+• Success/failure status
+• Errors analyzed count
+• Commands executed
+• AI iterations performed
+• Total duration;
+
+if (Process successful?) then (yes)
+  :🎉 **Success: WordPress Repaired**
+  Display comprehensive results;
+else (no)
+  :❌ **Failure: Repair Incomplete**
+  Log errors for investigation;
+endif
+
+stop
+
+note bottom
+  **Key Features Implemented:**
+  ✅ Domain-aware path detection with cPanel UAPI
+  ✅ AI-powered error analysis (OpenAI GPT-4o-mini)
+  ✅ Iterative repair with real-time feedback
+  ✅ 24-hour error filtering for recent issues
+  ✅ Shell access management for security
+  ✅ Comprehensive error handling & cleanup
+  ✅ Fuzzy domain matching (70% confidence threshold)
+  ✅ Support for all domain types (main/sub/addon/parked)
+end note
+
+@enduml
