@@ -1,0 +1,229 @@
+{
+  "version": "1.0.0",
+  "lastUpdated": "2026-02-07",
+  "description": "Project knowledge base for Sales Chatbot & WHMCS Integration Platform",
+  "entities": [
+    {
+      "name": "WHMCS API",
+      "type": "external_service",
+      "observations": [
+        "Primary billing and client management system",
+        "API endpoint: https://portal.hostbreak.com/includes/api.php",
+        "Authentication: API identifier + secret",
+        "Response format: JSON with result field (success/error)",
+        "AddOrder API does NOT support service renewals - use genInvoices() instead",
+        "Phone number search requires exact normalized format (e.g., 923001234567)",
+        "Invoice generation is async, may take 5-10 seconds",
+        "Ticket attachments must be base64 encoded",
+        "Rate limit: ~100 requests per minute per IP",
+        "Cache responses aggressively (TTL: 5-10 minutes)"
+      ]
+    },
+    {
+      "name": "WHM API",
+      "type": "external_service",
+      "observations": [
+        "Server-level cPanel management",
+        "Requires root username for API calls",
+        "API keys configured per server: WHM_API_KEY_<SERVER_NAME>",
+        "Server naming: CP1-3 (shared), PCP1-3 (premium), RCP1-2 (reseller)",
+        "Port 2087 for WHM API",
+        "SSL verification should be enabled in production",
+        "Rate limits apply - implement exponential backoff",
+        "Cache server lists (TTL: 30 minutes, force refresh: 24 hours)"
+      ]
+    },
+    {
+      "name": "MongoDB Database",
+      "type": "database",
+      "observations": [
+        "Primary database: MongoDB Atlas",
+        "Connection pooling: max 10 connections",
+        "TTL indexes for auto-cleanup (chats, notifications: 24 hours)",
+        "Requires IP whitelist in Atlas for connections",
+        "Connection timeout: 30 seconds",
+        "Use lean() queries for better performance",
+        "Indexes required: createdAt, phone, userId fields",
+        "Always handle connection errors gracefully"
+      ]
+    },
+    {
+      "name": "Phone Number Normalization",
+      "type": "integration_pattern",
+      "observations": [
+        "Always normalize phone numbers before WHMCS search",
+        "Use normalizePhone() utility from utils/phoneNormalizer",
+        "Format: country code + number without spaces/symbols",
+        "Example: +92 300 1234567 becomes 923001234567",
+        "Use phonesMatch() for fuzzy comparison",
+        "Use maskPhone() for logging/display (92300*****67)",
+        "Never log unmasked phone numbers"
+      ]
+    },
+    {
+      "name": "WebSocket Configuration",
+      "type": "integration_pattern",
+      "observations": [
+        "Socket.IO for real-time communication",
+        "CORS must match frontend origin exactly",
+        "Support both websocket and polling transports",
+        "On cPanel shared hosting, requires .htaccess proxy config",
+        "Always cleanup listeners in React useEffect return",
+        "Event names are case-sensitive",
+        "Implement reconnection with exponential backoff"
+      ]
+    },
+    {
+      "name": "cPanel Credential Resolution",
+      "type": "integration_pattern",
+      "observations": [
+        "Credentials stored in WHMCS product custom fields",
+        "Use cpanelCredentialResolver service",
+        "Requires clientId and domain",
+        "Returns: host, username, password, port, secure",
+        "Fallback: check client products and domains",
+        "Cache resolved credentials (5 minutes)",
+        "Never log passwords or API tokens"
+      ]
+    },
+    {
+      "name": "Server Cache Strategy",
+      "type": "performance_optimization",
+      "observations": [
+        "Server list cached in MongoDB",
+        "Cache TTL: 30 minutes (SERVER_CACHE_TTL_MINUTES)",
+        "Force refresh: 24 hours (SERVER_FORCE_REFRESH_HOURS)",
+        "Reduces WHM API calls by ~95%",
+        "Improves response time from 2s to 50ms",
+        "Auto-refresh on stale data",
+        "Manual refresh via /api/servers/refresh endpoint"
+      ]
+    },
+    {
+      "name": "Production Deployment",
+      "type": "procedure",
+      "observations": [
+        "Environment: Linux/cPanel shared hosting",
+        "Process manager: PM2 or cPanel Node.js app",
+        "Set AUTO_SYNC_ON_STARTUP=false on shared hosting",
+        "Enable compression and helmet middleware",
+        "Set LOG_LEVEL=ERROR or WARN",
+        "Verify SSL certificates (WHM_VERIFY_SSL=true)",
+        "Use specific CORS_ORIGIN (no wildcards)",
+        "Monitor health endpoint: /api/health",
+        "Keep logs for 30 days minimum"
+      ]
+    },
+    {
+      "name": "WordPress Diagnostic Flow",
+      "type": "feature",
+      "observations": [
+        "Multi-step diagnostic process",
+        "Steps: connection, filesystem, database, config, plugins, permissions, logs",
+        "Each step returns structured result with success/message/details",
+        "Implements automatic remediation where possible",
+        "Uses cPanel API for file and database operations",
+        "Logs all actions for audit trail",
+        "Provides rollback mechanism for critical changes",
+        "Located in: src/controllers/wordpressComprehensiveDiagnosticController.js"
+      ]
+    },
+    {
+      "name": "Chat Notification System",
+      "type": "feature",
+      "observations": [
+        "Real-time notifications via Socket.IO",
+        "MongoDB persistence with 24-hour TTL",
+        "Audio notifications: new-chat.mp3, new-lead.mp3",
+        "Browser permission required for audio",
+        "Cleanup job runs hourly via Agenda",
+        "Unread count tracked per user",
+        "Mark as read functionality",
+        "Model: src/models/ChatNotification.js"
+      ]
+    }
+  ],
+  "relations": [
+    {
+      "from": "WHMCS API",
+      "to": "Phone Number Normalization",
+      "type": "requires",
+      "notes": "Client search requires normalized phone numbers"
+    },
+    {
+      "from": "WHM API",
+      "to": "cPanel Credential Resolution",
+      "type": "provides",
+      "notes": "Server credentials used for cPanel operations"
+    },
+    {
+      "from": "WordPress Diagnostic Flow",
+      "to": "cPanel Credential Resolution",
+      "type": "uses",
+      "notes": "Requires cPanel credentials to perform diagnostics"
+    },
+    {
+      "from": "Chat Notification System",
+      "to": "WebSocket Configuration",
+      "type": "uses",
+      "notes": "Real-time notifications delivered via WebSocket"
+    },
+    {
+      "from": "Server Cache Strategy",
+      "to": "MongoDB Database",
+      "type": "stores_in",
+      "notes": "Server list cached in MongoDB for performance"
+    },
+    {
+      "from": "WHMCS API",
+      "to": "Server Cache Strategy",
+      "type": "benefits_from",
+      "notes": "Reduces API calls through caching"
+    }
+  ],
+  "knownIssues": [
+    {
+      "issue": "WHMCS service renewal limitation",
+      "description": "AddOrder API cannot renew existing services",
+      "workaround": "Check for existing unpaid invoices first, or wait for automatic invoice generation",
+      "severity": "high",
+      "affectedComponents": ["billingController", "whmcsService"]
+    },
+    {
+      "issue": "WebSocket on shared hosting",
+      "description": "WebSocket connections may fail without proper proxy configuration",
+      "workaround": "Add RewriteRule with [P] flag in .htaccess",
+      "severity": "medium",
+      "affectedComponents": ["websocket", "frontend"]
+    },
+    {
+      "issue": "Memory on shared hosting",
+      "description": "Auto-sync on startup can cause memory issues",
+      "workaround": "Set AUTO_SYNC_ON_STARTUP=false and run sync via cron",
+      "severity": "medium",
+      "affectedComponents": ["server.js", "syncFromWHMCS"]
+    }
+  ],
+  "bestPractices": [
+    "Always normalize phone numbers before WHMCS API calls",
+    "Cache external API responses aggressively",
+    "Use lean() queries for MongoDB read operations",
+    "Implement TTL indexes for auto-cleanup",
+    "Mask sensitive data in logs",
+    "Always cleanup WebSocket listeners in React",
+    "Use thin controllers, thick services pattern",
+    "Validate all user inputs",
+    "Handle errors gracefully with user-friendly messages",
+    "Monitor health endpoint regularly"
+  ],
+  "securityNotes": [
+    "Never commit .env files",
+    "Rotate API keys every 90 days",
+    "Use helmet middleware in production",
+    "Validate CORS origins strictly",
+    "Mask phone numbers in logs",
+    "Use HTTPS in production",
+    "Whitelist IPs in MongoDB Atlas",
+    "Enable SSL verification for WHM API in production"
+  ]
+}

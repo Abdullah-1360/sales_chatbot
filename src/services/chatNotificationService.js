@@ -180,7 +180,9 @@ class ChatNotificationService {
                 } catch (error) {
                   logger.error('Error in restored auto-ticket creation', { 
                     chatId, 
-                    error: error.message 
+                    error: error.message,
+                    stack: error.stack,
+                    fullError: error
                   });
                 }
               }, remainingTime);
@@ -826,7 +828,9 @@ class ChatNotificationService {
         } catch (error) {
           logger.error('Error in auto-ticket creation', { 
             chatId, 
-            error: error.message 
+            error: error.message,
+            stack: error.stack,
+            fullError: error
           });
         }
       }, this.autoTicketDelay);
@@ -1138,6 +1142,12 @@ ${messageContext}
         return { success: false, error: 'No User_Ns provided' };
       }
 
+      // Validate userNs format (basic validation)
+      if (typeof userNs !== 'string' || userNs.length < 5) {
+        logger.warn('❌ Invalid User_Ns format, skipping UChat API call', { userNs, length: userNs?.length });
+        return { success: false, error: 'Invalid User_Ns format' };
+      }
+
       const payload = {
         user_ns: userNs,
         content: `As no live agent is available right now, we've automatically created support ticket #${ticketNumber} on your behalf.\n\nOur 24x7 helpdesk support team will review it and update you at the earliest opportunity.`
@@ -1146,7 +1156,8 @@ ${messageContext}
       logger.info('📤 Sending to UChat API', { 
         userNs, 
         apiUrl: this.uchatApiUrl,
-        payload: payload
+        payload: payload,
+        bearerTokenPrefix: this.uchatBearerToken ? this.uchatBearerToken.substring(0, 10) + '...' : 'NOT SET'
       });
 
       const response = await axios.post(this.uchatApiUrl, payload, {
@@ -1176,7 +1187,15 @@ ${messageContext}
         ticketNumber,
         error: error.message,
         status: error.response?.status,
-        data: error.response?.data
+        statusText: error.response?.statusText,
+        data: error.response?.data,
+        code: error.code,
+        stack: error.stack,
+        config: {
+          url: error.config?.url,
+          method: error.config?.method,
+          timeout: error.config?.timeout
+        }
       });
 
       return { 
@@ -1202,6 +1221,12 @@ ${messageContext}
         return { success: false, error: 'No User_Ns provided' };
       }
 
+      // Validate userNs format (basic validation)
+      if (typeof userNs !== 'string' || userNs.length < 5) {
+        logger.warn('❌ Invalid User_Ns format, skipping resume-bot API call', { userNs, length: userNs?.length });
+        return { success: false, error: 'Invalid User_Ns format' };
+      }
+
       const resumeBotUrl = 'https://www.uchat.com.au/api/subscriber/resume-bot';
       const payload = {
         user_ns: userNs
@@ -1210,7 +1235,8 @@ ${messageContext}
       logger.info('📤 Calling resume-bot API', { 
         userNs, 
         apiUrl: resumeBotUrl,
-        payload: payload
+        payload: payload,
+        bearerTokenPrefix: this.uchatBearerToken ? this.uchatBearerToken.substring(0, 10) + '...' : 'NOT SET'
       });
 
       const response = await axios.post(resumeBotUrl, payload, {
@@ -1238,7 +1264,15 @@ ${messageContext}
         userNs,
         error: error.message,
         status: error.response?.status,
-        data: error.response?.data
+        statusText: error.response?.statusText,
+        data: error.response?.data,
+        code: error.code,
+        stack: error.stack,
+        config: {
+          url: error.config?.url,
+          method: error.config?.method,
+          timeout: error.config?.timeout
+        }
       });
 
       return { 

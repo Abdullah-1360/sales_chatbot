@@ -40,7 +40,7 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
   }
 
   /**
-   * Main WordPress Comprehensive Diagnostic Endpoint (Immediate Response + Background Processing)
+   * Main WordPress Comprehensive Diagnostic Endpoint (Response after client resolution)
    * POST /wordpress/diagnose-comprehensive
    */
   async diagnoseWordPressSite(req, res) {
@@ -48,7 +48,7 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
     const requestId = `wp_diag_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     
     try {
-      logger.info('Starting WordPress diagnostic with immediate response', { requestId, domain: req.body.domain });
+      logger.info('Starting WordPress diagnostic with client resolution first', { requestId, domain: req.body.domain });
 
       // Validate request body
       const { error, value } = this.diagnosticSchema.validate(req.body);
@@ -77,22 +77,94 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
         }
       }
 
-      // Send immediate response to client
-      const immediateResponse = {
+      // Step 1: Resolve client credentials FIRST (before responding)
+      logger.info('Resolving client credentials before response', { requestId, domain: value.domain });
+      
+      let cpanelCredentials = null;
+      let clientInfo = null;
+      
+      try {
+        const credentialResult = await this.credentialResolver.resolveCpanelCredentials(
+          value.domain,
+          null,
+          normalizedPhone
+        );
+
+        if (!credentialResult.success) {
+          // Client resolution failed - return error immediately
+          logger.error('Client credential resolution failed', { 
+            requestId, 
+            domain: value.domain,
+            error: credentialResult.error 
+          });
+          
+          return res.status(404).json({
+            success: false,
+            error: 'CLIENT_RESOLUTION_FAILED',
+            message: `Unable to resolve client credentials for domain ${value.domain}: ${credentialResult.error}`,
+            domain: value.domain,
+            timestamp: new Date().toISOString(),
+            duration: Date.now() - startTime
+          });
+        }
+
+        cpanelCredentials = credentialResult.cpanelCredentials;
+        clientInfo = {
+          phone: normalizedPhone,
+          server: cpanelCredentials.host,
+          username: cpanelCredentials.username
+        };
+        
+        logger.info('Client credentials resolved successfully', { 
+          requestId, 
+          server: cpanelCredentials.host, 
+          username: cpanelCredentials.username 
+        });
+
+      } catch (credentialError) {
+        // Client resolution error - return error immediately
+        logger.error('Client credential resolution error', { 
+          requestId, 
+          domain: value.domain,
+          error: credentialError.message 
+        });
+        
+        return res.status(500).json({
+          success: false,
+          error: 'CLIENT_RESOLUTION_ERROR',
+          message: `Error resolving client credentials for domain ${value.domain}: ${credentialError.message}`,
+          domain: value.domain,
+          timestamp: new Date().toISOString(),
+          duration: Date.now() - startTime
+        });
+      }
+
+      // Step 2: Send response AFTER successful client resolution
+      const successResponse = {
         success: true,
         requestId,
         domain: value.domain,
-        status: "Analysis in progress - you will be notified via support ticket",
-        message: "WordPress diagnostic analysis has been initiated. A comprehensive report will be sent to you via support ticket once the analysis is complete.",
+        client: {
+          server: cpanelCredentials.host,
+          username: cpanelCredentials.username,
+          resolved: true
+        },
+        status: "Client resolved - Analysis in progress",
+        message: "Client credentials resolved successfully. WordPress diagnostic analysis has been initiated. A comprehensive report will be sent to you via support ticket once the analysis is complete.",
         estimated_completion: "2-5 minutes",
         timestamp: new Date().toISOString(),
         duration: Date.now() - startTime
       };
 
-      res.status(200).json(immediateResponse);
-      logger.info('Immediate response sent to client', { requestId, duration: Date.now() - startTime });
+      res.status(200).json(successResponse);
+      logger.info('Response sent after successful client resolution', { 
+        requestId, 
+        duration: Date.now() - startTime,
+        server: cpanelCredentials.host,
+        username: cpanelCredentials.username
+      });
 
-      // Start comprehensive background analysis (no timeouts, no rush)
+      // Step 3: Start comprehensive background analysis with resolved credentials
       setImmediate(() => {
         this.performComprehensiveBackgroundAnalysis({
           domain: value.domain,
@@ -100,7 +172,9 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
           normalizedPhone,
           userNs: value.user_ns,
           requestId,
-          startTime
+          startTime,
+          cpanelCredentials, // Pass resolved credentials
+          clientInfo
         }).catch(error => {
           logger.error('Background analysis failed', { 
             requestId, 
@@ -114,7 +188,8 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
             requestId,
             error: error.message,
             userInput: value,
-            userNs: value.user_ns
+            userNs: value.user_ns,
+            clientInfo
           }).catch(ticketError => {
             logger.error('Error ticket creation failed', { 
               requestId, 
@@ -143,84 +218,43 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
 
   /**
    * Perform comprehensive background analysis (no timeouts, complete workflow)
+   * Now uses pre-resolved credentials from main method
    */
-  async performComprehensiveBackgroundAnalysis({ domain, userInput, normalizedPhone, userNs, requestId, startTime }) {
-    logger.info('Starting comprehensive background analysis', { requestId, domain });
+  async performComprehensiveBackgroundAnalysis({ domain, userInput, normalizedPhone, userNs, requestId, startTime, cpanelCredentials, clientInfo }) {
+    logger.info('Starting comprehensive background analysis with pre-resolved credentials', { 
+      requestId, 
+      domain,
+      server: cpanelCredentials.host,
+      username: cpanelCredentials.username
+    });
     
-    let cpanelCredentials = null;
-    let clientInfo = null;
     let diagnosticResult = null;
     
     try {
-      // Step 1: Resolve client credentials (no timeout)
-      try {
-        const credentialResult = await this.credentialResolver.resolveCpanelCredentials(
-          domain,
-          null,
-          normalizedPhone
-        );
-
-        if (credentialResult.success) {
-          cpanelCredentials = credentialResult.cpanelCredentials;
-          clientInfo = {
-            phone: normalizedPhone,
-            server: cpanelCredentials.host,
-            username: cpanelCredentials.username
-          };
-          logger.info('Background: Client credentials resolved', { requestId, server: cpanelCredentials.host, username: cpanelCredentials.username });
-        } else {
-          logger.warn('Background: Credential resolution failed', { requestId, error: credentialResult.error });
-          clientInfo = {
-            phone: normalizedPhone,
-            server: null,
-            username: null,
-            note: 'Client credentials resolution failed'
-          };
-        }
-      } catch (credentialError) {
-        logger.warn('Background: Credential resolution failed, continuing with basic diagnostic', { 
-          requestId, 
-          error: credentialError.message 
-        });
-        clientInfo = {
-          phone: normalizedPhone,
-          server: null,
-          username: null,
-          note: 'Client credentials not found - basic diagnostic only'
-        };
-      }
+      // Step 1: Credentials already resolved - skip credential resolution
+      logger.info('Background: Using pre-resolved client credentials', { 
+        requestId, 
+        server: cpanelCredentials.host, 
+        username: cpanelCredentials.username 
+      });
 
       // Step 2: Perform complete diagnostic (no timeouts)
-      if (cpanelCredentials) {
-        diagnosticResult = await this.performCompleteDiagnostic({
-          domain,
-          cpanelCredentials,
-          userInput,
-          requestId
-        });
-      } else {
-        // Create basic diagnostic result for domains without credentials
-        diagnosticResult = {
-          phases: {
-            phase1: { wordpress_found: false, installation_health: 'no_credentials' }
-          },
-          primary_suspect: 'Unable to access server - credentials not found',
-          confidence: 95,
-          remediation_needed: false,
-          l1_classification: 'ACCESS_ERROR'
-        };
-      }
+      diagnosticResult = await this.performCompleteDiagnostic({
+        domain,
+        cpanelCredentials,
+        userInput,
+        requestId
+      });
 
       // Step 3: Perform background remediation if needed and collect results
       let remediationResults = null;
-      if (cpanelCredentials && diagnosticResult.remediation_needed) {
+      if (diagnosticResult.remediation_needed) {
         logger.info('Background: Starting remediation', { requestId });
         
         remediationResults = await this.performBackgroundRemediation({
           domain,
           cpanelCredentials,
           diagnosticResult,
-          clientInfo,
           requestId
         });
         
@@ -521,7 +555,7 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
         sshConnection,
         `tail -50 /home/${cpanelCredentials.username}/public_html/error_log 2>/dev/null || echo "No error log found"`,
         requestId,
-        3000
+        10000 // 10 second timeout for error log (increased from 3000ms)
       );
 
       // Analyze error log for WordPress indicators and issues
@@ -578,7 +612,7 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
           sshConnection,
           `ls -la /home/${cpanelCredentials.username}/public_html/wp-config.php /home/${cpanelCredentials.username}/public_html/wp-load.php 2>/dev/null | wc -l`,
           requestId,
-          2000
+          5000 // 5 second timeout for file check (increased from 2000ms)
         );
         
         const fileCount = parseInt(fileCheckResult.trim());
@@ -683,7 +717,7 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
         sshConnection,
         `tail -100 /home/${sshConnection._cpanelCredentials?.username || '*'}/public_html/error_log 2>/dev/null || echo "No error log found"`,
         requestId,
-        3000 // 3 second timeout for error log
+        10000 // 10 second timeout for error log (increased from 3000ms)
       );
 
       if (errorLogResult && !errorLogResult.includes('No error log found')) {
@@ -1484,7 +1518,7 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
           sshConnection,
           'free -m | grep Mem',
           requestId,
-          2000
+          5000 // 5 second timeout for memory check (increased from 2000ms)
         ).then(result => ({ type: 'memory', result })).catch(error => ({ type: 'memory', error: error.message })),
         
         // Disk usage for the specific user's home directory
@@ -1492,7 +1526,7 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
           sshConnection,
           `df -h /home/${sshConnection._cpanelCredentials?.username || '*'}/public_html | tail -1`,
           requestId,
-          2000
+          5000 // 5 second timeout for disk check (increased from 2000ms)
         ).then(result => ({ type: 'disk', result })).catch(error => ({ type: 'disk', error: error.message }))
       ];
 
@@ -1910,49 +1944,53 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
 
   /**
    * Establish SSH connection using the same method as automated_wp_repair.js
+   * Now includes shell access management for security
    */
   async establishSSHConnection(cpanelCredentials, requestId) {
-    logger.info('Establishing SSH connection with key-based auth', { requestId, host: cpanelCredentials.host });
+    logger.info('Establishing SSH connection with key-based auth and shell management', { requestId, host: cpanelCredentials.host });
     
     try {
-      // Step 1: Try SSH key-based authentication first
+      // Step 1: Enable shell access before SSH connection
+      const shellResult = await this.enableShellAccess(cpanelCredentials, requestId);
+      if (!shellResult.success) {
+        logger.warn('Failed to enable shell access, continuing with SSH attempt', { 
+          requestId, 
+          error: shellResult.error 
+        });
+      }
+      
+      // Step 2: Try SSH key-based authentication (only method)
       const sshKeyName = `wp_diag_${requestId}_key`;
       
-      try {
-        const privateKey = await this.generateAndFetchSSHKey(cpanelCredentials, sshKeyName, requestId);
-        
-        if (privateKey) {
-          const connection = await this.connectWithSSHKey(cpanelCredentials, privateKey, sshKeyName, requestId);
-          
-          // Store key name for cleanup
-          connection._keyName = sshKeyName;
-          connection._cpanelCredentials = cpanelCredentials;
-          connection._useKeyAuth = true;
-          
-          return connection;
+      const privateKey = await this.generateAndFetchSSHKey(cpanelCredentials, sshKeyName, requestId);
+      
+      if (!privateKey) {
+        // If shell access was enabled, disable it before failing
+        if (shellResult.success) {
+          await this.disableShellAccess(cpanelCredentials, requestId);
         }
-      } catch (keyError) {
-        logger.warn('SSH key authentication failed, trying password fallback', { 
-          requestId, 
-          error: keyError.message 
-        });
+        throw new Error('Failed to generate SSH private key');
       }
 
-      // Step 2: Fallback to password authentication if key auth fails
-      try {
-        logger.info('Attempting password-based SSH connection', { requestId });
-        const connection = await this.connectWithPassword(cpanelCredentials, requestId);
-        connection._useKeyAuth = false;
-        return connection;
-      } catch (passwordError) {
-        logger.warn('Password SSH authentication also failed', { 
-          requestId, 
-          error: passwordError.message 
-        });
-      }
+      const connection = await this.connectWithSSHKey(cpanelCredentials, privateKey, sshKeyName, requestId);
+      
+      // Store key name for cleanup
+      connection._keyName = sshKeyName;
+      connection._cpanelCredentials = cpanelCredentials;
+      connection._useKeyAuth = true;
+      connection._shellEnabled = shellResult.success; // Track actual shell access state
+      
+      return connection;
 
-      // Step 3: If both SSH methods fail, throw error but allow diagnostic to continue
-      throw new Error('Both SSH key and password authentication failed');
+      // Step 4: If both SSH methods fail, disable shell access and throw error
+      if (shellResult.success) {
+        await this.disableShellAccess(cpanelCredentials, requestId);
+      }
+      // Step 4: If SSH key authentication fails, disable shell access and throw error
+      if (shellResult.success) {
+        await this.disableShellAccess(cpanelCredentials, requestId);
+      }
+      throw new Error('SSH key authentication failed');
       
     } catch (error) {
       logger.error('SSH connection establishment failed', { requestId, error: error.message });
@@ -2334,6 +2372,104 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
   }
 
   /**
+   * Enable shell access for a cPanel user via WHM API
+   */
+  async enableShellAccess(cpanelCredentials, requestId) {
+    try {
+      logger.info('Enabling shell access for SSH operations', { 
+        requestId, 
+        host: cpanelCredentials.host, 
+        username: cpanelCredentials.username 
+      });
+
+      // Extract server name from hostname to get correct WHM token
+      const serverName = cpanelCredentials.host.split('.')[0].toUpperCase(); // pcp3.mywebsitebox.com -> PCP3
+      const whmTokenKey = `WHM_API_KEY_${serverName}`; // WHM_API_KEY_PCP3
+      const whmToken = process.env[whmTokenKey] || process.env.WHM_TOKEN || 'DRBNK459UIU6DQQN3H9TQACJKAA78O6D';
+
+      const url = `https://${cpanelCredentials.host}:2087/json-api/modifyacct`;
+      const params = {
+        'api.version': 1,
+        user: cpanelCredentials.username,
+        shell: '/bin/bash'
+      };
+
+      const response = await axios.get(url, {
+        params,
+        headers: {
+          'Authorization': `whm root:${whmToken}`
+        },
+        httpsAgent: new (require('https').Agent)({
+          rejectUnauthorized: false
+        }),
+        timeout: 10000
+      });
+
+      if (response.data && response.data.metadata && response.data.metadata.result === 1) {
+        logger.info('Shell access enabled successfully', { requestId, username: cpanelCredentials.username });
+        return { success: true };
+      } else {
+        const errorMsg = response.data?.metadata?.reason || 'Unknown error enabling shell access';
+        logger.warn('Failed to enable shell access', { requestId, error: errorMsg });
+        return { success: false, error: errorMsg };
+      }
+
+    } catch (error) {
+      logger.error('Error enabling shell access', { requestId, error: error.message });
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Disable shell access for a cPanel user via WHM API
+   */
+  async disableShellAccess(cpanelCredentials, requestId) {
+    try {
+      logger.info('Disabling shell access after SSH operations', { 
+        requestId, 
+        host: cpanelCredentials.host, 
+        username: cpanelCredentials.username 
+      });
+
+      // Extract server name from hostname to get correct WHM token
+      const serverName = cpanelCredentials.host.split('.')[0].toUpperCase(); // pcp3.mywebsitebox.com -> PCP3
+      const whmTokenKey = `WHM_API_KEY_${serverName}`; // WHM_API_KEY_PCP3
+      const whmToken = process.env[whmTokenKey] || process.env.WHM_TOKEN || 'DRBNK459UIU6DQQN3H9TQACJKAA78O6D';
+
+      const url = `https://${cpanelCredentials.host}:2087/json-api/modifyacct`;
+      const params = {
+        'api.version': 1,
+        user: cpanelCredentials.username,
+        shell: '/bin/noshell'
+      };
+
+      const response = await axios.get(url, {
+        params,
+        headers: {
+          'Authorization': `whm root:${whmToken}`
+        },
+        httpsAgent: new (require('https').Agent)({
+          rejectUnauthorized: false
+        }),
+        timeout: 10000
+      });
+
+      if (response.data && response.data.metadata && response.data.metadata.result === 1) {
+        logger.info('Shell access disabled successfully', { requestId, username: cpanelCredentials.username });
+        return { success: true };
+      } else {
+        const errorMsg = response.data?.metadata?.reason || 'Unknown error disabling shell access';
+        logger.warn('Failed to disable shell access', { requestId, error: errorMsg });
+        return { success: false, error: errorMsg };
+      }
+
+    } catch (error) {
+      logger.error('Error disabling shell access', { requestId, error: error.message });
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
    * Background remediation (runs after response is sent)
    * Returns remediation results for inclusion in final ticket
    */
@@ -2435,13 +2571,18 @@ class WordPressComprehensiveDiagnosticControllerOptimized {
     } finally {
       // Clean up SSH connection and key
       if (sshConnection) {
-        // Clean up SSH key first
+        // Step 1: Disable shell access first (security)
+        if (sshConnection._shellEnabled && sshConnection._cpanelCredentials) {
+          await this.disableShellAccess(sshConnection._cpanelCredentials, requestId);
+        }
+        
+        // Step 2: Clean up SSH key
         await this.cleanupSSHKey(sshConnection, requestId);
         
-        // Then close connection
+        // Step 3: Close connection
         sshConnection.end();
         this.activeConnections.delete(requestId);
-        logger.info('SSH connection and key cleaned up', { requestId });
+        logger.info('SSH connection, shell access, and key cleaned up', { requestId });
       }
     }
   }
