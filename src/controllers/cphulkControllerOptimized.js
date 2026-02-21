@@ -256,35 +256,83 @@ class OptimizedCphulkController {
           if (resolvedClientId) {
             try {
               const { getClientsDetails } = require('../services/whmcsService');
-              const clientData = await getClientsDetails({ clientid: resolvedClientId });
+              console.log('→ Fetching client details for clientId:', resolvedClientId);
               
-              if (clientData) {
-                clientInfo = {
-                  id: resolvedClientId,
-                  email: clientData.email,
-                  firstname: clientData.firstname,
-                  lastname: clientData.lastname
-                };
-                
-                // Get server info for the domain if provided
-                if (value.domain) {
-                  serverInfo = await this.getServerInfoForDomain(value.domain, resolvedClientId);
-                }
-                
-                // Cache the resolved credentials
-                credentialCache.set(credCacheKey, { 
-                  clientInfo, 
-                  serverInfo, 
-                  resolvedFrom,
-                  timestamp: Date.now()
+              // Add timeout to prevent hanging
+              const clientDataPromise = getClientsDetails({ clientid: resolvedClientId });
+              const timeoutPromise = new Promise((_, reject) => 
+                setTimeout(() => reject(new Error('Client details fetch timeout after 10 seconds')), 10000)
+              );
+              
+              const clientData = await Promise.race([clientDataPromise, timeoutPromise]);
+              
+              if (!clientData || !clientData.userid) {
+                console.log('✗ Invalid client data returned from WHMCS:', { 
+                  clientId: resolvedClientId,
+                  hasData: !!clientData,
+                  hasUserId: clientData?.userid,
+                  dataKeys: clientData ? Object.keys(clientData) : []
+                });
+                return res.status(500).json({
+                  success: false,
+                  error: 'Failed to retrieve client information from WHMCS',
+                  status: 'CLIENT_LOOKUP_ERROR',
+                  details: 'Client data is incomplete or invalid',
+                  timestamp: new Date().toISOString()
                 });
               }
+              
+              clientInfo = {
+                id: resolvedClientId,
+                email: clientData.email,
+                firstname: clientData.firstname,
+                lastname: clientData.lastname
+              };
+              
+              console.log('✓ Client details retrieved:', {
+                clientId: resolvedClientId,
+                email: clientData.email
+              });
+              
+              // Get server info for the domain if provided
+              if (value.domain) {
+                console.log('→ Fetching server info for domain:', value.domain);
+                try {
+                  serverInfo = await this.getServerInfoForDomain(value.domain, resolvedClientId);
+                  console.log('✓ Server info retrieved:', serverInfo?.serverName || 'none');
+                } catch (serverError) {
+                  console.log('⚠️ Server info fetch failed (non-critical):', serverError.message);
+                  // Don't fail the request if server info fails
+                  serverInfo = null;
+                }
+              }
+              
+              // Cache the resolved credentials
+              credentialCache.set(credCacheKey, { 
+                clientInfo, 
+                serverInfo, 
+                resolvedFrom,
+                timestamp: Date.now()
+              });
             } catch (error) {
-              console.log('✗ Error getting client details:', error.message);
+              console.log('✗ Error getting client details:', {
+                error: error.message,
+                stack: error.stack,
+                clientId: resolvedClientId,
+                domain: value.domain,
+                email: value.email
+              });
+              
+              // Provide more specific error message
+              const errorMessage = error.message.includes('timeout') 
+                ? 'WHMCS API timeout - please try again'
+                : 'Failed to retrieve client information';
+              
               return res.status(500).json({
                 success: false,
-                error: 'Failed to retrieve client information',
+                error: errorMessage,
                 status: 'CLIENT_LOOKUP_ERROR',
+                details: error.message,
                 timestamp: new Date().toISOString()
               });
             }

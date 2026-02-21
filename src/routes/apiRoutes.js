@@ -10,6 +10,7 @@ const leadsController = require('../controllers/leadsController');
 const chatsController = require('../controllers/chats');
 const ticketLookupController = require('../controllers/ticketLookupController');
 const ticketStatusController = require('../controllers/ticketStatusController');
+const cancelTicketController = require('../controllers/cancelTicketController');
 
 // GET /whmcs/ticket-status - WHMCS ticket status webhook/callback
 router.get('/whmcs/ticket-status', ticketStatusController.getTicketStatus);
@@ -40,6 +41,9 @@ router.get('/chats/cleanup/stats', chatsController.getCleanupStats);
 
 // POST /api/chats/cleanup/orphaned - Cleanup orphaned notifications
 router.post('/chats/cleanup/orphaned', chatsController.cleanupOrphanedNotifications);
+
+// POST /api/cancelTicket - Cancel scheduled auto-ticket creation for a chat
+router.post('/cancelTicket', cancelTicketController.cancelTicket);
 
 // GET /api/leads - Get leads with pagination  
 router.get('/leads', leadsController.getLeads);

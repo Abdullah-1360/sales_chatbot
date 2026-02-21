@@ -192,33 +192,38 @@ exports.invoiceLookup = async (req, res, next) => {
     
     let resolvedClientId = clientId;
     let resolvedFrom = req.body._resolvedFrom;
-    let invoiceClientId = null; // Track client ID from invoice
     
-    // PRIORITY 1: If invoice number is provided, try to resolve client from invoice first
-    // This handles cases where domain/email might be wrong but invoice is correct
-    if (targetInvoiceId) {
-      console.log('→ Invoice provided - attempting to resolve client from invoice:', targetInvoiceId);
+    // Check if invoice ID is 5 digits (paid invoice number format in WHMCS)
+    const isFiveDigitInvoice = targetInvoiceId && String(targetInvoiceId).length === 5;
+    
+    // PRIORITY: When domain/email is provided with a 5-digit invoice, prioritize domain/email resolution
+    // This is because 5-digit invoice numbers can exist for multiple clients in WHMCS
+    const shouldPrioritizeDomainEmail = isFiveDigitInvoice && (domain || email);
+    
+    if (shouldPrioritizeDomainEmail) {
+      console.log('→ 5-digit invoice with domain/email - will resolve client from domain/email first, then validate invoice');
+    } else if (targetInvoiceId && !domain && !email) {
+      // Only invoice provided (no domain/email) - resolve from invoice
+      console.log('→ Invoice provided without domain/email - attempting to resolve client from invoice:', targetInvoiceId);
       
       try {
         const invoice = await getInvoice(targetInvoiceId);
         
         if (invoice && invoice.invoiceid) {
-          invoiceClientId = String(invoice.userid || invoice.user_id || invoice.clientid);
-          console.log('→ Client resolved from invoice:', invoiceClientId);
-          
-          // If no other client resolution method was used, use invoice client
-          if (!resolvedClientId) {
-            resolvedClientId = invoiceClientId;
-            resolvedFrom = 'invoice';
-          }
+          resolvedClientId = String(invoice.userid || invoice.user_id || invoice.clientid);
+          resolvedFrom = 'invoice';
+          console.log('→ Client resolved from invoice:', resolvedClientId);
         }
       } catch (err) {
-        console.log('→ Invoice lookup failed:', err.message, '- will try domain/email resolution');
-        // Don't return error yet - try domain/email resolution
+        console.log('→ Invoice lookup failed:', err.message);
+        return res.status(404).json({
+          success: false,
+          error: 'Invoice not found. Please verify the invoice number.'
+        });
       }
     }
     
-    // PRIORITY 2: If no clientId resolved yet, try domain OR email in parallel
+    // Resolve client from domain OR email (in parallel if both provided)
     if (!resolvedClientId && (domain || email)) {
       console.log('→ Starting parallel client resolution...');
       
@@ -259,91 +264,38 @@ exports.invoiceLookup = async (req, res, next) => {
         }
       }
       
-      // Determine which resolution to use - handle edge cases
+      // Determine which resolution to use
       if (domainResult && emailResult) {
         // Both resolved - check if they match
         if (domainResult.clientId === emailResult.clientId) {
-          // If invoice client exists and matches, use it; otherwise use domain+email
-          if (invoiceClientId && invoiceClientId === domainResult.clientId) {
-            resolvedClientId = invoiceClientId;
-            resolvedFrom = 'invoice+domain+email';
-            console.log('→ Client resolved from invoice, domain, and email (all matching):', resolvedClientId);
-          } else if (!invoiceClientId) {
-            resolvedClientId = domainResult.clientId;
-            resolvedFrom = 'domain+email';
-            console.log('→ Client resolved from both domain and email (matching):', resolvedClientId);
-          } else {
-            // Invoice client exists but doesn't match domain/email - prioritize invoice
-            console.log('→ Invoice client differs from domain/email - prioritizing invoice');
-            resolvedClientId = invoiceClientId;
-            resolvedFrom = 'invoice_priority';
-            console.log('→ Client resolved from invoice (domain/email mismatch ignored):', resolvedClientId);
-          }
+          resolvedClientId = domainResult.clientId;
+          resolvedFrom = 'domain+email';
+          console.log('→ Client resolved from both domain and email (matching):', resolvedClientId);
         } else {
-          // Domain and email resolve to different clients
-          if (invoiceClientId) {
-            // Prioritize invoice when domain/email conflict
-            console.log('→ Domain and email conflict, but invoice provided - prioritizing invoice');
-            resolvedClientId = invoiceClientId;
-            resolvedFrom = 'invoice_priority';
-            console.log('→ Client resolved from invoice (domain/email conflict ignored):', resolvedClientId);
-          } else {
-            // No invoice - prioritize domain over email
-            console.log('→ Domain and email resolve to different clients - prioritizing domain');
-            resolvedClientId = domainResult.clientId;
-            resolvedFrom = 'domain_priority';
-            console.log('→ Client resolved from domain (email mismatch ignored):', resolvedClientId);
-          }
+          // Domain and email resolve to different clients - prioritize domain
+          console.log('→ Domain and email resolve to different clients - prioritizing domain');
+          resolvedClientId = domainResult.clientId;
+          resolvedFrom = 'domain_priority';
         }
       } else if (domainResult) {
-        // Only domain resolved
-        if (invoiceClientId && invoiceClientId !== domainResult.clientId) {
-          // Invoice client differs from domain - prioritize invoice
-          console.log('→ Domain resolved but differs from invoice - prioritizing invoice');
-          resolvedClientId = invoiceClientId;
-          resolvedFrom = 'invoice_priority';
-        } else if (!invoiceClientId) {
-          resolvedClientId = domainResult.clientId;
-          resolvedFrom = 'domain';
-          console.log('→ Client resolved from domain:', resolvedClientId);
-        }
+        resolvedClientId = domainResult.clientId;
+        resolvedFrom = 'domain';
+        console.log('→ Client resolved from domain:', resolvedClientId);
       } else if (emailResult) {
-        // Only email resolved
-        if (invoiceClientId && invoiceClientId !== emailResult.clientId) {
-          // Invoice client differs from email - prioritize invoice
-          console.log('→ Email resolved but differs from invoice - prioritizing invoice');
-          resolvedClientId = invoiceClientId;
-          resolvedFrom = 'invoice_priority';
-        } else if (!invoiceClientId) {
-          resolvedClientId = emailResult.clientId;
-          resolvedFrom = 'email';
-          console.log('→ Client resolved from email:', resolvedClientId);
-        }
+        resolvedClientId = emailResult.clientId;
+        resolvedFrom = 'email';
+        console.log('→ Client resolved from email:', resolvedClientId);
       } else {
         // Neither domain nor email resolved successfully
-        if (invoiceClientId) {
-          // Invoice resolved but domain/email failed - use invoice
-          console.log('→ Domain/email resolution failed but invoice succeeded');
-          resolvedClientId = invoiceClientId;
-          resolvedFrom = 'invoice';
-        } else {
-          // All resolution methods failed
-          const errorMessages = [];
-          if (domain) errorMessages.push('No client found for the provided domain');
-          if (email) errorMessages.push('No client found for the provided email');
-          if (targetInvoiceId) errorMessages.push('Invoice not found');
-          
-          return res.status(404).json({
-            success: false,
-            error: errorMessages.join(' and ') + '. Please verify your information.'
-          });
-        }
+        const errorMessages = [];
+        if (domain) errorMessages.push('No client found for the provided domain');
+        if (email) errorMessages.push('No client found for the provided email');
+        
+        return res.status(404).json({
+          success: false,
+          error: errorMessages.join(' and ') + '. Please verify your information.'
+        });
       }
-    } else if (invoiceClientId && !resolvedClientId) {
-      // No domain/email provided, but invoice resolved successfully
-      resolvedClientId = invoiceClientId;
-      resolvedFrom = 'invoice';
-      console.log('→ Client resolved from invoice only:', resolvedClientId);
     }
     
     // SECOND-LEVEL VALIDATION: Phone validation if provided
@@ -406,78 +358,72 @@ exports.invoiceLookup = async (req, res, next) => {
     
     let invoice;
     if (targetInvoiceId) {
-      try {
-        invoice = await getInvoice(targetInvoiceId);
-        console.log('→ Invoice fetched:', invoice.invoiceid || invoice.id, 'Owner:', invoice.userid || invoice.clientid);
+      // When domain/email is provided with invoice ID, search through client's invoices
+      // This is especially important for 5-digit invoice numbers which can exist for multiple clients
+      if (resolvedClientId && (domain || email)) {
+        console.log('→ Searching through client invoices for invoice ID/NUM:', targetInvoiceId);
         
-        // Validate ownership of the specific invoice
-        const ownerId = String(invoice.userid || invoice.user_id || invoice.clientid);
-        if (String(ownerId) !== String(resolvedClientId)) {
-          console.log('✗ Invoice ownership mismatch - invoice belongs to different client');
-          return res.status(403).json({
-            success: false,
-            error: 'The provided invoice does not belong to the identified account. Please verify your information.'
+        try {
+          const { getInvoices } = require('../services/whmcsService');
+          
+          // Get all invoices for this client
+          const allInvoices = await getInvoices({ 
+            userid: resolvedClientId, 
+            limitnum: 999
           });
-        }
-      } catch (err) {
-        console.log('✗ Invoice fetch failed:', err.message);
-        
-        // Don't return error immediately - continue to search for unpaid invoices
-        // We'll provide a fallback by showing any unpaid invoice if available
-        console.log('→ Specific invoice not found, will search for unpaid invoices as fallback');
-      }
-    }
-    
-    // If no invoice found (either no ID provided, invalid ID, or ownership mismatch), search through all invoices
-    if (!invoice && targetInvoiceId) {
-      console.log('→ Searching through all invoices for client:', resolvedClientId, 'to match invoice ID:', targetInvoiceId);
-      
-      try {
-        const { getInvoices } = require('../services/whmcsService');
-        
-        // Search through all invoices for this client (not just unpaid)
-        // This handles cases where invoice might be paid but user still wants to check it
-        const allInvoices = await getInvoices({ 
-          userid: resolvedClientId, 
-          limitnum: 999 // Get a large number to search through all invoices
-        });
-        
-        const invoiceArray = allInvoices.invoices?.invoice || allInvoices.invoices?.invoices || [];
-        const invoices = Array.isArray(invoiceArray) ? invoiceArray : (invoiceArray ? [invoiceArray] : []);
-        
-        console.log(`→ Searching through ${invoices.length} invoices for match with ID: ${targetInvoiceId}`);
-        
-        // Search for invoice by both invoiceid and invoicenum fields
-        // Some WHMCS setups use different field names for invoice identification
-        const matchingInvoice = invoices.find(inv => {
-          const invId = String(inv.id || inv.invoiceid || '');
-          const invNum = String(inv.invoicenum || inv.invoice_num || '');
-          const targetId = String(targetInvoiceId);
           
-          // Skip if target is 0 or empty (shouldn't happen due to validation above, but safety check)
-          if (!targetId || targetId === '0') {
+          const invoiceArray = allInvoices.invoices?.invoice || allInvoices.invoices?.invoices || [];
+          const invoices = Array.isArray(invoiceArray) ? invoiceArray : (invoiceArray ? [invoiceArray] : []);
+          
+          console.log(`→ Searching through ${invoices.length} invoices for client ${resolvedClientId}`);
+          
+          // Search for invoice by BOTH invoiceid AND invoicenum fields
+          // This handles WHMCS's behavior where paid invoices get 5-digit numbers
+          const matchingInvoice = invoices.find(inv => {
+            const invId = String(inv.id || inv.invoiceid || '');
+            const invNum = String(inv.invoicenum || inv.invoice_num || '');
+            const targetId = String(targetInvoiceId);
+            
+            const idMatch = invId === targetId;
+            const numMatch = invNum === targetId;
+            
+            if (idMatch || numMatch) {
+              console.log(`→ Found matching invoice: ID=${invId}, NUM=${invNum}, Target=${targetId}, IDMatch=${idMatch}, NUMMatch=${numMatch}`);
+              return true;
+            }
             return false;
-          }
+          });
           
-          const idMatch = invId === targetId;
-          const numMatch = invNum === targetId;
-          
-          if (idMatch || numMatch) {
-            console.log(`→ Found matching invoice: ID=${invId}, NUM=${invNum}, Target=${targetId}, IDMatch=${idMatch}, NUMMatch=${numMatch}`);
-            return true;
+          if (matchingInvoice) {
+            const invoiceId = matchingInvoice.id || matchingInvoice.invoiceid;
+            invoice = await getInvoice(invoiceId);
+            console.log('✓ Invoice found and validated:', invoice.invoiceid || invoice.id, 'Status:', invoice.status);
+          } else {
+            console.log('→ No matching invoice found for this client');
           }
-          return false;
-        });
-        
-        if (matchingInvoice) {
-          const invoiceId = matchingInvoice.id || matchingInvoice.invoiceid;
-          invoice = await getInvoice(invoiceId);
-          console.log('→ Found matching invoice for client:', invoice.invoiceid || invoice.id, 'Status:', invoice.status);
-        } else {
-          console.log('→ No matching invoice found in all invoices for this client');
+        } catch (err) {
+          console.log('✗ Error searching client invoices:', err.message);
         }
-      } catch (err) {
-        console.log('✗ Error searching through all invoices:', err.message);
+      } else {
+        // No domain/email provided - try direct invoice lookup
+        try {
+          invoice = await getInvoice(targetInvoiceId);
+          console.log('→ Invoice fetched:', invoice.invoiceid || invoice.id, 'Owner:', invoice.userid || invoice.clientid);
+          
+          // Validate ownership if we have a resolved client
+          if (resolvedClientId) {
+            const ownerId = String(invoice.userid || invoice.user_id || invoice.clientid);
+            if (String(ownerId) !== String(resolvedClientId)) {
+              console.log('✗ Invoice ownership mismatch - invoice belongs to different client');
+              return res.status(403).json({
+                success: false,
+                error: 'The provided invoice does not belong to the identified account. Please verify your information.'
+              });
+            }
+          }
+        } catch (err) {
+          console.log('✗ Invoice fetch failed:', err.message);
+        }
       }
     }
     
