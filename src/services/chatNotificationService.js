@@ -15,9 +15,9 @@ class ChatNotificationService {
   constructor() {
     this.activeIntervals = new Map(); // chatId -> intervalId
     this.autoTicketTimeouts = new Map(); // chatId -> timeoutId
-    this.notificationInterval = 40 * 1000; // 40 seconds
+    this.notificationInterval = 2 * 60 * 1000; // 2 minutes
     this.maxNotifications = 5;
-    this.autoTicketDelay = 3 * 60 * 1000; // 3 minutes
+    this.autoTicketDelay = 15 * 60 * 1000; // 15 minutes
     this.uchatApiUrl = 'https://www.uchat.com.au/api/subscriber/send-text';
     this.uchatBearerToken = 'cgkrwrtOHtxZ1AqQju9kYWjbcsVJ3FMWCY6gZoARWQkXNaTSCbaOp7J6Ap1D';
     this.isInitialized = false;
