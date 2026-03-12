@@ -23,6 +23,7 @@ const { checkDNS, getDNSStatus, comprehensiveDNSLookup } = require('../controlle
 const wordpressDiagnosticRoutes = require('./wordpressDiagnosticRoutes');
 const cphulkRoutes = require('./cphulkRoutes');
 const passwordResetRoutes = require('./passwordResetRoutes');
+const portalPasswordResetRoutes = require('./portalPasswordResetRoutes');
 
 router.use('/invoices', invoiceRoutes);
 router.use('/clients', clientRoutes);
@@ -39,6 +40,7 @@ router.use('/test-focused-autossl', testFocusedAutosslRoute); // TEMPORARY - DEL
 router.use('/wordpress', wordpressDiagnosticRoutes);
 router.use('/cphulk', cphulkRoutes);
 router.use('/password-reset', passwordResetRoutes);
+router.use('/portal-pass-reset', portalPasswordResetRoutes);
 router.post('/recommendations', recommend);
 router.post('/domain/check', checkAvailability);
 router.post('/domain/bulk-check', checkMultiple);
