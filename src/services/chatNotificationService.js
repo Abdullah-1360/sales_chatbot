@@ -933,9 +933,9 @@ class ChatNotificationService {
       let resolvedClientId = null;
       let resolvedFrom = null;
       
-      // Extract domain from email if available
-      let domain = null;
-      if (email && email.includes('@') && !email.includes('@uchat.generated')) {
+      // Use stored domain field first, then fall back to extracting from email
+      let domain = chat.domain || null;
+      if (!domain && email && email.includes('@') && !email.includes('@uchat.generated')) {
         const emailParts = email.split('@');
         if (emailParts.length === 2) {
           domain = emailParts[1];

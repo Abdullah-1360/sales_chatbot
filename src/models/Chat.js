@@ -22,6 +22,7 @@ const chatSchema = new mongoose.Schema({
   messages: [messageSchema], // Array of messages
   source: { type: String, default: 'Chatbot' },
   userNs: { type: String, default: '' }, // UChat User Namespace ID
+  domain: { type: String, default: '' }, // Domain for WHMCS client resolution
   lastMessageAt: { type: Date, default: Date.now }, // Track last message time
   messageCount: { type: Number, default: 1 }, // Track total message count
   createdAt: { type: Date, default: Date.now }

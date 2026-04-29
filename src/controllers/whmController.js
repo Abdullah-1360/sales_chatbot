@@ -784,3 +784,29 @@ exports.autoFixMissingARecord = async (req, res, next) => {
 };
 
 module.exports = exports;
+
+/**
+ * Test SSH key lifecycle: generate → authorize → connect → delete
+ * POST /whm/ssh/test
+ * Body: { serverName, cpanelUser, sshPort? }
+ */
+exports.testSshKey = async (req, res, next) => {
+  const { serverName, cpanelUser, sshPort } = req.body;
+  console.log('[POST /whm/ssh/test]', { serverName, cpanelUser, sshPort });
+
+  if (!serverName || !cpanelUser) {
+    return res.status(400).json({
+      success: false,
+      error: 'serverName and cpanelUser are required',
+    });
+  }
+
+  try {
+    const { testSshKeyLifecycle } = require('../services/sshKeyTestService');
+    const result = await testSshKeyLifecycle(serverName, cpanelUser, sshPort || 22);
+    res.json(result);
+  } catch (error) {
+    console.error('[testSshKey] Error:', error.message);
+    next(error);
+  }
+};

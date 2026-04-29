@@ -5,6 +5,7 @@
 
 const { createLeadFlow } = require('../services/vtiger');
 const { broadcastNewLead } = require('../services/websocket');
+const { resolveClientFromWhmcs } = require('../utils/whmcsClientResolver');
 const { createLogger } = require('../utils/logger');
 const Lead = require('../models/Lead');
 
@@ -17,7 +18,7 @@ const logger = createLogger('VTIGER_CONTROLLER');
  */
 exports.createLead = async (req, res, next) => {
   try {
-    let { username, email, phone, description, comment, User_Ns } = req.body;
+    let { username, email, phone, description, comment, User_Ns, domain } = req.body;
     
     // Use comment if description is not provided
     const messageText = description || comment;
@@ -39,22 +40,56 @@ exports.createLead = async (req, res, next) => {
       });
     }
     
-    // Generate unique email based on User_Ns if email is empty
-    if (!email || email.trim() === '') {
-      if (User_Ns && User_Ns.trim() !== '') {
-        // Create email from User_Ns: user_ns@uchat.generated
-        email = `${User_Ns.toLowerCase().replace(/[^a-z0-9]/g, '_')}@uchat.generated`;
-        logger.info('Generated email from User_Ns', { 
-          User_Ns,
-          generatedEmail: email 
+    // STEP 1: Try to resolve client from WHMCS using email/domain
+    // If client exists in WHMCS, they are an existing customer — no lead needed
+    if (email || domain) {
+      const resolvedClient = await resolveClientFromWhmcs(email, domain);
+      if (resolvedClient) {
+        logger.info('Client resolved from WHMCS — skipping lead creation', {
+          clientId: resolvedClient.clientId,
+          email: resolvedClient.email,
         });
+
+        // Broadcast to dashboard so agents can see the existing client interaction
+        const { splitName } = require('../services/vtiger');
+        const { firstname, lastname } = splitName(username || resolvedClient.email || '');
+        broadcastNewLead({
+          id: `whmcs-${resolvedClient.clientId}-${Date.now()}`,
+          clientId: resolvedClient.clientId,
+          firstname: resolvedClient.firstname || firstname,
+          lastname: resolvedClient.lastname || lastname,
+          email: resolvedClient.email || email,
+          phone: resolvedClient.phone || phone || '',
+          description: 'Existing client — lead not created',
+          comment: 'Existing client — lead not created',
+          source: 'Chatbot',
+          userNs: User_Ns || '',
+          isExistingClient: true,
+          createdAt: new Date(),
+        });
+
+        return res.json({
+          success: true,
+          userExists: true,
+          leadCreated: false,
+          clientId: resolvedClient.clientId,
+          message: 'Client already exists in WHMCS, no lead created',
+        });
+      }
+    }
+
+    // STEP 2: Client not in WHMCS — generate fallback email for VTiger storage
+    if (!email || email.trim() === '') {
+      if (domain && domain.trim() !== '') {
+        email = `client@${domain.trim().toLowerCase()}`;
+        logger.info('Using domain-based email for storage', { domain, generatedEmail: email });
+      } else if (User_Ns && User_Ns.trim() !== '') {
+        email = `${User_Ns.toLowerCase().replace(/[^a-z0-9]/g, '_')}@uchat.generated`;
+        logger.info('Generated email from User_Ns for storage', { User_Ns, generatedEmail: email });
       } else {
-        // No email and no User_Ns - generate random email
         const randomId = Date.now().toString(36) + Math.random().toString(36).substr(2);
         email = `guest_${randomId}@uchat.generated`;
-        logger.info('Generated random email (no User_Ns provided)', { 
-          generatedEmail: email 
-        });
+        logger.info('Generated random guest email (no email/domain/User_Ns)', { generatedEmail: email });
       }
     }
     

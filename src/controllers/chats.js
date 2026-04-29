@@ -6,6 +6,7 @@
 const Chat = require('../models/Chat');
 const { broadcastNewChat } = require('../services/websocket');
 const chatNotificationService = require('../services/chatNotificationService');
+const { resolveClientFromWhmcs } = require('../utils/whmcsClientResolver');
 const { createLogger } = require('../utils/logger');
 const { splitName } = require('../services/vtiger');
 
@@ -60,22 +61,39 @@ exports.createChat = async (req, res, next) => {
       });
     }
     
-    // Generate unique email based on User_Ns if email is empty
-    if (!email || email.trim() === '') {
-      if (User_Ns && User_Ns.trim() !== '') {
-        // Create email from User_Ns: user_ns@uchat.generated
-        email = `${User_Ns.toLowerCase().replace(/[^a-z0-9]/g, '_')}@uchat.generated`;
-        logger.info('Generated email from User_Ns', { 
-          User_Ns,
-          generatedEmail: email 
+    // STEP 1: Try to resolve client from WHMCS using email/domain
+    let resolvedClient = null;
+    if (email || domain) {
+      logger.info('Attempting WHMCS client resolution', { email: email || null, domain: domain || null });
+      resolvedClient = await resolveClientFromWhmcs(email, domain);
+      if (resolvedClient) {
+        logger.info('Client resolved from WHMCS', { 
+          clientId: resolvedClient.clientId, 
+          email: resolvedClient.email,
+          firstname: resolvedClient.firstname,
+          lastname: resolvedClient.lastname
         });
+        // Use WHMCS data
+        email = resolvedClient.email || email;
+        phone = resolvedClient.phone || phone;
+        username = `${resolvedClient.firstname} ${resolvedClient.lastname}`.trim() || username;
       } else {
-        // No email and no User_Ns - generate random email
+        logger.info('No WHMCS client found, using provided data');
+      }
+    }
+    
+    // STEP 2: Generate fallback email only if still empty after WHMCS lookup
+    if (!email || email.trim() === '') {
+      if (domain && domain.trim() !== '') {
+        email = `client@${domain.trim().toLowerCase()}`;
+        logger.info('Using domain-based email for storage', { domain, generatedEmail: email });
+      } else if (User_Ns && User_Ns.trim() !== '') {
+        email = `${User_Ns.toLowerCase().replace(/[^a-z0-9]/g, '_')}@uchat.generated`;
+        logger.info('Generated email from User_Ns for storage', { User_Ns, generatedEmail: email });
+      } else {
         const randomId = Date.now().toString(36) + Math.random().toString(36).substr(2);
         email = `guest_${randomId}@uchat.generated`;
-        logger.info('Generated random email (no User_Ns provided)', { 
-          generatedEmail: email 
-        });
+        logger.info('Generated random guest email (no email/domain/User_Ns)', { generatedEmail: email });
       }
     }
     
@@ -121,6 +139,9 @@ exports.createChat = async (req, res, next) => {
           if (phone) {
             existingChat.phone = phone;
           }
+          if (domain) {
+            existingChat.domain = domain;
+          }
           
           savedChat = await existingChat.save();
           isNewChat = false;
@@ -146,6 +167,7 @@ exports.createChat = async (req, res, next) => {
           lastname,
           email,
           phone: phone || '',
+          domain: domain || '',
           description: messageText,
           comment: messageText,
           messages: [{

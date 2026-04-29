@@ -6,6 +6,7 @@
 const { getClientsDetails, callApi } = require('../services/whmcsService');
 const { createLeadFlow } = require('../services/vtiger');
 const { broadcastNewLead } = require('../services/websocket');
+const { resolveClientFromWhmcs } = require('../utils/whmcsClientResolver');
 const { createLogger } = require('../utils/logger');
 const Lead = require('../models/Lead');
 
@@ -354,6 +355,24 @@ exports.handleLeads = async (req, res, next) => {
         count: clientResolutionDetails.domainCount || clientResolutionDetails.productCount
       });
     }
+
+    // Step 1.5: If user exists but we only have clientId (domain/phone resolution), fetch full details
+    if (userExists && clientResolutionDetails && clientResolutionDetails.clientId) {
+      if (!email || email.includes('@uchat.generated') || !username || username === 'Customer') {
+        logger.info('Enriching client data from WHMCS', { clientId: clientResolutionDetails.clientId });
+        try {
+          const fullDetails = await getClientsDetails({ clientid: clientResolutionDetails.clientId });
+          if (fullDetails && fullDetails.email) {
+            email = fullDetails.email;
+            username = `${fullDetails.firstname || ''} ${fullDetails.lastname || ''}`.trim() || username;
+            phone = fullDetails.phonenumber || phone;
+            logger.info('Client data enriched from WHMCS', { email, username });
+          }
+        } catch (err) {
+          logger.warn('Failed to enrich client data', { error: err.message });
+        }
+      }
+    }
     
     // Step 2: If user doesn't exist in WHMCS, create lead in VTiger
     if (!userExists) {
@@ -367,22 +386,19 @@ exports.handleLeads = async (req, res, next) => {
         });
       }
       
-      // Generate unique email based on User_Ns if email is empty
+      // Email is required for DB/VTiger storage. Domain/phone handle WHMCS resolution separately.
+      // Generate a placeholder only as last resort — domain is already used above for WHMCS lookup.
       if (!email || email.trim() === '') {
-        if (User_Ns && User_Ns.trim() !== '') {
-          // Create email from User_Ns: user_ns@uchat.generated
+        if (domain && domain.trim() !== '') {
+          email = `client@${domain.trim().toLowerCase()}`;
+          logger.info('Using domain-based email for storage', { domain, generatedEmail: email });
+        } else if (User_Ns && User_Ns.trim() !== '') {
           email = `${User_Ns.toLowerCase().replace(/[^a-z0-9]/g, '_')}@uchat.generated`;
-          logger.info('Generated email from User_Ns', { 
-            User_Ns,
-            generatedEmail: email 
-          });
+          logger.info('Generated email from User_Ns for storage', { User_Ns, generatedEmail: email });
         } else {
-          // No email and no User_Ns - generate random email
           const randomId = Date.now().toString(36) + Math.random().toString(36).substr(2);
           email = `guest_${randomId}@uchat.generated`;
-          logger.info('Generated random email (no User_Ns provided)', { 
-            generatedEmail: email 
-          });
+          logger.info('Generated random guest email (no email/domain/User_Ns)', { generatedEmail: email });
         }
       }
       
@@ -519,6 +535,25 @@ exports.handleLeads = async (req, res, next) => {
     } else {
       // User exists in WHMCS - no need to create lead
       console.log('→ User exists in WHMCS, no lead creation needed');
+
+      // Broadcast to dashboard so agents see the existing client interaction
+      const { splitName } = require('../services/vtiger');
+      const { firstname: fn, lastname: ln } = splitName(username || email || '');
+      broadcastNewLead({
+        id: `whmcs-${clientResolutionDetails?.clientId || foundBy}-${Date.now()}`,
+        clientId: clientResolutionDetails?.clientId || null,
+        firstname: fn,
+        lastname: ln,
+        email: email || '',
+        phone: phone || '',
+        description: 'Existing client — lead not created',
+        comment: 'Existing client — lead not created',
+        source: 'Chatbot',
+        userNs: User_Ns || '',
+        isExistingClient: true,
+        foundBy,
+        createdAt: new Date(),
+      });
       
       const response = {
         success: true,
