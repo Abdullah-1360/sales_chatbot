@@ -102,5 +102,9 @@ exports.getProductsByGid = async (gid) => {
   const data = await callWhmcs('GetProducts', { gid, hidden: 0 });
   return (data.products?.product || [])
     .filter(p => String(p.gid) === String(gid))
-    .filter(p => !EXCLUDED_PIDS.includes(String(p.pid))); // Exclude specific PIDs
+    .filter(p => !EXCLUDED_PIDS.includes(String(p.pid)))
+    .map(p => ({
+      ...p,
+      link: `https://portal.hostbreak.com/cart.php?a=add&pid=${p.pid}&currency=2`
+    }));
 };

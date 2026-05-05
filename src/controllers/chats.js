@@ -9,8 +9,42 @@ const chatNotificationService = require('../services/chatNotificationService');
 const { resolveClientFromWhmcs } = require('../utils/whmcsClientResolver');
 const { createLogger } = require('../utils/logger');
 const { splitName } = require('../services/vtiger');
+const axios = require('axios');
+const { normalizePhone } = require('../utils/phoneNormalizer');
 
 const logger = createLogger('CHATS_CONTROLLER');
+
+const CLIENT_LOOKUP_URL = 'https://portal.hostbreak.com/client_lookup.php';
+const CLIENT_LOOKUP_SECRET = 'fdf256fb4995528972f5338581eeb3de1d459b505ac13b847d04392518274013';
+
+/**
+ * Resolve client by phone via client_lookup.php
+ * Returns { clientId, email, firstname, lastname, phone } or null
+ */
+async function resolveClientByPhone(phone) {
+  try {
+    const normalized = normalizePhone(phone);
+    if (!normalized) return null;
+    const { data } = await axios.get(CLIENT_LOOKUP_URL, {
+      params: { secret: CLIENT_LOOKUP_SECRET, phone: normalized },
+      timeout: 8000,
+    });
+    if (data && data.is_client === true && data.client_data?.id) {
+      const c = data.client_data;
+      const nameParts = (c.full_name || '').trim().split(' ');
+      return {
+        clientId: String(c.id),
+        email: c.email || null,
+        firstname: nameParts[0] || '',
+        lastname: nameParts.slice(1).join(' ') || '',
+        phone: normalized,
+      };
+    }
+    return null;
+  } catch (_) {
+    return null;
+  }
+}
 
 /**
  * Create chat endpoint - Enhanced to handle multiple messages per user
@@ -61,39 +95,46 @@ exports.createChat = async (req, res, next) => {
       });
     }
     
-    // STEP 1: Try to resolve client from WHMCS using email/domain
+    // STEP 1: Resolve client — phone first, then email/domain in parallel
     let resolvedClient = null;
-    if (email || domain) {
-      logger.info('Attempting WHMCS client resolution', { email: email || null, domain: domain || null });
-      resolvedClient = await resolveClientFromWhmcs(email, domain);
+
+    // 1a. Phone lookup (fastest signal — direct client_lookup API)
+    if (phone && phone.trim() !== '') {
+      resolvedClient = await resolveClientByPhone(phone);
       if (resolvedClient) {
-        logger.info('Client resolved from WHMCS', { 
-          clientId: resolvedClient.clientId, 
-          email: resolvedClient.email,
-          firstname: resolvedClient.firstname,
-          lastname: resolvedClient.lastname
-        });
-        // Use WHMCS data
-        email = resolvedClient.email || email;
-        phone = resolvedClient.phone || phone;
-        username = `${resolvedClient.firstname} ${resolvedClient.lastname}`.trim() || username;
-      } else {
-        logger.info('No WHMCS client found, using provided data');
+        logger.info('Client resolved via phone lookup', { clientId: resolvedClient.clientId, email: resolvedClient.email });
       }
     }
-    
-    // STEP 2: Generate fallback email only if still empty after WHMCS lookup
+
+    // 1b. Email/domain lookup if phone didn't resolve
+    if (!resolvedClient && (email || domain)) {
+      resolvedClient = await resolveClientFromWhmcs(email, domain);
+      if (resolvedClient) {
+        logger.info('Client resolved via email/domain', { clientId: resolvedClient.clientId, email: resolvedClient.email });
+      }
+    }
+
+    // Apply resolved client data
+    if (resolvedClient) {
+      email = resolvedClient.email || email;
+      phone = resolvedClient.phone || phone;
+      if (resolvedClient.firstname || resolvedClient.lastname) {
+        username = `${resolvedClient.firstname} ${resolvedClient.lastname}`.trim() || username;
+      }
+    }
+
+    // STEP 2: Fallback email — only if client could not be resolved at all
     if (!email || email.trim() === '') {
       if (domain && domain.trim() !== '') {
         email = `client@${domain.trim().toLowerCase()}`;
         logger.info('Using domain-based email for storage', { domain, generatedEmail: email });
       } else if (User_Ns && User_Ns.trim() !== '') {
         email = `${User_Ns.toLowerCase().replace(/[^a-z0-9]/g, '_')}@uchat.generated`;
-        logger.info('Generated email from User_Ns for storage', { User_Ns, generatedEmail: email });
+        logger.info('Generated email from User_Ns for storage (no client resolved)', { User_Ns, generatedEmail: email });
       } else {
         const randomId = Date.now().toString(36) + Math.random().toString(36).substr(2);
         email = `guest_${randomId}@uchat.generated`;
-        logger.info('Generated random guest email (no email/domain/User_Ns)', { generatedEmail: email });
+        logger.info('Generated random guest email (absolute fallback)', { generatedEmail: email });
       }
     }
     

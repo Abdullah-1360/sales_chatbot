@@ -929,10 +929,10 @@ class ChatNotificationService {
         messageContext = chat.comment || chat.description || 'No message content available';
       }
 
-      // PARALLEL CLIENT RESOLUTION: Try to resolve client from email/domain
+      // PARALLEL CLIENT RESOLUTION: phone lookup + email + domain (all three simultaneously)
       let resolvedClientId = null;
       let resolvedFrom = null;
-      
+
       // Use stored domain field first, then fall back to extracting from email
       let domain = chat.domain || null;
       if (!domain && email && email.includes('@') && !email.includes('@uchat.generated')) {
@@ -941,87 +941,78 @@ class ChatNotificationService {
           domain = emailParts[1];
         }
       }
-      
-      if (domain || (email && !email.includes('@uchat.generated'))) {
-        logger.info('→ Attempting parallel client resolution', { 
+
+      const parallelTasks = [];
+
+      // Task 1: Phone lookup via external client_lookup API
+      if (chat.phone && chat.phone.trim() !== '' && chat.phone !== 'No phone provided') {
+        parallelTasks.push(
+          this.resolvePhoneToClient(chat.phone)
+            .then(result => ({ type: 'phone', success: true, data: result }))
+            .catch(error => ({ type: 'phone', success: false, error: error.message }))
+        );
+      }
+
+      // Task 2: Domain resolution
+      if (domain) {
+        parallelTasks.push(
+          this.resolveDomainToClient(domain)
+            .then(result => ({ type: 'domain', success: true, data: result }))
+            .catch(error => ({ type: 'domain', success: false, error: error.message }))
+        );
+      }
+
+      // Task 3: Email resolution (only real emails)
+      if (email && !email.includes('@uchat.generated') && !email.startsWith('client@')) {
+        parallelTasks.push(
+          this.resolveEmailToClient(email)
+            .then(result => ({ type: 'email', success: true, data: result }))
+            .catch(error => ({ type: 'email', success: false, error: error.message }))
+        );
+      }
+
+      if (parallelTasks.length > 0) {
+        logger.info('→ Running parallel client resolution (phone + domain + email)', {
           chatId,
-          email: email && !email.includes('@uchat.generated') ? email : null,
-          domain 
+          hasPhone: !!chat.phone,
+          hasDomain: !!domain,
+          hasEmail: !!(email && !email.includes('@uchat.generated')),
         });
-        
-        const parallelTasks = [];
-        
-        // Task 1: Domain resolution (if domain extracted)
-        if (domain) {
-          parallelTasks.push(
-            this.resolveDomainToClient(domain)
-              .then(result => ({ type: 'domain', success: true, data: result }))
-              .catch(error => ({ type: 'domain', success: false, error: error.message }))
-          );
-        }
-        
-        // Task 2: Email resolution (if real email provided)
-        if (email && !email.includes('@uchat.generated')) {
-          parallelTasks.push(
-            this.resolveEmailToClient(email)
-              .then(result => ({ type: 'email', success: true, data: result }))
-              .catch(error => ({ type: 'email', success: false, error: error.message }))
-          );
-        }
-        
-        // Execute parallel resolution
-        if (parallelTasks.length > 0) {
-          const results = await Promise.allSettled(parallelTasks);
-          
-          // Process results
-          let domainResult = null;
-          let emailResult = null;
-          
-          for (const result of results) {
-            if (result.status === 'fulfilled' && result.value.success) {
-              if (result.value.type === 'domain') {
-                domainResult = result.value.data;
-              } else if (result.value.type === 'email') {
-                emailResult = result.value.data;
-              }
-            }
+
+        const results = await Promise.allSettled(parallelTasks);
+        let phoneResult = null;
+        let domainResult = null;
+        let emailResult = null;
+
+        for (const result of results) {
+          if (result.status === 'fulfilled' && result.value.success) {
+            if (result.value.type === 'phone') phoneResult = result.value.data;
+            else if (result.value.type === 'domain') domainResult = result.value.data;
+            else if (result.value.type === 'email') emailResult = result.value.data;
           }
-          
-          // Determine which resolution to use
-          if (domainResult && emailResult) {
-            if (domainResult.clientId === emailResult.clientId) {
-              resolvedClientId = domainResult.clientId;
-              resolvedFrom = 'domain+email';
-              logger.info('→ Client resolved from both domain and email (matching)', { 
-                chatId,
-                clientId: resolvedClientId 
-              });
-            } else {
-              // Prioritize domain over email
-              resolvedClientId = domainResult.clientId;
-              resolvedFrom = 'domain_priority';
-              logger.info('→ Client resolved from domain (email mismatch)', { 
-                chatId,
-                clientId: resolvedClientId 
-              });
-            }
-          } else if (domainResult) {
-            resolvedClientId = domainResult.clientId;
-            resolvedFrom = 'domain';
-            logger.info('→ Client resolved from domain', { 
-              chatId,
-              clientId: resolvedClientId 
-            });
-          } else if (emailResult) {
-            resolvedClientId = emailResult.clientId;
-            resolvedFrom = 'email';
-            logger.info('→ Client resolved from email', { 
-              chatId,
-              clientId: resolvedClientId 
-            });
-          } else {
-            logger.info('→ Client resolution failed, creating guest ticket', { chatId });
-          }
+        }
+
+        // Priority: phone > domain > email
+        if (phoneResult) {
+          resolvedClientId = phoneResult.clientId;
+          resolvedFrom = 'phone';
+        } else if (domainResult && emailResult) {
+          resolvedClientId = domainResult.clientId === emailResult.clientId
+            ? domainResult.clientId
+            : domainResult.clientId; // domain wins on mismatch
+          resolvedFrom = domainResult.clientId === emailResult.clientId ? 'domain+email' : 'domain_priority';
+        } else if (domainResult) {
+          resolvedClientId = domainResult.clientId;
+          resolvedFrom = 'domain';
+        } else if (emailResult) {
+          resolvedClientId = emailResult.clientId;
+          resolvedFrom = 'email';
+        }
+
+        if (resolvedClientId) {
+          logger.info(`→ Client resolved via ${resolvedFrom}`, { chatId, clientId: resolvedClientId });
+        } else {
+          logger.info('→ No client resolved — will create lead instead of guest ticket', { chatId });
         }
       }
 
@@ -1051,6 +1042,63 @@ ${messageContext}
       if (!deptId) {
         logger.error('❌ No support department ID configured', { chatId });
         throw new Error('Support department not configured');
+      }
+
+      // If no client resolved — create a lead instead of a guest ticket
+      if (!resolvedClientId) {
+        logger.info('📋 No client resolved — creating lead in VTiger instead of guest ticket', { chatId });
+        try {
+          const { createLeadFlow } = require('./vtiger');
+          const { broadcastNewLead } = require('./websocket');
+          const Lead = require('../models/Lead');
+
+          const leadEmail = email && !email.includes('@uchat.generated') && !email.startsWith('client@')
+            ? email
+            : (chat.userNs ? `${chat.userNs.toLowerCase().replace(/[^a-z0-9]/g, '_')}@uchat.generated` : `guest_${Date.now().toString(36)}@uchat.generated`);
+
+          const vtigerResponse = await createLeadFlow({
+            username: fullName,
+            email: leadEmail,
+            phone: chat.phone || '',
+            description: messageContext,
+            User_Ns: chat.userNs || '',
+          });
+
+          if (vtigerResponse.success && vtigerResponse.result) {
+            const leadData = {
+              vtigerId: vtigerResponse.result.id || vtigerResponse.existingLeadId,
+              firstname: vtigerResponse.result.firstname || chat.firstname,
+              lastname: vtigerResponse.result.lastname || chat.lastname,
+              email: vtigerResponse.result.email || leadEmail,
+              phone: vtigerResponse.result.mobile || chat.phone || '',
+              description: messageContext,
+              comment: messageContext,
+              source: 'Chatbot',
+              userNs: chat.userNs || '',
+            };
+
+            try {
+              await Lead.findOneAndUpdate(
+                { vtigerId: leadData.vtigerId },
+                leadData,
+                { upsert: true, new: true }
+              );
+              broadcastNewLead({ ...leadData, id: leadData.vtigerId, createdAt: new Date() });
+            } catch (dbErr) {
+              logger.warn('Failed to save lead to DB after auto-ticket fallback', { error: dbErr.message });
+            }
+
+            logger.info('✅ Lead created as fallback (no client resolved)', { chatId, vtigerId: leadData.vtigerId });
+          }
+
+          // Notify customer and stop notifications without creating a ticket
+          await this.resumeBot(chat.userNs);
+          await this.stopNotifications(chatId, 'auto_ticket_created');
+          return;
+        } catch (leadErr) {
+          logger.error('❌ Lead creation fallback failed', { chatId, error: leadErr.message });
+          // Fall through to guest ticket as last resort
+        }
       }
 
       // Create ticket in WHMCS
@@ -1434,6 +1482,35 @@ ${messageContext}
       
       logger.info('Local intervals and timeouts cleared after error', { count: clearedCount });
       return clearedCount;
+    }
+  }
+
+  /**
+   * Resolve client by phone via external client_lookup API
+   * @param {string} phone - Phone number
+   * @returns {Promise<Object>} { clientId, phone }
+   */
+  async resolvePhoneToClient(phone) {
+    try {
+      const { normalizePhone } = require('../utils/phoneNormalizer');
+      const normalized = normalizePhone(phone);
+      if (!normalized) throw new Error('Invalid phone number');
+
+      const url = `https://portal.hostbreak.com/client_lookup.php?secret=fdf256fb4995528972f5338581eeb3de1d459b505ac13b847d04392518274013&phone=${encodeURIComponent(normalized)}`;
+      const response = await axios.get(url, { timeout: 10000 });
+      const data = response.data;
+
+      // Response: { is_client: true, client_data: { id, full_name, email, status }, active_services: [...] }
+      if (data && data.is_client === true && data.client_data && data.client_data.id) {
+        const clientId = String(data.client_data.id);
+        logger.debug('→ Phone resolved to client', { phone: normalized, clientId });
+        return { clientId, phone: normalized, clientData: data.client_data };
+      }
+
+      throw new Error(`No client found for phone: ${normalized}`);
+    } catch (error) {
+      logger.debug('→ Phone resolution failed', { phone, error: error.message });
+      throw error;
     }
   }
 
