@@ -1,4 +1,5 @@
 const { openTicket } = require('../services/whmcsService');
+const { openOrMergeTicket } = require('../services/ticketDeduplicationService');
 
 /**
  * Create a new support ticket
@@ -11,26 +12,36 @@ exports.createTicket = async (req, res, next) => {
   });
   
   try {
-    const { user_ns, ...ticketData } = req.body || {};
+    const { user_ns, domain, ...ticketData } = req.body || {};
     
-    const data = await openTicket(ticketData);
-    const ticketId = data.tid || data.ticketid;
-    console.log('→ Ticket created:', ticketId);
+    const data = await openOrMergeTicket({ ticketType: 'manual', ...ticketData, domain: domain || null });
+    const ticketId = data.ticketNumber || data.ticketId;
+    console.log(data.merged ? '→ Content merged into existing ticket:' : '→ Ticket created:', ticketId);
     
     // Send UChat notification if user_ns provided
     if (typeof user_ns !== 'undefined' && user_ns) {
-      console.log(`→ Calling sendUChatTicketNotification with user_ns: ${user_ns}, ticketId: ${ticketId}`);
-      sendUChatTicketNotification(user_ns, ticketId).catch(err => {
+      sendUChatTicketNotification(user_ns, ticketId, data.merged).catch(err => {
         console.error('✗ UChat notification failed:', err.message);
       });
     }
     
-    res.json({ 
-      ok: true, 
-      ticketid: data.ticketid, 
-      ticketnumber: data.tid, 
-      raw: data 
-    });
+    if (data.merged) {
+      res.json({
+        ok: true,
+        merged: true,
+        ticketid: data.ticketId,
+        ticketnumber: data.ticketNumber,
+        message: `Your message has been added to your existing ticket #${data.ticketNumber}.`,
+      });
+    } else {
+      res.json({
+        ok: true,
+        merged: false,
+        ticketid: data.ticketId,
+        ticketnumber: data.ticketNumber,
+        message: `Support ticket #${data.ticketNumber} has been created successfully.`,
+      });
+    }
   } catch (err) {
     console.log('✗ Error:', err.message);
     next(err);
@@ -42,28 +53,19 @@ exports.createTicket = async (req, res, next) => {
  * @param {string} user_ns - UChat user namespace
  * @param {string} ticketId - Ticket ID or number
  */
-async function sendUChatTicketNotification(user_ns, ticketId) {
-  console.log(`→ sendUChatTicketNotification called with user_ns: ${user_ns}, ticketId: ${ticketId}`);
-  
-  if (!user_ns) {
-    console.log('→ Skipping UChat notification - no user_ns provided');
-    return;
-  }
+async function sendUChatTicketNotification(user_ns, ticketId, merged = false) {
+  if (!user_ns) return;
 
   try {
     const axios = require('axios');
-    
-    // Wait 5 seconds before sending notification (to ensure response is sent first)
-    console.log(`→ Waiting 5 seconds before sending UChat notification...`);
     await new Promise(resolve => setTimeout(resolve, 5000));
-    
-    console.log(`→ Sending UChat notification to ${process.env.UCHAT_API_URL}/subscriber/send-text`);
-    
-    // Send ticket notification message
-    const messageContent = `Your ticket has been generated #${ticketId}. Please contact support for assistance.`;
-    
-    const sendTextResponse = await axios.post(`${process.env.UCHAT_API_URL}/subscriber/send-text`, {
-      user_ns: user_ns,
+
+    const messageContent = merged
+      ? `Your message has been added to your existing support ticket #${ticketId}. Our team will review it shortly.`
+      : `Your support ticket #${ticketId} has been created. Our 24x7 helpdesk team will get back to you at the earliest.`;
+
+    await axios.post(`${process.env.UCHAT_API_URL}/subscriber/send-text`, {
+      user_ns,
       content: messageContent
     }, {
       headers: {
@@ -72,11 +74,8 @@ async function sendUChatTicketNotification(user_ns, ticketId) {
       },
       timeout: 10000
     });
-    
-    console.log(`✅ UChat notification sent for ticket #${ticketId}`, sendTextResponse.data);
-    
-    // Wait 1 second before moving chat to done
-    console.log(`→ Waiting 1 second before moving chat to done...`);
+
+    console.log(`✅ UChat notification sent for ticket #${ticketId} (merged: ${merged})`);
     await new Promise(resolve => setTimeout(resolve, 1000));
     
     // Move chat to done status

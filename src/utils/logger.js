@@ -1,177 +1,191 @@
 /**
  * Logger Utility
- * Provides consistent logging across the application
+ * Console + rotating file output via Winston.
+ *
+ * Files written to ./logs/
+ *   app-YYYY-MM-DD.log      INFO + WARN  (14-day retention, 20 MB max)
+ *   error-YYYY-MM-DD.log    ERROR only   (30-day retention, 20 MB max)
+ *   http-YYYY-MM-DD.log     HTTP traffic (7-day retention, 20 MB max)
+ *
+ * All rotated files are gzip-compressed automatically.
+ * The createLogger(context) API is unchanged — no other files need editing.
  */
 
-const LOG_LEVELS = {
-  ERROR: 0,
-  WARN: 1,
-  INFO: 2,
-  DEBUG: 3
-};
+const winston = require('winston');
+const DailyRotateFile = require('winston-daily-rotate-file');
+const path = require('path');
+const fs = require('fs');
 
-const LOG_COLORS = {
-  ERROR: '\x1b[31m', // Red
-  WARN: '\x1b[33m',  // Yellow
-  INFO: '\x1b[36m',  // Cyan
-  DEBUG: '\x1b[90m', // Gray
-  RESET: '\x1b[0m'
-};
+// Ensure logs directory exists
+const LOG_DIR = path.join(process.cwd(), 'logs');
+if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
+
+// ── formats ──────────────────────────────────────────────────────────────────
+
+const fileFormat = winston.format.combine(
+  winston.format.timestamp(),
+  winston.format.errors({ stack: true }),
+  winston.format.printf(({ timestamp, level, message, context, stack, ...meta }) => {
+    const ctx = context ? `[${context}] ` : '';
+    const extra = Object.keys(meta).length ? JSON.stringify(meta) : '';
+    const err = stack ? `\n${stack}` : '';
+    return `[${timestamp}] [${level.toUpperCase()}] ${ctx}${message}${extra ? ' ' + extra : ''}${err}`;
+  })
+);
+
+const consoleFormat = winston.format.combine(
+  winston.format.colorize(),
+  winston.format.timestamp(),
+  winston.format.printf(({ timestamp, level, message, context, ...meta }) => {
+    const ctx = context ? `[${context}] ` : '';
+    const extra = Object.keys(meta).length ? JSON.stringify(meta) : '';
+    return `[${timestamp}] ${level} ${ctx}${message}${extra ? ' ' + extra : ''}`;
+  })
+);
+
+// ── transports ────────────────────────────────────────────────────────────────
+
+function makeRotatingTransport(filename, level, maxDays) {
+  return new DailyRotateFile({
+    filename: path.join(LOG_DIR, `${filename}-%DATE%.log`),
+    datePattern: 'YYYY-MM-DD',
+    zippedArchive: true,
+    maxSize: '20m',
+    maxFiles: `${maxDays}d`,
+    level,
+    format: fileFormat,
+  });
+}
+
+const appTransport   = makeRotatingTransport('app',   'info',  14);
+const errorTransport = makeRotatingTransport('error', 'error', 30);
+const httpTransport  = makeRotatingTransport('http',  'http',   7);
+
+// Shared winston instance (all contexts write to the same files)
+const winstonLogger = winston.createLogger({
+  level: (process.env.LOG_LEVEL || 'info').toLowerCase(),
+  transports: [
+    new winston.transports.Console({ format: consoleFormat }),
+    appTransport,
+    errorTransport,
+  ],
+});
+
+// Separate HTTP logger (only used by requestLogger middleware)
+const httpLogger = winston.createLogger({
+  levels: { ...winston.config.npm.levels, http: 5 },
+  level: 'http',
+  transports: [
+    new winston.transports.Console({ format: consoleFormat }),
+    httpTransport,
+  ],
+});
+
+// ── Logger class (same public API as before) ──────────────────────────────────
 
 class Logger {
   constructor(context = 'APP') {
     this.context = context;
-    this.level = process.env.LOG_LEVEL || 'INFO';
   }
 
-  _shouldLog(level) {
-    const currentLevel = LOG_LEVELS[this.level] || LOG_LEVELS.INFO;
-    const messageLevel = LOG_LEVELS[level];
-    return messageLevel <= currentLevel;
-  }
-
-  _formatMessage(level, message, data = null) {
-    const timestamp = new Date().toISOString();
-    const color = LOG_COLORS[level] || '';
-    const reset = LOG_COLORS.RESET;
-    
-    let logMessage = `${color}[${timestamp}] [${level}] [${this.context}]${reset} ${message}`;
-    
-    if (data) {
-      if (typeof data === 'object') {
-        logMessage += `\n${JSON.stringify(data, null, 2)}`;
-      } else {
-        logMessage += ` ${data}`;
-      }
-    }
-    
-    return logMessage;
+  _meta(data) {
+    if (!data) return {};
+    if (typeof data === 'object') return data;
+    return { detail: data };
   }
 
   error(message, data = null) {
-    if (this._shouldLog('ERROR')) {
-      console.error(this._formatMessage('ERROR', message, data));
-    }
+    winstonLogger.error(message, { context: this.context, ...this._meta(data) });
   }
 
   warn(message, data = null) {
-    if (this._shouldLog('WARN')) {
-      console.warn(this._formatMessage('WARN', message, data));
-    }
+    winstonLogger.warn(message, { context: this.context, ...this._meta(data) });
   }
 
   info(message, data = null) {
-    if (this._shouldLog('INFO')) {
-      console.log(this._formatMessage('INFO', message, data));
-    }
+    winstonLogger.info(message, { context: this.context, ...this._meta(data) });
   }
 
   debug(message, data = null) {
-    if (this._shouldLog('DEBUG')) {
-      console.log(this._formatMessage('DEBUG', message, data));
-    }
+    winstonLogger.debug(message, { context: this.context, ...this._meta(data) });
   }
 
-  // HTTP request logging
+  // HTTP request logging (used by requestLogger middleware)
   logRequest(req) {
-    const requestInfo = {
+    httpLogger.log('http', 'Incoming request', {
+      context: this.context,
       method: req.method,
       url: req.originalUrl || req.url,
       headers: this._sanitizeHeaders(req.headers),
       body: this._sanitizeBody(req.body),
       query: req.query,
-      ip: req.ip || req.connection?.remoteAddress
-    };
-    
-    this.info(`Incoming ${req.method} request`, requestInfo);
+      ip: req.ip || req.connection?.remoteAddress,
+    });
   }
 
-  // HTTP response logging
   logResponse(req, res, responseBody = null, duration = null) {
-    const responseInfo = {
+    const info = {
+      context: this.context,
       method: req.method,
       url: req.originalUrl || req.url,
       statusCode: res.statusCode,
       duration: duration ? `${duration}ms` : null,
-      body: this._sanitizeBody(responseBody)
+      body: this._sanitizeBody(responseBody),
     };
-    
     if (res.statusCode >= 400) {
-      this.error(`Response ${res.statusCode}`, responseInfo);
+      winstonLogger.error(`Response ${res.statusCode}`, info);
     } else {
-      this.info(`Response ${res.statusCode}`, responseInfo);
+      httpLogger.log('http', `Response ${res.statusCode}`, info);
     }
   }
 
-  // WHMCS API logging
   logWHMCSRequest(action, params) {
-    const sanitizedParams = { ...params };
-    if (sanitizedParams.secret) sanitizedParams.secret = '***REDACTED***';
-    if (sanitizedParams.identifier) sanitizedParams.identifier = '***REDACTED***';
-    
-    this.debug(`WHMCS API Request: ${action}`, sanitizedParams);
+    const sanitized = { ...params };
+    if (sanitized.secret) sanitized.secret = '***';
+    if (sanitized.identifier) sanitized.identifier = '***';
+    winstonLogger.debug(`WHMCS Request: ${action}`, { context: this.context, ...sanitized });
   }
 
   logWHMCSResponse(action, success, data = null) {
     if (success) {
-      this.debug(`WHMCS API Response: ${action} - Success`, data);
+      winstonLogger.debug(`WHMCS Response: ${action} OK`, { context: this.context });
     } else {
-      this.error(`WHMCS API Response: ${action} - Failed`, data);
+      winstonLogger.error(`WHMCS Response: ${action} FAILED`, { context: this.context, ...this._meta(data) });
     }
   }
 
-  // Database logging
   logDBQuery(operation, collection, query = null) {
-    this.debug(`DB ${operation}: ${collection}`, query);
+    winstonLogger.debug(`DB ${operation}: ${collection}`, { context: this.context, query });
   }
 
   logDBResult(operation, collection, result) {
-    this.debug(`DB ${operation} Result: ${collection}`, result);
+    winstonLogger.debug(`DB ${operation} result: ${collection}`, { context: this.context, result });
   }
 
-  // Sanitize sensitive data
   _sanitizeHeaders(headers) {
-    const sanitized = { ...headers };
-    const sensitiveHeaders = ['authorization', 'cookie', 'x-api-key'];
-    
-    sensitiveHeaders.forEach(header => {
-      if (sanitized[header]) {
-        sanitized[header] = '***REDACTED***';
-      }
-    });
-    
-    return sanitized;
+    const s = { ...headers };
+    ['authorization', 'cookie', 'x-api-key'].forEach(h => { if (s[h]) s[h] = '***'; });
+    return s;
   }
 
   _sanitizeBody(body) {
     if (!body) return null;
     if (typeof body !== 'object') return body;
-    
-    const sanitized = JSON.parse(JSON.stringify(body)); // Deep clone
-    const sensitiveFields = ['password', 'secret', 'token', 'api_key', 'apiKey'];
-    
-    const redactRecursive = (obj) => {
-      for (const key in obj) {
-        if (sensitiveFields.includes(key)) {
-          obj[key] = '***REDACTED***';
-        } else if (typeof obj[key] === 'object' && obj[key] !== null) {
-          redactRecursive(obj[key]);
-        }
+    const clone = JSON.parse(JSON.stringify(body));
+    const sensitive = ['password', 'secret', 'token', 'api_key', 'apiKey'];
+    const redact = obj => {
+      for (const k in obj) {
+        if (sensitive.includes(k)) obj[k] = '***';
+        else if (typeof obj[k] === 'object' && obj[k]) redact(obj[k]);
       }
     };
-    
-    redactRecursive(sanitized);
-    return sanitized;
+    redact(clone);
+    return clone;
   }
 }
 
-// Create logger instances for different contexts
 function createLogger(context) {
   return new Logger(context);
 }
 
-module.exports = {
-  Logger,
-  createLogger,
-  LOG_LEVELS
-};
+module.exports = { Logger, createLogger, LOG_LEVELS: { ERROR: 0, WARN: 1, INFO: 2, DEBUG: 3 } };

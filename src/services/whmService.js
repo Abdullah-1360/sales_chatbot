@@ -4164,9 +4164,13 @@ class WHMService {
         console.log(`→ Using email for ticket: ${email}`);
       }
       
-      const ticket = await openTicket(ticketParams);
+      const { openOrMergeTicket } = require('./ticketDeduplicationService');
+      const ticket = await openOrMergeTicket({
+        ticketType: 'wordpress_diagnostic',
+        ...ticketParams,
+      });
       
-      const ticketId = ticket.tid || ticket.ticketid || ticket.id;
+      const ticketId = ticket.ticketNumber || ticket.ticketId;
       
       console.log(`✅ Support ticket created for syntax errors: #${ticketId}`);
       

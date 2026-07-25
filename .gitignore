@@ -144,3 +144,6 @@ docs/
 # Lock files (uncomment if you want to ignore them)
 # package-lock.json
 # yarn.lock
+
+# SSH provisioning secret
+.connect_secret

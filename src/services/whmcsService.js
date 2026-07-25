@@ -435,6 +435,19 @@ function summarizeInvoice(data) {
   return { status, total, balance, currency: data.currency, duedate: data.duedate, invoiceid: data.invoiceid };
 }
 
+/**
+ * Append a reply to an existing WHMCS ticket
+ * @param {string|number} ticketId - The ticket ID
+ * @param {string} message - Reply message to append
+ * @param {string} [clientid] - Optional client ID
+ * @returns {Promise<Object>}
+ */
+async function addTicketReply(ticketId, message, clientid) {
+  const params = { ticketid: ticketId, message };
+  if (clientid) params.clientid = clientid;
+  return callApi('AddTicketReply', params);
+}
+
 module.exports = {
   callApi,
   getInvoice,
@@ -447,6 +460,7 @@ module.exports = {
   getSupportDepartments,
   resolveDepartmentId,
   openTicket,
+  addTicketReply,
   getTicket,
   getTickets,
   getTicketWithClientValidation,

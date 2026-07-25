@@ -1035,6 +1035,7 @@ ${messageContext}
 
       // Get WHMCS service for ticket creation
       const whmcsService = require('./whmcsService');
+      const { openOrMergeTicket } = require('./ticketDeduplicationService');
       
       // Determine department ID (use Support department)
       const deptId = process.env.TECHSUPPORT_DEPTID || process.env.SUPPORT_DEPTID;
@@ -1127,23 +1128,28 @@ ${messageContext}
         });
       }
 
-      const ticketResult = await whmcsService.openTicket(ticketParams);
+      const ticketResult = await openOrMergeTicket({
+        ticketType: 'auto_chat',
+        ...ticketParams,
+        domain: chat.domain || null,
+      });
       
-      if (!ticketResult || !ticketResult.id) {
+      if (!ticketResult || !ticketResult.ticketId) {
         throw new Error('Failed to create ticket in WHMCS');
       }
 
-      const ticketId = ticketResult.id;
-      const ticketNumber = ticketResult.tid;
-      logger.info('✅ WHMCS ticket created', { 
-        chatId, 
+      const ticketId = ticketResult.ticketId;
+      const ticketNumber = ticketResult.ticketNumber;
+      logger.info(ticketResult.merged ? '🔀 Content merged into existing ticket' : '✅ New WHMCS ticket created', {
+        chatId,
         ticketId,
         ticketNumber,
-        clientId: resolvedClientId || 'guest'
+        merged: ticketResult.merged,
+        clientId: resolvedClientId || 'guest',
       });
 
       // Send message to customer via UChat API with ticket number
-      await this.sendNoAgentMessage(chat.userNs, ticketNumber);
+      await this.sendNoAgentMessage(chat.userNs, ticketNumber, ticketResult.merged);
 
       // Resume bot after sending message
       await this.resumeBot(chat.userNs);
@@ -1181,25 +1187,25 @@ ${messageContext}
    * @param {string} ticketNumber - Ticket number to include in message
    * @returns {Promise<Object>} API call result
    */
-  async sendNoAgentMessage(userNs, ticketNumber) {
+  async sendNoAgentMessage(userNs, ticketNumber, merged = false) {
     try {
-      logger.info('📤 Sending no-agent message to customer', { userNs, ticketNumber });
+      logger.info('📤 Sending no-agent message to customer', { userNs, ticketNumber, merged });
 
       if (!userNs || userNs.trim() === '') {
         logger.warn('❌ No User_Ns provided, skipping UChat API call', { userNs });
         return { success: false, error: 'No User_Ns provided' };
       }
 
-      // Validate userNs format (basic validation)
       if (typeof userNs !== 'string' || userNs.length < 5) {
         logger.warn('❌ Invalid User_Ns format, skipping UChat API call', { userNs, length: userNs?.length });
         return { success: false, error: 'Invalid User_Ns format' };
       }
 
-      const payload = {
-        user_ns: userNs,
-        content: `As no live agent is available right now, we've automatically created support ticket #${ticketNumber} on your behalf.\n\nOur 24x7 helpdesk support team will review it and update you at the earliest opportunity.`
-      };
+      const content = merged
+        ? `Your latest message has been added to your existing support ticket #${ticketNumber}. Our team will review it shortly.`
+        : `As no live agent is available right now, we've automatically created support ticket #${ticketNumber} on your behalf.\n\nOur 24x7 helpdesk support team will review it and update you at the earliest opportunity.`;
+
+      const payload = { user_ns: userNs, content };
 
       logger.info('📤 Sending to UChat API', { 
         userNs, 

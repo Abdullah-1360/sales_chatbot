@@ -8,6 +8,7 @@ const {
   getClientsProducts,
   getClientsDomains
 } = require('../services/whmcsService');
+const { openOrMergeTicket } = require('../services/ticketDeduplicationService');
 
 const { 
   getServiceForClient,
@@ -306,7 +307,8 @@ This ticket was automatically generated from an early renewal request.`;
           const deptid = process.env.BILLING_DEPTID;
           const deptname = deptid ? undefined : (process.env.BILLING_DEPTNAME || 'Billing');
           
-          const ticket = await openTicket({
+          const ticket = await openOrMergeTicket({
+            ticketType: 'service_renewal',
             deptid,
             deptname,
             subject: isOverdue 
@@ -318,19 +320,15 @@ This ticket was automatically generated from an early renewal request.`;
             serviceid: svc.id
           });
           
-          const ticketId = ticket.tid || ticket.ticketid || ticket.id;
-          console.log(`→ Support ticket created: ${ticketId} for ${isOverdue ? 'overdue' : 'early'} service renewal`);
+          const ticketId = ticket.ticketNumber || ticket.ticketId;
+          console.log(`→ Support ticket ${ticket.merged ? 'merged' : 'created'}: ${ticketId} for ${isOverdue ? 'overdue' : 'early'} service renewal`);
           
           // Send UChat notification if user_ns provided
           try {
-            console.log(`→ Checking user_ns for notification: ${typeof user_ns}, value: ${user_ns}`);
             if (typeof user_ns !== 'undefined' && user_ns) {
-              console.log(`→ Calling sendUChatTicketNotification with user_ns: ${user_ns}, ticketId: ${ticketId}`);
-              sendUChatTicketNotification(user_ns, ticketId).catch(err => {
+              sendUChatTicketNotification(user_ns, ticketId, ticket.merged).catch(err => {
                 console.error('✗ UChat notification promise failed:', err.message);
               });
-            } else {
-              console.log(`→ Skipping UChat notification - user_ns not provided`);
             }
           } catch (notificationError) {
             console.error('✗ UChat notification setup failed:', notificationError.message);
@@ -519,7 +517,8 @@ This ticket was automatically generated from an early domain renewal request.`;
           const deptid = process.env.BILLING_DEPTID;
           const deptname = deptid ? undefined : (process.env.BILLING_DEPTNAME || 'Billing');
           
-          const ticket = await openTicket({
+          const ticket = await openOrMergeTicket({
+            ticketType: 'domain_renewal',
             deptid,
             deptname,
             subject: isDomainOverdue
@@ -530,12 +529,12 @@ This ticket was automatically generated from an early domain renewal request.`;
             priority: 'High'
           });
           
-          const ticketId = ticket.tid || ticket.ticketid || ticket.id;
-          console.log(`→ Support ticket created: ${ticketId} for ${isDomainOverdue ? 'overdue' : 'early'} domain renewal`);
+          const ticketId = ticket.ticketNumber || ticket.ticketId;
+          console.log(`→ Support ticket ${ticket.merged ? 'merged' : 'created'}: ${ticketId} for ${isDomainOverdue ? 'overdue' : 'early'} domain renewal`);
           
           // Send UChat notification if user_ns provided
           if (typeof user_ns !== 'undefined' && user_ns) {
-            sendUChatTicketNotification(user_ns, ticketId).catch(err => {
+            sendUChatTicketNotification(user_ns, ticketId, ticket.merged).catch(err => {
               console.error('✗ UChat notification failed:', err.message);
             });
           }
@@ -997,33 +996,38 @@ exports.confirmPayment = async (req, res, next) => {
       ticketMessage += String(details);
     }
     
-    const t = await openTicket({ 
+    const t = await openOrMergeTicket({ 
+      ticketType: 'payment_confirmation',
       deptid, 
       deptname, 
       subject, 
       message: ticketMessage, 
       clientid: resolvedClientId, 
+      email: email || null,
+      domain: domain || null,
       priority: 'Medium',
       invoiceid: matchedInvoice.id
     });
     
-    const ticketId = t.tid || t.ticketid || t.id;
-    console.log('→ Billing ticket created:', ticketId, 'for invoice:', finalInvoiceId);
+    const ticketId = t.ticketNumber || t.ticketId;
+    console.log(t.merged ? '→ Billing ticket merged:' : '→ Billing ticket created:', ticketId, 'for invoice:', finalInvoiceId);
     
     // Send UChat notification if user_ns provided
     if (typeof user_ns !== 'undefined' && user_ns) {
-      console.log(`→ Calling sendUChatTicketNotification with user_ns: ${user_ns}, ticketId: ${ticketId}`);
-      sendUChatTicketNotification(user_ns, ticketId).catch(err => {
+      sendUChatTicketNotification(user_ns, ticketId, t.merged).catch(err => {
         console.error('✗ UChat notification failed:', err.message);
       });
     }
     
     // Build clean response with the new format
-    let message = `I've sent your payment proof for invoice ${finalInvoiceId} to our billing team under ticket ${ticketId}.\nOnce they verify it, they'll update the invoice and restore service${domain ? ` for ${domain}` : ''}.\nPlease wait for the billing team's confirmation on this ticket`;
+    let message = t.merged
+      ? `Your payment proof has been added to your existing billing ticket #${ticketId}.\nOur billing team will review it and update you shortly.`
+      : `I've sent your payment proof for invoice ${finalInvoiceId} to our billing team under ticket ${ticketId}.\nOnce they verify it, they'll update the invoice and restore service${domain ? ` for ${domain}` : ''}.\nPlease wait for the billing team's confirmation on this ticket`;
     
     const response = { 
       success: true, 
       paid: false, 
+      merged: t.merged,
       ticketId: ticketId,
       invoiceId: finalInvoiceId,
       message: message
@@ -1118,7 +1122,8 @@ Status: ${status}`;
     // Only use deptname if deptid is not provided (deptid takes priority)
     const deptname = deptid ? undefined : (process.env.TECHSUPPORT_DEPTNAME || 'Technical Support');
     
-    const t = await openTicket({ 
+    const t = await openOrMergeTicket({ 
+      ticketType: 'service_issue',
       deptid, 
       deptname, 
       subject: `[${status}] Issue with ${serviceName}`, 
@@ -1128,14 +1133,17 @@ Status: ${status}`;
       serviceid: statusResp.id 
     });
     
-    const ticketId = t.tid || t.ticketid || t.id;
-    console.log('→ Tech support ticket created:', ticketId);
+    const ticketId = t.ticketNumber || t.ticketId;
+    console.log(`→ Tech support ticket ${t.merged ? 'merged' : 'created'}:`, ticketId);
     
     res.json({ 
       success: true, 
       resolution: 'tech_ticket', 
+      merged: t.merged,
       ticketId: ticketId, 
-      message: `I've opened a technical support ticket (#${ticketId}). Our team will investigate your issue.` 
+      message: t.merged
+        ? `Your issue has been added to your existing support ticket (#${ticketId}). Our team will investigate.`
+        : `I've opened a technical support ticket (#${ticketId}). Our team will investigate your issue.`
     });
   } catch (err) {
     console.log('✗ Error:', err.message);
@@ -1390,7 +1398,8 @@ This ticket was automatically generated from a renewal request.`;
             const deptid = process.env.BILLING_DEPTID;
             const deptname = deptid ? undefined : (process.env.BILLING_DEPTNAME || 'Billing');
             
-            const ticket = await openTicket({
+            const ticket = await openOrMergeTicket({
+              ticketType: 'service_renewal',
               deptid,
               deptname,
               subject: `[${serviceData.status}] Renewal Request - ${domain} (Service ID: ${serviceId})`,
@@ -1400,12 +1409,12 @@ This ticket was automatically generated from a renewal request.`;
               serviceid: serviceId
             });
             
-            const ticketId = ticket.tid || ticket.ticketid || ticket.id;
-            console.log(`→ Support ticket created: ${ticketId} for non-renewable service`);
+            const ticketId = ticket.ticketNumber || ticket.ticketId;
+            console.log(`→ Support ticket ${ticket.merged ? 'merged' : 'created'}: ${ticketId} for non-renewable service`);
             
             // Send UChat notification if user_ns provided
             if (typeof user_ns !== 'undefined' && user_ns) {
-              sendUChatTicketNotification(user_ns, ticketId).catch(err => {
+              sendUChatTicketNotification(user_ns, ticketId, ticket.merged).catch(err => {
                 console.error('✗ UChat notification failed:', err.message);
               });
             }
@@ -1491,7 +1500,8 @@ This ticket was automatically generated from a renewal request.`;
               const deptid = process.env.BILLING_DEPTID;
               const deptname = deptid ? undefined : (process.env.BILLING_DEPTNAME || 'Billing');
               
-              const ticket = await openTicket({
+              const ticket = await openOrMergeTicket({
+                ticketType: 'domain_renewal',
                 deptid,
                 deptname,
                 subject: `[Cancelled] Domain Renewal Request - ${domain} (Domain ID: ${domainId})`,
@@ -1500,12 +1510,12 @@ This ticket was automatically generated from a renewal request.`;
                 priority: 'Medium'
               });
               
-              const ticketId = ticket.tid || ticket.ticketid || ticket.id;
-              console.log(`→ Support ticket created: ${ticketId} for cancelled domain`);
+              const ticketId = ticket.ticketNumber || ticket.ticketId;
+              console.log(`→ Support ticket ${ticket.merged ? 'merged' : 'created'}: ${ticketId} for cancelled domain`);
               
               // Send UChat notification if user_ns provided
               if (typeof user_ns !== 'undefined' && user_ns) {
-                sendUChatTicketNotification(user_ns, ticketId).catch(err => {
+                sendUChatTicketNotification(user_ns, ticketId, ticket.merged).catch(err => {
                   console.error('✗ UChat notification failed:', err.message);
                 });
               }
@@ -1688,7 +1698,8 @@ This ticket was automatically generated from a renewal request.`;
             const deptid = process.env.BILLING_DEPTID;
             const deptname = deptid ? undefined : (process.env.BILLING_DEPTNAME || 'Billing');
             
-            const ticket = await openTicket({
+            const ticket = await openOrMergeTicket({
+              ticketType: 'service_renewal',
               deptid,
               deptname,
               subject: `[Renewal Issue] ${isHostingService ? 'Service' : 'Domain'} Renewal Not Available - ${domain}`,
@@ -1698,12 +1709,12 @@ This ticket was automatically generated from a renewal request.`;
               ...(isHostingService && serviceId ? { serviceid: serviceId } : {})
             });
             
-            const ticketId = ticket.tid || ticket.ticketid || ticket.id;
-            console.log(`→ Support ticket created: ${ticketId} for renewal restriction`);
+            const ticketId = ticket.ticketNumber || ticket.ticketId;
+            console.log(`→ Support ticket ${ticket.merged ? 'merged' : 'created'}: ${ticketId} for renewal restriction`);
             
             // Send UChat notification if user_ns provided
             if (typeof user_ns !== 'undefined' && user_ns) {
-              sendUChatTicketNotification(user_ns, ticketId).catch(err => {
+              sendUChatTicketNotification(user_ns, ticketId, ticket.merged).catch(err => {
                 console.error('✗ UChat notification failed:', err.message);
               });
             }
@@ -1776,7 +1787,8 @@ This ticket was automatically generated from a renewal request.`;
           const deptid = process.env.BILLING_DEPTID;
           const deptname = deptid ? undefined : (process.env.BILLING_DEPTNAME || 'Billing');
           
-          const ticket = await openTicket({
+          const ticket = await openOrMergeTicket({
+            ticketType: 'domain_renewal',
             deptid,
             deptname,
             subject: `[Exception] Domain Renewal Failed - ${domain}`,
@@ -1785,12 +1797,12 @@ This ticket was automatically generated from a renewal request.`;
             priority: 'High'
           });
           
-          const ticketId = ticket.tid || ticket.ticketid || ticket.id;
-          console.log(`→ Support ticket created: ${ticketId} for domain renewal exception`);
+          const ticketId = ticket.ticketNumber || ticket.ticketId;
+          console.log(`→ Support ticket ${ticket.merged ? 'merged' : 'created'}: ${ticketId} for domain renewal exception`);
           
           // Send UChat notification if user_ns provided
           if (typeof user_ns !== 'undefined' && user_ns) {
-            sendUChatTicketNotification(user_ns, ticketId).catch(err => {
+            sendUChatTicketNotification(user_ns, ticketId, ticket.merged).catch(err => {
               console.error('✗ UChat notification failed:', err.message);
             });
           }
@@ -1937,25 +1949,16 @@ function maskPhoneNumber(phone) {
  * @param {string} user_ns - UChat user namespace
  * @param {string} ticketId - Ticket ID or number
  */
-async function sendUChatTicketNotification(user_ns, ticketId) {
-  console.log(`→ sendUChatTicketNotification called with user_ns: ${user_ns}, ticketId: ${ticketId}`);
-  
-  if (!user_ns) {
-    console.log('→ Skipping UChat notification - no user_ns provided');
-    return; // Skip if no user_ns provided
-  }
+async function sendUChatTicketNotification(user_ns, ticketId, merged = false) {
+  if (!user_ns) return;
 
   try {
     const axios = require('axios');
-    
-    // Wait 5 seconds before sending notification (to ensure response is sent first)
-    console.log(`→ Waiting 5 seconds before sending UChat notification...`);
     await new Promise(resolve => setTimeout(resolve, 5000));
-    
-    console.log(`→ Sending UChat notification to ${process.env.UCHAT_API_URL}/subscriber/send-text`);
-    
-    // Send ticket notification message
-    const messageContent = `Your ticket has been generated #${ticketId}. Please contact support for assistance.`;
+
+    const messageContent = merged
+      ? `Your message has been added to your existing support ticket #${ticketId}. Our billing team will review it shortly.`
+      : `Your ticket has been generated #${ticketId}. Our billing team will review it and get back to you.`;
     
     const sendTextResponse = await axios.post(`${process.env.UCHAT_API_URL}/subscriber/send-text`, {
       user_ns: user_ns,

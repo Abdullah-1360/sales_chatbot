@@ -1728,7 +1728,7 @@ exports.checkServiceStatus = async (req, res, next) => {
     // If billingIssue is false and issue is provided, create support ticket
     if (result && !result.billingIssue && issue) {
       
-      const { openTicket } = require('../services/whmcsService');
+      const { openOrMergeTicket } = require('../services/ticketDeduplicationService');
       
       const deptid = process.env.TECHSUPPORT_DEPTID;
       // Only use deptname if deptid is not provided (deptid takes priority)
@@ -1899,7 +1899,8 @@ exports.checkServiceStatus = async (req, res, next) => {
       }
       
       try {
-        const ticket = await openTicket({
+        const ticket = await openOrMergeTicket({
+          ticketType: 'service_issue',
           deptid,
           deptname,
           subject,
@@ -1909,12 +1910,11 @@ exports.checkServiceStatus = async (req, res, next) => {
           serviceid: svc.id
         });
         
-        const ticketId = ticket.tid || ticket.ticketid || ticket.id;
+        const ticketId = ticket.ticketNumber || ticket.ticketId;
         
         // Send UChat notification if user_ns provided
         if (typeof user_ns !== 'undefined' && user_ns) {
-          console.log(`→ Calling sendUChatTicketNotification with user_ns: ${user_ns}, ticketId: ${ticketId}`);
-          sendUChatTicketNotification(user_ns, ticketId).catch(err => {
+          sendUChatTicketNotification(user_ns, ticketId, ticket.merged).catch(err => {
             console.error('✗ UChat notification failed:', err.message);
           });
         }
@@ -1922,6 +1922,7 @@ exports.checkServiceStatus = async (req, res, next) => {
         // Add ticket info to response
         result.ticketCreated = true;
         result.ticketId = ticketId;
+        result.merged = ticket.merged;
         
         if (automatedAnalysisPerformed) {
           let analysisTypes = [];
@@ -1931,9 +1932,13 @@ exports.checkServiceStatus = async (req, res, next) => {
           if (autoSSLAttempted) analysisTypes.push('AutoSSL management');
           
           const analysisDescription = analysisTypes.length > 0 ? ` (${analysisTypes.join(', ')} detected)` : '';
-          result.message += ` I've opened a comprehensive support ticket (#${ticketId}) that includes both your reported issue and our automated analysis findings${analysisDescription}.`;
+          result.message += ticket.merged
+            ? ` Your issue has been added to your existing support ticket (#${ticketId})${analysisDescription}.`
+            : ` I've opened a comprehensive support ticket (#${ticketId}) that includes both your reported issue and our automated analysis findings${analysisDescription}.`;
         } else {
-          result.message += ` I've opened a support ticket (#${ticketId}) for our technical team to investigate your issue.`;
+          result.message += ticket.merged
+            ? ` Your issue has been added to your existing support ticket (#${ticketId}).`
+            : ` I've opened a support ticket (#${ticketId}) for our technical team to investigate your issue.`;
         }
         
       } catch (ticketError) {
@@ -1959,63 +1964,56 @@ exports.checkServiceStatus = async (req, res, next) => {
     
     // If issue provided but no result was generated, create ticket
     if (issue) {
-      
-      const { openTicket } = require('../services/whmcsService');
+      const { openOrMergeTicket } = require('../services/ticketDeduplicationService');
       
       const deptid = process.env.TECHSUPPORT_DEPTID;
-      // Only use deptname if deptid is not provided (deptid takes priority)
       const deptname = deptid ? undefined : (process.env.TECHSUPPORT_DEPTNAME || 'Technical Support');
       const subject = `Issue with ${serviceName}`;
       
       let ticketMessage = `=== SERVICE ISSUE REPORTED (FALLBACK) ===\n`;
       ticketMessage += `Service: ${serviceName}\n`;
       ticketMessage += `Status: ${status}\n`;
-      if (domain) {
-        ticketMessage += `Domain: ${domain}\n`;
-      }
-      if (serviceId) {
-        ticketMessage += `Service ID: ${serviceId}\n`;
-      }
-      if (nextDueDate) {
-        ticketMessage += `Next Due Date: ${nextDueDate}\n`;
-      }
-      
+      if (domain) ticketMessage += `Domain: ${domain}\n`;
+      if (serviceId) ticketMessage += `Service ID: ${serviceId}\n`;
+      if (nextDueDate) ticketMessage += `Next Due Date: ${nextDueDate}\n`;
       ticketMessage += `\n=== ISSUE DESCRIPTION ===\n`;
       ticketMessage += String(issue);
       
       try {
-        const ticket = await openTicket({
+        const ticket = await openOrMergeTicket({
+          ticketType: 'service_issue',
           deptid,
           deptname,
           subject,
           message: ticketMessage,
           clientid: finalClientId,
           priority: 'High',
-          serviceid: svc.id
+          serviceid: svc?.id
         });
         
-        const ticketId = ticket.tid || ticket.ticketid || ticket.id;
+        const ticketId = ticket.ticketNumber || ticket.ticketId;
         
-        // Send UChat notification if user_ns provided
         if (typeof user_ns !== 'undefined' && user_ns) {
-          console.log(`→ Calling sendUChatTicketNotification with user_ns: ${user_ns}, ticketId: ${ticketId}`);
-          sendUChatTicketNotification(user_ns, ticketId).catch(err => {
+          sendUChatTicketNotification(user_ns, ticketId, ticket.merged).catch(err => {
             console.error('✗ UChat notification failed:', err.message);
           });
         }
         
-        message += ` I've opened a support ticket (#${ticketId}) for our technical team to investigate your issue.`;
+        message += ticket.merged
+          ? ` Your issue has been added to your existing support ticket (#${ticketId}).`
+          : ` I've opened a support ticket (#${ticketId}) for our technical team to investigate your issue.`;
         
         return res.json({
           success: true,
-          status: status,
+          status,
           service: serviceName,
-          nextDueDate: nextDueDate,
+          nextDueDate,
           billingIssue: false,
           actionRequired: null,
           ticketCreated: true,
-          ticketId: ticketId,
-          message: message
+          merged: ticket.merged,
+          ticketId,
+          message
         });
       } catch (ticketError) {
         console.log('⚠️ Warning: Could not create support ticket:', ticketError.message);
